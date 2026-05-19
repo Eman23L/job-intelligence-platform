@@ -167,6 +167,8 @@ DATABASE_URL=postgresql+psycopg://...
 CORS_ORIGINS=https://your-vercel-app.vercel.app,https://your-custom-domain.example
 ```
 
+`DATABASE_URL` is required in production. Startup performs a PostgreSQL connectivity check and exits with an explicit log message if the value is missing, still pointing at localhost, malformed, or unreachable.
+
 Run migrations during deployment:
 
 ```bash
