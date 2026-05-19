@@ -34,7 +34,7 @@ def _validate_production_startup() -> None:
         "production startup diagnostics app_env=%s debug=%s cors_origins=%s database_url=%s",
         settings.app_env,
         settings.debug,
-        settings.cors_origins,
+        settings.cors_origin_list,
         _safe_database_url(),
     )
     if not settings.database_url.strip() or "localhost" in settings.database_url or "127.0.0.1" in settings.database_url:
@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=settings.cors_origin_list,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

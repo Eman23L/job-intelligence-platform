@@ -15,8 +15,22 @@ import type {
   SourceTestResult
 } from "@/types/api";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? (process.env.NODE_ENV === "production" ? "" : "http://127.0.0.1:8000");
+const PRODUCTION_API_BASE_URL = "https://job-intelligence-ai-63rj.onrender.com";
+const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+const API_BASE_URL =
+  configuredApiBaseUrl ?? (process.env.NODE_ENV === "production" ? PRODUCTION_API_BASE_URL : "http://127.0.0.1:8000");
 const REQUEST_TIMEOUT_MS = 10000;
+
+export const apiConfig = {
+  baseUrl: API_BASE_URL,
+  envVarConfigured: Boolean(configuredApiBaseUrl),
+  fallbackUsed: !configuredApiBaseUrl,
+  nodeEnv: process.env.NODE_ENV
+};
+
+if (typeof window !== "undefined") {
+  console.info("Job Intelligence API config", apiConfig);
+}
 
 export class ApiError extends Error {
   status: number;

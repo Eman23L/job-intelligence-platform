@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +16,13 @@ class Settings(BaseSettings):
     app_env: str = Field(default="local", alias="APP_ENV")
     debug: bool = Field(default=False, alias="DEBUG")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
-    cors_origins: list[str] = Field(
-        default=[
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:3001",
-            "http://127.0.0.1:3001",
-        ],
+    cors_origins: str = Field(
+        default=(
+            "http://localhost:3000,"
+            "http://127.0.0.1:3000,"
+            "http://localhost:3001,"
+            "http://127.0.0.1:3001"
+        ),
         alias="CORS_ORIGINS",
     )
 
@@ -37,12 +38,33 @@ class Settings(BaseSettings):
             return value.replace("postgresql://", "postgresql+psycopg://", 1)
         return value
 
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, value: Any) -> list[str]:
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
+    @staticmethod
+    def _normalise_origin(value: str) -> str:
+        return value.strip().strip("\"'").rstrip("/")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        raw_value: Any = self.cors_origins
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+            if value.startswith("["):
+                try:
+                    raw_value = json.loads(value)
+                except json.JSONDecodeError:
+                    raw_value = value
+            if isinstance(raw_value, str):
+                return [
+                    origin
+                    for origin in (self._normalise_origin(item) for item in raw_value.split(","))
+                    if origin
+                ]
+        if isinstance(raw_value, list):
+            return [
+                origin
+                for origin in (self._normalise_origin(str(item)) for item in raw_value)
+                if origin
+            ]
+        return []
 
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",
