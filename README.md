@@ -160,6 +160,7 @@ Deploy the FastAPI backend to a Python-capable host such as Render, Fly.io, Rail
 Production backend environment variables:
 
 ```env
+PYTHON_VERSION=3.11.9
 APP_ENV=production
 DEBUG=false
 LOG_LEVEL=INFO
@@ -168,6 +169,14 @@ CORS_ORIGINS=https://your-vercel-app.vercel.app,https://your-custom-domain.examp
 ```
 
 `DATABASE_URL` is required in production. Startup performs a PostgreSQL connectivity check and exits with an explicit log message if the value is missing, still pointing at localhost, malformed, or unreachable.
+
+Render should log the selected Python version during build. Look for a line like:
+
+```text
+Python 3.11.9
+```
+
+If Render still logs Python 3.14, confirm the service root directory is the repository root and that the service is using the committed `render.yaml` blueprint or has `PYTHON_VERSION=3.11.9` set in the Render dashboard.
 
 Run migrations during deployment:
 
