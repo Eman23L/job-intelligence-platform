@@ -1,0 +1,68 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env*.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Python
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# Databases and local state
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.bak
+*.backup
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs and runtime files
+*.log
+*.pid
+*.seed
+
+# Generated scraper exports and temporary data
+jobserve_*.json
+jobserve_*.csv
+exports/
+tmp/
+temp/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

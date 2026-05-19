@@ -1,0 +1,319 @@
+from collections.abc import Generator
+from contextlib import contextmanager
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.db.models import Base, Job, JobAnalysis, JobScore, JobSource, RawJobSnapshot
+from app.db.session import get_db
+from app.main import app
+from app.scrapers.job_boards import JobRecord
+from app.scrapers.policies.robots import RobotsCheckResult
+from app.services import source_scraping
+from scripts.seed_data import seed_database
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@contextmanager
+def scraping_client() -> Generator[tuple[TestClient, sessionmaker], None, None]:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        seed_database(db)
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    original_session_local = source_scraping.SessionLocal
+    source_scraping.SessionLocal = TestingSession
+    try:
+        yield TestClient(app), TestingSession
+    finally:
+        source_scraping.SessionLocal = original_session_local
+        app.dependency_overrides.clear()
+
+
+def test_effective_delay_uses_default_and_rate_limit() -> None:
+    assert source_scraping.effective_delay_seconds(60, 1) == 8
+    assert source_scraping.effective_delay_seconds(2, 8) == 30
+
+
+def test_source_from_url_and_test_endpoint(monkeypatch) -> None:
+    directory_html = (FIXTURES / "generic_directory.html").read_text(encoding="utf-8")
+
+    def fake_fetch(url: str, *, delay_seconds: float = 0):
+        return source_scraping.FetchResult(url=url, status_code=200, text=directory_html)
+
+    monkeypatch.setattr(source_scraping, "fetch_url", fake_fetch)
+    monkeypatch.setattr(
+        source_scraping,
+        "check_robots_allowed",
+        lambda *args, **kwargs: RobotsCheckResult(True, "robots.txt permits this URL"),
+    )
+
+    with scraping_client() as (client, _):
+        created = client.post(
+            "/sources/from-url",
+            json={
+                "name": "Fixture Careers",
+                "base_url": "https://example.invalid/careers",
+                "source_type": "careers",
+                "permission_notes": "Reviewed and permitted.",
+                "scraping_allowed": True,
+                "rate_limit_per_minute": 10,
+                "allowed_path_patterns": ["/jobs/", "/careers/"],
+                "job_link_patterns": ["/jobs/", "/careers/"],
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["id"]
+
+        tested = client.post(f"/sources/{source_id}/test-url", json={"target_url": "https://example.invalid/careers"})
+
+        assert tested.status_code == 200
+        body = tested.json()
+        assert body["can_fetch"] is True
+        assert body["links_found_count"] == 2
+        assert body["likely_job_links_count"] == 2
+
+
+def test_scrape_now_dry_run(monkeypatch) -> None:
+    directory_html = (FIXTURES / "generic_directory.html").read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        source_scraping,
+        "fetch_url",
+        lambda url, *, delay_seconds=0: source_scraping.FetchResult(url=url, status_code=200, text=directory_html),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "check_robots_allowed",
+        lambda *args, **kwargs: RobotsCheckResult(True, "robots.txt permits this URL"),
+    )
+
+    with scraping_client() as (client, _):
+        source_id = _create_source(client)
+        response = client.post(f"/sources/{source_id}/scrape-now", json={"dry_run": True, "max_jobs": 5})
+
+        assert response.status_code == 200
+        started = response.json()
+        assert started["status"] == "started"
+        status = client.get(f"/scrape-runs/{started['scrape_run_id']}")
+        assert status.status_code == 200
+        assert status.json()["jobs_found"] == 2
+        assert status.json()["jobs_created"] == 0
+
+
+def test_jobserve_source_test_reports_hidden_job_ids(monkeypatch) -> None:
+    jobserve_html = (FIXTURES / "jobserve_search.html").read_text(encoding="utf-8")
+    search_url = "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=634D7F54BB4124FA4D7D"
+
+    monkeypatch.setattr(
+        source_scraping,
+        "fetch_url",
+        lambda url, *, delay_seconds=0: source_scraping.FetchResult(url=search_url, status_code=200, text=jobserve_html),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "check_robots_allowed",
+        lambda *args, **kwargs: RobotsCheckResult(True, "robots.txt permits this URL"),
+    )
+
+    with scraping_client() as (client, _):
+        source_id = _create_jobserve_source(client, search_url)
+        response = client.post(f"/sources/{source_id}/test-url", json={"target_url": search_url})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["links_found_count"] == 0
+        assert body["likely_job_links_count"] == 3
+        assert body["sample_job_links"] == []
+        assert body["discovered_job_ids"] == ["D8DF", "A12345", "B67890"]
+
+
+def test_jobserve_scrape_now_dry_run_counts_hidden_job_ids(monkeypatch) -> None:
+    jobserve_html = (FIXTURES / "jobserve_search.html").read_text(encoding="utf-8")
+    search_url = "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=634D7F54BB4124FA4D7D"
+
+    monkeypatch.setattr(
+        source_scraping,
+        "fetch_url",
+        lambda url, *, delay_seconds=0: source_scraping.FetchResult(url=search_url, status_code=200, text=jobserve_html),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "check_robots_allowed",
+        lambda *args, **kwargs: RobotsCheckResult(True, "robots.txt permits this URL"),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_detail_records",
+        lambda job_ids, **kwargs: (
+            [
+                JobRecord(
+                    source_job_id=job_id,
+                    title=f"Parsed {job_id}",
+                    recruiter="Fixture Recruiter",
+                    location="London",
+                    url=f"https://www.jobserve.com/job/{job_id}",
+                )
+                for job_id in job_ids
+            ],
+            [],
+        ),
+    )
+
+    with scraping_client() as (client, _):
+        source_id = _create_jobserve_source(client, search_url)
+        response = client.post(f"/sources/{source_id}/scrape-now", json={"dry_run": True, "max_jobs": 20})
+
+        assert response.status_code == 200
+        started = response.json()
+        assert started["status"] == "started"
+        status = client.get(f"/scrape-runs/{started['scrape_run_id']}")
+        assert status.status_code == 200
+        body = status.json()
+        assert body["jobs_found"] == 3
+        assert body["jobs_created"] == 0
+        assert [job["title"] for job in body["parsed_jobs"]] == ["Parsed D8DF", "Parsed A12345", "Parsed B67890"]
+
+
+def test_jobserve_scrape_now_fetches_details_and_creates_jobs(monkeypatch) -> None:
+    jobserve_html = (FIXTURES / "jobserve_search.html").read_text(encoding="utf-8")
+    search_url = "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=634D7F54BB4124FA4D7D"
+
+    monkeypatch.setattr(
+        source_scraping,
+        "fetch_url",
+        lambda url, *, delay_seconds=0: source_scraping.FetchResult(url=search_url, status_code=200, text=jobserve_html),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "check_robots_allowed",
+        lambda *args, **kwargs: RobotsCheckResult(True, "robots.txt permits this URL"),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_detail_records",
+        lambda job_ids, **kwargs: (
+            [
+                JobRecord(
+                    source_job_id=job_id,
+                    title=f"Data Engineer {job_id}",
+                    recruiter="Fixture Recruiter",
+                    location="London",
+                    salary="GBP 500 per day",
+                    employment_type="contract",
+                    description="Build data pipelines with Python and SQL.",
+                    skills=["Python", "SQL"],
+                    url=f"https://www.jobserve.com/job/{job_id}",
+                    apply_link=f"https://www.jobserve.com/apply/{job_id}",
+                    posted_date="2026-05-18",
+                )
+                for job_id in job_ids
+            ],
+            [],
+        ),
+    )
+
+    with scraping_client() as (client, TestingSession):
+        source_id = _create_jobserve_source(client, search_url)
+        response = client.post(f"/sources/{source_id}/scrape-now", json={"max_jobs": 2, "delay_seconds": 8})
+
+        assert response.status_code == 200
+        started = response.json()
+        assert started["status"] == "started"
+        status = client.get(f"/scrape-runs/{started['scrape_run_id']}")
+        assert status.status_code == 200
+        body = status.json()
+        assert body["jobs_found"] == 2
+        assert body["jobs_created"] == 2
+        assert body["jobs_updated"] == 0
+        assert body["parsed_jobs"][0]["title"].startswith("Data Engineer")
+        with TestingSession() as db:
+            jobs = db.scalars(select(Job).where(Job.source_id == source_id)).all()
+            assert len(jobs) == 2
+            assert {job.source_job_id for job in jobs} == {"D8DF", "A12345"}
+            assert all(job.canonical_url.startswith("https://www.jobserve.com/apply/") for job in jobs)
+
+
+def test_scrape_now_creates_snapshot_job_analysis_and_score(monkeypatch) -> None:
+    directory_html = (FIXTURES / "generic_directory.html").read_text(encoding="utf-8")
+    job_html = (FIXTURES / "generic_job_jsonld.html").read_text(encoding="utf-8")
+
+    def fake_fetch(url: str, *, delay_seconds: float = 0):
+        if "senior-data-engineer" in url or "data-engineer" in url:
+            return source_scraping.FetchResult(url="https://example.invalid/jobs/senior-data-engineer", status_code=200, text=job_html)
+        return source_scraping.FetchResult(url=url, status_code=200, text=directory_html)
+
+    monkeypatch.setattr(source_scraping, "fetch_url", fake_fetch)
+    monkeypatch.setattr(
+        source_scraping,
+        "check_robots_allowed",
+        lambda *args, **kwargs: RobotsCheckResult(True, "robots.txt permits this URL"),
+    )
+
+    with scraping_client() as (client, TestingSession):
+        source_id = _create_source(client)
+        response = client.post(f"/sources/{source_id}/scrape-now", json={"max_jobs": 1, "max_pages": 1, "delay_seconds": 8})
+
+        assert response.status_code == 200
+        started = response.json()
+        assert started["status"] == "started"
+        status = client.get(f"/scrape-runs/{started['scrape_run_id']}")
+        assert status.status_code == 200
+        body = status.json()
+        assert body["jobs_found"] == 1
+        assert body["jobs_created"] == 1
+        with TestingSession() as db:
+            job = db.scalar(select(Job))
+            assert job is not None
+            assert db.scalar(select(RawJobSnapshot).where(RawJobSnapshot.source_id == source_id)) is not None
+            assert db.scalar(select(JobAnalysis).where(JobAnalysis.job_id == job.id)) is not None
+            assert db.scalar(select(JobScore).where(JobScore.job_id == job.id)) is not None
+
+
+def _create_source(client: TestClient) -> int:
+    response = client.post(
+        "/sources/from-url",
+        json={
+            "name": "Fixture Careers",
+            "base_url": "https://example.invalid/careers",
+            "source_type": "careers",
+            "permission_notes": "Reviewed and permitted.",
+            "scraping_allowed": True,
+            "rate_limit_per_minute": 10,
+            "allowed_path_patterns": ["/jobs/", "/careers/"],
+            "job_link_patterns": ["/jobs/", "/careers/"],
+        },
+    )
+    return int(response.json()["id"])
+
+
+def _create_jobserve_source(client: TestClient, search_url: str) -> int:
+    response = client.post(
+        "/sources/from-url",
+        json={
+            "name": "JobServe",
+            "base_url": search_url,
+            "source_type": "careers",
+            "permission_notes": "Reviewed and permitted.",
+            "scraping_allowed": True,
+            "rate_limit_per_minute": 10,
+            "allowed_path_patterns": None,
+            "job_link_patterns": None,
+        },
+    )
+    return int(response.json()["id"])
