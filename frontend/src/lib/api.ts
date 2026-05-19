@@ -46,16 +46,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError("NEXT_PUBLIC_API_BASE_URL is required in production", 0);
   }
   const url = `${API_BASE_URL}${path}`;
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch(url, {
       ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(init?.headers ?? {})
-      },
+      headers,
       cache: "no-store",
       signal: controller.signal
     });

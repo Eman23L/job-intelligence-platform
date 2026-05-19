@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,6 +20,7 @@ from app.services import source_scraping
 from app.services import sources as source_service
 
 router = APIRouter(prefix="/sources", tags=["sources"])
+logger = logging.getLogger(__name__)
 
 
 def _get_source_or_404(db: Session, source_id: int):
@@ -29,7 +32,13 @@ def _get_source_or_404(db: Session, source_id: int):
 
 @router.get("", response_model=list[JobSourceRead])
 def list_sources(db: Session = Depends(get_db)):
-    return source_service.list_sources(db)
+    try:
+        sources = source_service.list_sources(db)
+        logger.info("sources.list completed count=%s", len(sources))
+        return sources
+    except Exception:
+        logger.exception("sources.list failed")
+        raise
 
 
 @router.post("/demo-scrape")

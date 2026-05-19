@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,7 @@ from app.schemas.database import (
 from app.services import analytics as analytics_service
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/overview", response_model=AnalyticsOverview)
@@ -36,4 +39,10 @@ def get_salary(db: Session = Depends(get_db)):
 
 @router.get("/source-health", response_model=SourceHealthAnalytics)
 def get_source_health(db: Session = Depends(get_db)):
-    return analytics_service.source_health(db)
+    try:
+        result = analytics_service.source_health(db)
+        logger.info("analytics.source_health completed count=%s", len(result.items))
+        return result
+    except Exception:
+        logger.exception("analytics.source_health failed")
+        raise
