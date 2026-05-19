@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -74,6 +74,40 @@ def test_jobs_sorting() -> None:
 
         assert response.status_code == 200
         assert response.json()["items"][0]["title"] == "Excellent Data Engineer"
+
+
+def test_jobs_list_uses_bounded_queries() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        _seed_phase6_data(db)
+
+    statements = []
+
+    def count_statement(*args):
+        statements.append(args[2])
+
+    event.listen(engine, "before_cursor_execute", count_statement)
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/jobs?page=1&page_size=2&sort=total_score_desc")
+    finally:
+        app.dependency_overrides.clear()
+        event.remove(engine, "before_cursor_execute", count_statement)
+
+    assert response.status_code == 200
+    assert response.json()["total_count"] == 4
+    assert len(statements) <= 3
 
 
 def test_job_detail_response() -> None:

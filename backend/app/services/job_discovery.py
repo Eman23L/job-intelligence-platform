@@ -1,13 +1,17 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+import logging
 from math import ceil
+from time import perf_counter
 
-from sqlalchemy import select
+from sqlalchemy import Select, asc, desc, func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobAnalysis, JobScore, JobSkill, MissingSkill, SavedJob, User
 from app.schemas.database import JobDetail, JobListItem, PaginatedJobs
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -37,21 +41,159 @@ def list_jobs(
     page_size: int = 20,
     user: User | None = None,
 ) -> PaginatedJobs:
+    started = perf_counter()
     page = max(page, 1)
     page_size = max(1, min(page_size, 100))
-    rows = [_job_row(db, job, user) for job in db.scalars(select(Job)).all()]
-    filtered = [row for row in rows if _matches_filters(row, filters)]
-    filtered.sort(key=_sort_key(sort), reverse=_sort_reverse(sort))
-    total_count = len(filtered)
+    query = _job_list_query(filters, sort, user)
+    count_query = select(func.count()).select_from(query.order_by(None).subquery())
+    total_count = db.scalar(count_query) or 0
     total_pages = ceil(total_count / page_size) if total_count else 0
-    start = (page - 1) * page_size
+    offset = (page - 1) * page_size
+    rows = db.execute(query.offset(offset).limit(page_size)).all()
+    items = [
+        JobListItem(
+            id=row.id,
+            title=row.title,
+            company_name=row.company_name,
+            location=row.location,
+            remote_type=row.remote_type,
+            salary_min=row.salary_min,
+            salary_max=row.salary_max,
+            salary_currency=row.salary_currency,
+            salary_min_raw=row.salary_min_raw,
+            salary_max_raw=row.salary_max_raw,
+            salary_period=row.salary_period,
+            normalized_annual_min=row.normalized_annual_min,
+            normalized_annual_max=row.normalized_annual_max,
+            posted_at=row.posted_at,
+            role_family=row.role_family,
+            recommendation_tier=row.recommendation_tier,
+            total_score=row.total_score,
+            matched_skills_count=max(0, int(row.skills_count or 0) - int(row.missing_skills_count or 0)),
+            missing_skills_count=int(row.missing_skills_count or 0),
+        )
+        for row in rows
+    ]
+    elapsed_ms = int((perf_counter() - started) * 1000)
+    logger.info(
+        "jobs.list completed total=%s returned=%s page=%s page_size=%s sort=%s elapsed_ms=%s",
+        total_count,
+        len(items),
+        page,
+        page_size,
+        sort,
+        elapsed_ms,
+    )
     return PaginatedJobs(
-        items=[row["item"] for row in filtered[start : start + page_size]],
+        items=items,
         page=page,
         page_size=page_size,
         total_count=total_count,
         total_pages=total_pages,
     )
+
+
+def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select:
+    skills_count = (
+        select(JobSkill.job_id.label("job_id"), func.count(JobSkill.id).label("skills_count"))
+        .group_by(JobSkill.job_id)
+        .subquery()
+    )
+    missing_query = select(
+        MissingSkill.job_id.label("job_id"),
+        func.count(MissingSkill.id).label("missing_skills_count"),
+    )
+    if user is not None:
+        missing_query = missing_query.where(MissingSkill.user_id == user.id)
+    missing_count = missing_query.group_by(MissingSkill.job_id).subquery()
+
+    score_query = select(
+        JobScore.job_id.label("job_id"),
+        JobScore.total_score.label("total_score"),
+        JobScore.recommendation_tier.label("recommendation_tier"),
+        JobScore.scored_at.label("scored_at"),
+    )
+    if user is not None:
+        score_query = score_query.where(JobScore.user_id == user.id)
+    score_subquery = score_query.subquery()
+
+    query = (
+        select(
+            Job.id,
+            Job.title,
+            Job.company_name,
+            Job.location,
+            Job.remote_type,
+            Job.salary_min,
+            Job.salary_max,
+            Job.salary_currency,
+            Job.salary_min_raw,
+            Job.salary_max_raw,
+            Job.salary_period,
+            Job.normalized_annual_min,
+            Job.normalized_annual_max,
+            Job.posted_at,
+            JobAnalysis.role_family,
+            score_subquery.c.recommendation_tier,
+            score_subquery.c.total_score,
+            func.coalesce(skills_count.c.skills_count, 0).label("skills_count"),
+            func.coalesce(missing_count.c.missing_skills_count, 0).label("missing_skills_count"),
+        )
+        .select_from(Job)
+        .outerjoin(JobAnalysis, JobAnalysis.job_id == Job.id)
+        .outerjoin(score_subquery, score_subquery.c.job_id == Job.id)
+        .outerjoin(skills_count, skills_count.c.job_id == Job.id)
+        .outerjoin(missing_count, missing_count.c.job_id == Job.id)
+    )
+
+    if filters.role_family is not None:
+        query = query.where(JobAnalysis.role_family == filters.role_family)
+    if filters.recommendation_tier is not None:
+        query = query.where(score_subquery.c.recommendation_tier == filters.recommendation_tier)
+    if filters.remote_type is not None:
+        query = query.where(Job.remote_type == filters.remote_type)
+    if filters.location is not None:
+        query = query.where(Job.location.ilike(f"%{filters.location}%"))
+    if filters.company_name is not None:
+        query = query.where(Job.company_name.ilike(f"%{filters.company_name}%"))
+    if filters.salary_min is not None:
+        query = query.where(Job.normalized_annual_max.is_not(None), Job.normalized_annual_max >= filters.salary_min)
+    if filters.salary_max is not None:
+        query = query.where(Job.normalized_annual_min.is_not(None), Job.normalized_annual_min <= filters.salary_max)
+    if filters.posted_after is not None:
+        query = query.where(Job.posted_at.is_not(None), Job.posted_at >= filters.posted_after)
+    if filters.posted_before is not None:
+        query = query.where(Job.posted_at.is_not(None), Job.posted_at <= filters.posted_before)
+    if filters.min_score is not None:
+        query = query.where(score_subquery.c.total_score.is_not(None), score_subquery.c.total_score >= filters.min_score)
+    if filters.max_score is not None:
+        query = query.where(score_subquery.c.total_score.is_not(None), score_subquery.c.total_score <= filters.max_score)
+    if filters.has_missing_skills is True:
+        query = query.where(func.coalesce(missing_count.c.missing_skills_count, 0) > 0)
+    elif filters.has_missing_skills is False:
+        query = query.where(func.coalesce(missing_count.c.missing_skills_count, 0) == 0)
+    if filters.exclude_excluded:
+        query = query.where(
+            (score_subquery.c.recommendation_tier.is_(None)) | (score_subquery.c.recommendation_tier != "excluded")
+        )
+    if filters.status is not None:
+        query = query.where(Job.status == filters.status)
+
+    return query.order_by(*_sort_expressions(sort, score_subquery))
+
+
+def _sort_expressions(sort: str, score_subquery) -> tuple:
+    if sort == "posted_at_desc":
+        return (desc(Job.posted_at), desc(Job.id))
+    if sort == "salary_max_desc":
+        return (desc(Job.normalized_annual_max), desc(Job.id))
+    if sort == "salary_min_desc":
+        return (desc(Job.normalized_annual_min), desc(Job.id))
+    if sort == "company_name_asc":
+        return (asc(Job.company_name), asc(Job.id))
+    if sort == "title_asc":
+        return (asc(Job.title), asc(Job.id))
+    return (desc(score_subquery.c.total_score), desc(Job.id))
 
 
 def job_detail(db: Session, job: Job, user: User | None = None) -> JobDetail:

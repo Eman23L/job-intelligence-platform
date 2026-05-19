@@ -1,5 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
+import logging
+from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -14,6 +16,7 @@ from app.services.saved_jobs import set_saved_job_status
 from app.services.scoring import score_all_jobs, score_job
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+logger = logging.getLogger(__name__)
 
 
 def _get_job_or_404(db: Session, job_id: int) -> Job:
@@ -67,7 +70,15 @@ def get_jobs(
         exclude_excluded=exclude_excluded,
         status=status,
     )
-    return list_jobs(db, filters, sort=sort, page=page, page_size=page_size)
+    started = perf_counter()
+    try:
+        return list_jobs(db, filters, sort=sort, page=page, page_size=page_size)
+    except Exception:
+        logger.exception("jobs.list failed page=%s page_size=%s sort=%s", page, page_size, sort)
+        raise
+    finally:
+        elapsed_ms = int((perf_counter() - started) * 1000)
+        logger.info("jobs.list request finished page=%s page_size=%s sort=%s elapsed_ms=%s", page, page_size, sort, elapsed_ms)
 
 
 @router.get("/{job_id}", response_model=JobDetail)
