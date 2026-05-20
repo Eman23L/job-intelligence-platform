@@ -2,6 +2,8 @@ import type {
   AIChatResponse,
   AnalyticsOverview,
   JobDetail,
+  JobScorecard,
+  JobsRescoreResult,
   PaginatedJobs,
   RoleFitAnalytics,
   SalaryAnalytics,
@@ -97,6 +99,8 @@ export const api = {
   overview: () => request<AnalyticsOverview>("/analytics/overview"),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
+  rescoreJobs: () => request<JobsRescoreResult>("/jobs/rescore", { method: "POST" }),
+  jobScorecard: (id: string | number) => request<JobScorecard>(`/jobs/${id}/scorecard`),
   deleteJob: (id: string | number) => request<{ affected: number; job_ids: number[] }>(`/jobs/${id}`, { method: "DELETE" }),
   bulkDeleteJobs: (jobIds: number[]) =>
     request<{ affected: number; job_ids: number[] }>("/jobs/bulk-delete", {

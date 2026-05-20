@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { JobListItem } from "@/types/api";
+import { RecommendationActionBadge } from "@/components/RecommendationActionBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { formatDate, formatSalary, formatSalaryPeriod } from "@/lib/format";
@@ -10,7 +11,8 @@ export function JobsTable({
   onToggle,
   onToggleAll,
   onDelete,
-  onExclude
+  onExclude,
+  onScorecard
 }: {
   jobs: JobListItem[];
   selectedIds: Set<number>;
@@ -18,6 +20,7 @@ export function JobsTable({
   onToggleAll: (checked: boolean) => void;
   onDelete: (jobId: number) => void;
   onExclude: (jobId: number) => void;
+  onScorecard: (jobId: number) => void;
 }) {
   const allSelected = jobs.length > 0 && jobs.every((job) => selectedIds.has(job.id));
 
@@ -80,7 +83,9 @@ export function JobsTable({
               <td>
                 <RecommendationBadge tier={job.recommendation_tier} />
               </td>
-              <td>{job.recommendation ?? "Not scored"}</td>
+              <td>
+                <RecommendationActionBadge recommendation={job.recommendation} />
+              </td>
               <td>
                 <ScoreBadge score={job.total_score} />
               </td>
@@ -91,6 +96,9 @@ export function JobsTable({
               </td>
               <td>
                 <div className="row-actions">
+                  <button type="button" className="secondary-button compact-button" onClick={() => onScorecard(job.id)}>
+                    Scorecard
+                  </button>
                   <button type="button" className="secondary-button compact-button" onClick={() => onExclude(job.id)}>
                     Exclude
                   </button>

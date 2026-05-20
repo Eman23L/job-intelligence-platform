@@ -7,8 +7,8 @@ import { FiltersBar, type JobFiltersState } from "@/components/FiltersBar";
 import { JobsTable } from "@/components/JobsTable";
 import { LoadingState } from "@/components/LoadingState";
 import { PaginationControls } from "@/components/PaginationControls";
-import { api } from "@/lib/api";
-import type { PaginatedJobs } from "@/types/api";
+import { ApiError, api } from "@/lib/api";
+import type { JobScorecard, PaginatedJobs } from "@/types/api";
 
 const initialFilters: JobFiltersState = {
   role_family: "",
@@ -28,8 +28,12 @@ export default function JobsPage() {
   const [data, setData] = useState<PaginatedJobs | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [rescoring, setRescoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ type: "info" | "success" | "warning" | "error"; message: string } | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
+  const [scorecardLoading, setScorecardLoading] = useState(false);
 
   const params = useMemo(() => {
     const next = new URLSearchParams();
@@ -101,6 +105,47 @@ export default function JobsPage() {
     void runAction(() => api.bulkExcludeJobs(jobIds));
   };
 
+  const rescoreJobs = async () => {
+    if (rescoring) {
+      return;
+    }
+    setRescoring(true);
+    setNotice({ type: "info", message: "Rescoring jobs..." });
+    setError(null);
+    try {
+      await api.rescoreJobs();
+      await refresh();
+      setNotice({ type: "success", message: "Jobs rescored successfully" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Rescoring jobs failed";
+      if (err instanceof ApiError && err.status === 400 && message.toLowerCase().includes("profile")) {
+        setNotice({ type: "warning", message: "Upload and save your profile before scoring jobs." });
+      } else {
+        setNotice({ type: "error", message });
+      }
+    } finally {
+      setRescoring(false);
+    }
+  };
+
+  const openScorecard = async (jobId: number) => {
+    setScorecardLoading(true);
+    setScorecard(null);
+    setNotice(null);
+    try {
+      setScorecard(await api.jobScorecard(jobId));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to load scorecard";
+      if (err instanceof ApiError && err.status === 400 && message.toLowerCase().includes("profile")) {
+        setNotice({ type: "warning", message: "Upload and save your profile before scoring jobs." });
+      } else {
+        setNotice({ type: "error", message });
+      }
+    } finally {
+      setScorecardLoading(false);
+    }
+  };
+
   return (
     <div className="page-stack">
       <FiltersBar
@@ -114,6 +159,13 @@ export default function JobsPage() {
           setPage(1);
         }}
       />
+      <div className="action-row">
+        <button type="button" className="primary-button" disabled={rescoring} onClick={() => void rescoreJobs()}>
+          {rescoring ? <span className="spinner" aria-hidden="true" /> : null}
+          {rescoring ? "Rescoring..." : "Rescore jobs"}
+        </button>
+      </div>
+      {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
       {error ? <ErrorState message={error} /> : null}
       {loading ? <LoadingState label="Loading jobs" /> : null}
       {!loading && !error && data?.items.length === 0 ? (
@@ -163,10 +215,89 @@ export default function JobsPage() {
             }}
             onDelete={(jobId) => deleteJobs([jobId])}
             onExclude={(jobId) => excludeJobs([jobId])}
+            onScorecard={(jobId) => void openScorecard(jobId)}
           />
           <PaginationControls page={data.page} totalPages={data.total_pages} onPageChange={setPage} />
         </section>
       ) : null}
+      {scorecardLoading ? (
+        <div className="modal-backdrop">
+          <div className="modal-panel scorecard-modal">
+            <LoadingState label="Loading scorecard" />
+          </div>
+        </div>
+      ) : null}
+      {scorecard ? <ScorecardModal scorecard={scorecard} onClose={() => setScorecard(null)} /> : null}
     </div>
+  );
+}
+
+function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-panel scorecard-modal">
+        <div className="modal-header">
+          <div>
+            <h2>Scorecard</h2>
+            <p className="muted-text">{scorecard.why}</p>
+          </div>
+          <button type="button" className="secondary-button compact-button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="scorecard-summary">
+          <div>
+            <span className="muted-text">Score</span>
+            <strong>{Math.round(Number(scorecard.total_score))}</strong>
+          </div>
+          <div>
+            <span className="muted-text">Tier</span>
+            <strong>{scorecard.tier}</strong>
+          </div>
+          <div>
+            <span className="muted-text">Recommendation</span>
+            <strong>{scorecard.recommendation}</strong>
+          </div>
+          <div>
+            <span className="muted-text">Confidence</span>
+            <strong>{Math.round(Number(scorecard.confidence_score))}</strong>
+          </div>
+        </div>
+        <div className="scorecard-grid">
+          <ScorecardList title="Matched skills" items={scorecard.matched_skills} />
+          <ScorecardList title="Missing skills" items={scorecard.missing_skills} />
+          <ScorecardList title="Risks" items={[...scorecard.gates, ...scorecard.risks]} />
+          <ScorecardList title="Evidence" items={scorecard.matched_evidence} />
+        </div>
+        <section className="scorecard-section">
+          <h3>Score breakdown</h3>
+          <div className="breakdown-list">
+            {Object.entries(scorecard.score_breakdown).map(([label, value]) => (
+              <div key={label} className="breakdown-row">
+                <span>{label.replaceAll("_", " ")}</span>
+                <strong>{Number(value).toFixed(2)}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function ScorecardList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <section className="scorecard-section">
+      <h3>{title}</h3>
+      {items.length > 0 ? (
+        <ul>
+          {items.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted-text">None</p>
+      )}
+    </section>
   );
 }

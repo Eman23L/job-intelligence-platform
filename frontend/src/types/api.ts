@@ -90,6 +90,26 @@ export interface JobScore {
   scored_at: string;
 }
 
+export interface JobScorecard {
+  job_id: number;
+  total_score: number | string;
+  tier: string;
+  recommendation: "apply" | "maybe" | "skip" | string;
+  confidence_score: number | string;
+  score_breakdown: Record<string, number | string>;
+  matched_skills: string[];
+  missing_skills: string[];
+  matched_evidence: string[];
+  risks: string[];
+  gates: string[];
+  why: string;
+}
+
+export interface JobsRescoreResult {
+  jobs_scored: number;
+  jobs_skipped: number;
+}
+
 export interface JobSkill {
   id: number;
   job_id: number;
