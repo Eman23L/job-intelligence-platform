@@ -23,6 +23,7 @@ from app.scrapers.job_boards import JobRecord
 from app.scrapers.jobserve import JobServeAdapter, JobServeSourceAdapter, is_jobserve_search_page
 from app.scrapers.utils.hashing import content_hash
 from app.services.analysis import analyse_job
+from app.services.job_validation import validate_normalised_job
 from app.services.link_discovery import discover_links
 from app.services.normalisation import normalise_job_fields
 from app.services.scoring import score_job
@@ -296,6 +297,17 @@ def execute_scrape_source_now(
             for record in records:
                 try:
                     normalised = _normalise_jobserve_record(source, record)
+                    validation = validate_normalised_job(normalised, source_name=source.name)
+                    if not validation.is_valid:
+                        skipped += 1
+                        message = _rejection_message("JobServe", normalised, validation.reasons)
+                        warnings.append(message)
+                        LOGGER.info(message)
+                        if run:
+                            run.jobs_skipped = skipped
+                            run.errors = errors
+                            db.commit()
+                        continue
                     snapshot = RawJobSnapshot(
                         source_id=source.id,
                         source_job_id=normalised["source_job_id"],
@@ -359,6 +371,19 @@ def execute_scrape_source_now(
                     skipped += 1
                     errors.append(f"{url}: HTTP {fetched.status_code}")
                     continue
+                parsed = adapter.parse_job_detail(fetched.text, fetched.url)
+                normalised = adapter.normalise(parsed, fetched.url)
+                validation = validate_normalised_job(normalised, source_name=source.name)
+                if not validation.is_valid:
+                    skipped += 1
+                    message = _rejection_message("generic", normalised, validation.reasons)
+                    warnings.append(message)
+                    LOGGER.info(message)
+                    if run:
+                        run.jobs_skipped = skipped
+                        run.errors = errors
+                        db.commit()
+                    continue
                 raw_text = extract_text(fetched.text)
                 raw_hash = content_hash(fetched.text)
                 snapshot = RawJobSnapshot(
@@ -372,8 +397,6 @@ def execute_scrape_source_now(
                 )
                 db.add(snapshot)
                 db.flush()
-                parsed = adapter.parse_job_detail(fetched.text, fetched.url)
-                normalised = adapter.normalise(parsed, fetched.url)
                 snapshot.source_job_id = normalised["source_job_id"]
                 was_created = _upsert_job(db, source, normalised)
                 if was_created:
@@ -583,6 +606,13 @@ def _job_record_summary(record: JobRecord) -> dict[str, str | None]:
         "location": record.location,
         "canonical_url": record.url,
     }
+
+
+def _rejection_message(source_kind: str, item: dict[str, Any], reasons: list[str]) -> str:
+    return (
+        f"Rejected {source_kind} candidate source_job_id={item.get('source_job_id')} "
+        f"title={item.get('title')!r} url={item.get('canonical_url')} reasons={'; '.join(reasons)}"
+    )
 
 
 def _upsert_job(db: Session, source: JobSource, item: dict) -> bool:

@@ -249,6 +249,71 @@ def test_jobserve_scrape_now_fetches_details_and_creates_jobs(monkeypatch) -> No
             assert all(job.canonical_url.startswith("https://www.jobserve.com/apply/") for job in jobs)
 
 
+def test_jobserve_scrape_now_rejects_non_job_detail_records(monkeypatch) -> None:
+    jobserve_html = (FIXTURES / "jobserve_search.html").read_text(encoding="utf-8")
+    search_url = "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=634D7F54BB4124FA4D7D"
+
+    monkeypatch.setattr(
+        source_scraping,
+        "fetch_url",
+        lambda url, *, delay_seconds=0: source_scraping.FetchResult(url=search_url, status_code=200, text=jobserve_html),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "check_robots_allowed",
+        lambda *args, **kwargs: RobotsCheckResult(True, "robots.txt permits this URL"),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_detail_records",
+        lambda job_ids, **kwargs: (
+            [
+                JobRecord(
+                    source_job_id="D8DF",
+                    title="Website Cookie Policy",
+                    recruiter=None,
+                    location=None,
+                    salary=None,
+                    employment_type=None,
+                    description="Cookie settings and browser information.",
+                    skills=[],
+                    url="https://www.jobserve.com/cookie-policy",
+                    apply_link=None,
+                    posted_date=None,
+                ),
+                JobRecord(
+                    source_job_id="A12345",
+                    title="Data Engineer A12345",
+                    recruiter="Fixture Recruiter",
+                    location="London",
+                    salary="GBP 500 per day",
+                    employment_type="contract",
+                    description="Build data pipelines with Python and SQL.",
+                    skills=["Python", "SQL"],
+                    url="https://www.jobserve.com/job/A12345",
+                    apply_link="https://www.jobserve.com/apply/A12345",
+                    posted_date="2026-05-18",
+                ),
+            ],
+            [],
+        ),
+    )
+
+    with scraping_client() as (client, TestingSession):
+        source_id = _create_jobserve_source(client, search_url)
+        response = client.post(f"/sources/{source_id}/scrape-now", json={"max_jobs": 2, "delay_seconds": 8})
+
+        assert response.status_code == 200
+        started = response.json()
+        status = client.get(f"/scrape-runs/{started['scrape_run_id']}")
+        body = status.json()
+        assert body["jobs_created"] == 1
+        assert body["jobs_skipped"] == 1
+        with TestingSession() as db:
+            jobs = db.scalars(select(Job).where(Job.source_id == source_id)).all()
+            assert [job.source_job_id for job in jobs] == ["A12345"]
+
+
 def test_scrape_now_creates_snapshot_job_analysis_and_score(monkeypatch) -> None:
     directory_html = (FIXTURES / "generic_directory.html").read_text(encoding="utf-8")
     job_html = (FIXTURES / "generic_job_jsonld.html").read_text(encoding="utf-8")
