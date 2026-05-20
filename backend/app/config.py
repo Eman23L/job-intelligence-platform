@@ -31,6 +31,11 @@ class Settings(BaseSettings):
         default="postgresql+psycopg://postgres:postgres@localhost:5432/job_intelligence",
         alias="DATABASE_URL",
     )
+    ai_provider: str = Field(default="groq", alias="AI_PROVIDER")
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    ai_model: str = Field(default="llama-3.1-8b-instant", alias="AI_MODEL")
+    ai_timeout_seconds: float = Field(default=30.0, alias="AI_TIMEOUT_SECONDS")
+    ai_max_retries: int = Field(default=2, alias="AI_MAX_RETRIES")
 
     @field_validator("database_url", mode="before")
     @classmethod

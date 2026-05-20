@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from app.api.ai import router as ai_router
 from app.api.analytics import router as analytics_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(scrape_runs_router)
     app.include_router(saved_jobs_router)
     app.include_router(analytics_router)
+    app.include_router(ai_router)
     return app
 
 

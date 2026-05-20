@@ -27,3 +27,11 @@ def test_default_cors_origins_include_deployed_frontend() -> None:
     settings = Settings(_env_file=None)
 
     assert "https://job-intelligence-platform-drab.vercel.app" in settings.cors_origin_list
+
+
+def test_ai_provider_defaults_to_groq() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.ai_provider == "groq"
+    assert settings.ai_model == "llama-3.1-8b-instant"
+    assert settings.groq_api_key == ""
