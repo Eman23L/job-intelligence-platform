@@ -12,7 +12,8 @@ import type {
   Source,
   SourceFromUrlPayload,
   SourceHealthAnalytics,
-  SourceTestResult
+  SourceTestResult,
+  UserProfile
 } from "@/types/api";
 
 const PRODUCTION_API_BASE_URL = "https://job-intelligence-ai-63rj.onrender.com";
@@ -126,5 +127,8 @@ export const api = {
     }),
   scrapeSourceNow: (id: number, body: ScrapeNowPayload) =>
     request<ScrapeStartResult>(`/sources/${id}/scrape-now`, { method: "POST", body: JSON.stringify(body) }),
-  scrapeRun: (id: number) => request<ScrapeRunStatus>(`/scrape-runs/${id}`)
+  scrapeRun: (id: number) => request<ScrapeRunStatus>(`/scrape-runs/${id}`),
+  profile: () => request<UserProfile | null>("/profile"),
+  saveProfileCv: (cvText: string) =>
+    request<UserProfile>("/profile/cv", { method: "POST", body: JSON.stringify({ cv_text: cvText }) })
 };

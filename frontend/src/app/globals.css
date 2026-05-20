@@ -363,6 +363,37 @@ textarea {
   width: 100%;
 }
 
+.profile-form {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.cv-textarea {
+  line-height: 1.5;
+  min-height: 340px;
+  resize: vertical;
+}
+
+.profile-summary-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.profile-block {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.65rem;
+  padding-top: 0.85rem;
+}
+
+.profile-list {
+  color: #d5dee7;
+  line-height: 1.5;
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
 input:focus,
 select:focus,
 textarea:focus {

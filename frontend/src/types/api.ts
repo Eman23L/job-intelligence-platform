@@ -128,6 +128,23 @@ export interface SavedJob {
   job?: JobListItem | null;
 }
 
+export interface UserProfile {
+  id: number;
+  user_id: number;
+  cv_text: string;
+  skills: string[];
+  experience: string[];
+  projects: string[];
+  education: string[];
+  preferred_roles: string[];
+  location_preference: string | null;
+  remote_preference: string | null;
+  salary_min_preference: string | null;
+  salary_max_preference: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SkillGapItem {
   skill_name: string;
   count: number;

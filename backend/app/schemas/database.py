@@ -53,6 +53,27 @@ class TargetRoleRead(TargetRoleBase, ORMModel):
     id: int
 
 
+class CVProfileCreate(BaseModel):
+    cv_text: str = Field(min_length=1)
+
+
+class UserProfileRead(ORMModel):
+    id: int
+    user_id: int
+    cv_text: str
+    skills: list[str]
+    experience: list[str]
+    projects: list[str]
+    education: list[str]
+    preferred_roles: list[str]
+    location_preference: str | None = None
+    remote_preference: str | None = None
+    salary_min_preference: Decimal | None = None
+    salary_max_preference: Decimal | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ExcludedTechnologyBase(BaseModel):
     name: str
     reason: str | None = None

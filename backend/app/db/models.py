@@ -30,6 +30,7 @@ class User(Base):
 
     skills: Mapped[list["UserSkill"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     target_roles: Mapped[list["TargetRole"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    profile: Mapped["UserProfile | None"] = relationship(back_populates="user", cascade="all, delete-orphan")
     job_scores: Mapped[list["JobScore"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     missing_skills: Mapped[list["MissingSkill"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     saved_jobs: Mapped[list["SavedJob"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -62,6 +63,32 @@ class TargetRole(Base):
     user: Mapped[User] = relationship(back_populates="target_roles")
 
     __table_args__ = (UniqueConstraint("user_id", "role_title", name="uq_target_roles_user_role"),)
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    cv_text: Mapped[str] = mapped_column(Text, nullable=False)
+    skills: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    experience: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    projects: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    education: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    preferred_roles: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]", nullable=False)
+    location_preference: Mapped[str | None] = mapped_column(String(255))
+    remote_preference: Mapped[str | None] = mapped_column(String(80))
+    salary_min_preference: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    salary_max_preference: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped[User] = relationship(back_populates="profile")
 
 
 class ExcludedTechnology(Base):
