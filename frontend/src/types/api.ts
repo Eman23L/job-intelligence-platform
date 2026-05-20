@@ -32,6 +32,7 @@ export interface JobListItem {
   role_family: string | null;
   recommendation_tier: string | null;
   total_score: string | null;
+  recommendation: string | null;
   matched_skills_count: number;
   missing_skills_count: number;
   status: string;

@@ -15,6 +15,7 @@ from app.schemas.database import (
     JobDetail,
     JobIdsRequest,
     JobScoreRead,
+    JobScorecard,
     JobSkillRead,
     PaginatedJobs,
     SavedJobRead,
@@ -22,6 +23,7 @@ from app.schemas.database import (
 from app.services.analysis import analyse_all_jobs, analyse_job
 from app.services.job_cleanup import delete_job, delete_jobs, exclude_jobs
 from app.services.job_discovery import JobFilters, job_detail, list_jobs
+from app.services.job_scoring import rescore_jobs, scorecard_for_job
 from app.services.saved_jobs import set_saved_job_status
 from app.services.scoring import score_all_jobs, score_job
 
@@ -103,6 +105,14 @@ def bulk_exclude_jobs(payload: JobIdsRequest, db: Session = Depends(get_db)):
     return BulkJobActionResult(affected=len(excluded_ids), job_ids=excluded_ids)
 
 
+@router.post("/rescore")
+def rescore_all_jobs(db: Session = Depends(get_db)):
+    try:
+        return rescore_jobs(db, _default_user(db))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 @router.get("/{job_id}", response_model=JobDetail)
 def get_job_detail(job_id: int, db: Session = Depends(get_db)):
     return job_detail(db, _get_job_or_404(db, job_id))
@@ -165,6 +175,15 @@ def get_job_score(job_id: int, db: Session = Depends(get_db)):
     if score is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job score not found")
     return score
+
+
+@router.get("/{job_id}/scorecard", response_model=JobScorecard)
+def get_job_scorecard(job_id: int, db: Session = Depends(get_db)):
+    job = _get_job_or_404(db, job_id)
+    try:
+        return scorecard_for_job(db, job)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/{job_id}/save", response_model=SavedJobRead)

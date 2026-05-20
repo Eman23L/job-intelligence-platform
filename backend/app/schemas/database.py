@@ -306,6 +306,7 @@ class JobListItem(BaseModel):
     role_family: str | None = None
     recommendation_tier: str | None = None
     total_score: Decimal | None = None
+    recommendation: str | None = None
     matched_skills_count: int
     missing_skills_count: int
     status: str
@@ -392,6 +393,21 @@ class JobScoreCreate(JobScoreBase):
 class JobScoreRead(JobScoreBase, ORMModel):
     id: int
     scored_at: datetime
+
+
+class JobScorecard(BaseModel):
+    job_id: int
+    total_score: Decimal | float
+    tier: str
+    recommendation: str
+    confidence_score: Decimal | float
+    score_breakdown: dict[str, Decimal | float]
+    matched_skills: list[str]
+    missing_skills: list[str]
+    matched_evidence: list[str]
+    risks: list[str]
+    gates: list[str]
+    why: str
 
 
 class MissingSkillBase(BaseModel):

@@ -42,6 +42,7 @@ export function JobsTable({
             <th>Posted</th>
             <th>Role family</th>
             <th>Tier</th>
+            <th>Recommendation</th>
             <th>Score</th>
             <th>Skills</th>
             <th>Actions</th>
@@ -79,6 +80,7 @@ export function JobsTable({
               <td>
                 <RecommendationBadge tier={job.recommendation_tier} />
               </td>
+              <td>{job.recommendation ?? "Not scored"}</td>
               <td>
                 <ScoreBadge score={job.total_score} />
               </td>

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobAnalysis, JobScore, JobSkill, MissingSkill, SavedJob, User
 from app.schemas.database import JobDetail, JobListItem, PaginatedJobs
+from app.services.job_scoring import recommendation_from_score
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ def list_jobs(
             role_family=row.role_family,
             recommendation_tier=row.recommendation_tier,
             total_score=row.total_score,
+            recommendation=_recommendation_from_explanation(row.explanation),
             matched_skills_count=max(0, int(row.skills_count or 0) - int(row.missing_skills_count or 0)),
             missing_skills_count=int(row.missing_skills_count or 0),
             status=row.status,
@@ -113,6 +115,7 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select
         JobScore.total_score.label("total_score"),
         JobScore.recommendation_tier.label("recommendation_tier"),
         JobScore.scored_at.label("scored_at"),
+        JobScore.explanation.label("explanation"),
     )
     if user is not None:
         score_query = score_query.where(JobScore.user_id == user.id)
@@ -138,6 +141,7 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select
             JobAnalysis.role_family,
             score_subquery.c.recommendation_tier,
             score_subquery.c.total_score,
+            score_subquery.c.explanation,
             func.coalesce(skills_count.c.skills_count, 0).label("skills_count"),
             func.coalesce(missing_count.c.missing_skills_count, 0).label("missing_skills_count"),
         )
@@ -241,6 +245,7 @@ def _job_row(db: Session, job: Job, user: User | None) -> dict:
         role_family=analysis.role_family if analysis else None,
         recommendation_tier=score.recommendation_tier if score else None,
         total_score=score.total_score if score else None,
+        recommendation=recommendation_from_score(score),
         matched_skills_count=max(0, skills_count - missing_count),
         missing_skills_count=missing_count,
         status=job.status,
@@ -314,3 +319,16 @@ def _saved_for_job(db: Session, job_id: int, user: User | None) -> SavedJob | No
     if user is not None:
         query = query.where(SavedJob.user_id == user.id)
     return db.scalar(query)
+
+
+def _recommendation_from_explanation(value: str | None) -> str | None:
+    if not value:
+        return None
+    import json
+
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    recommendation = payload.get("recommendation")
+    return recommendation if isinstance(recommendation, str) else None
