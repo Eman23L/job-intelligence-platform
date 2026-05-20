@@ -152,6 +152,12 @@ export interface UserProfile {
   updated_at: string;
 }
 
+export interface AIChatResponse {
+  provider: string;
+  model: string;
+  response: string;
+}
+
 export interface SkillGapItem {
   skill_name: string;
   count: number;

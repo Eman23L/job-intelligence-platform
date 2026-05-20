@@ -8,6 +8,7 @@ import { Sidebar } from "@/components/Sidebar";
 const titles: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/jobs": "Jobs",
+  "/ai": "AI Advisor",
   "/profile": "Profile",
   "/saved": "Saved jobs",
   "/missing-skills": "Missing skills",

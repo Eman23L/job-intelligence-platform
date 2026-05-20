@@ -1,4 +1,5 @@
 import type {
+  AIChatResponse,
   AnalyticsOverview,
   JobDetail,
   PaginatedJobs,
@@ -130,5 +131,7 @@ export const api = {
   scrapeRun: (id: number) => request<ScrapeRunStatus>(`/scrape-runs/${id}`),
   profile: () => request<UserProfile | null>("/profile"),
   saveProfileCv: (cvText: string) =>
-    request<UserProfile>("/profile/cv", { method: "POST", body: JSON.stringify({ cv_text: cvText }) })
+    request<UserProfile>("/profile/cv", { method: "POST", body: JSON.stringify({ cv_text: cvText }) }),
+  aiChat: (message: string) =>
+    request<AIChatResponse>("/ai/chat", { method: "POST", body: JSON.stringify({ message }) })
 };
