@@ -36,45 +36,51 @@ Salary: GBP 65000 - GBP 85000
 """
 
 EMMANUEL_CV_SAMPLE = """
-Emmanuel Example
-LinkedIn: https://linkedin.com/in/emmanuel-example
-LinkedIn: https://linkedin.com/in/emmanuel-example
-Page 1 of 3
+Emmanuel Bamgbala
+Milton Keynes, Broughton, United Kingdom
+Email: emmanuel@example.com
+Phone: 07123 456789
+Portfolio: https://example.com
+LinkedIn: https://linkedin.com/in/emmanuel-bamgbala
+AtkinsRealis - Baseline / Reference
+Page 1 of 5
 
 CAREER SUMMARY
-Delivery focused Business Analyst and Service Designer with experience across public sector transformation.
+Technologist building automation, reporting and data products. Does not require sponsorship.
 
 SKILLS
-Business Analysis, Service Design, Stakeholder Management, Agile, Project Management
+Python, JavaScript, TypeScript, SQL, React, Next.js, Tailwind CSS
+Power BI, Power Apps, Power Automate, Power Query, Excel, SharePoint
+BeautifulSoup, Requests, JSON, Cloudflare, Supabase, Linux, WSL, Bash, YAML, Git
+Data Pipelines, Web Scraping, Workflow Automation, Dashboard Reporting, Systems Integration, Role-Based Access Control, Data Modelling, Automation, AI
 
 EDUCATION
+Emmanuel Bamgbala
+Digital and Technological Solutions
 University of Roehampton
-BA (Hons) Business Management
+2:1
+United Kingdom
+LinkedIn: https://linkedin.com/in/emmanuel-bamgbala
+AtkinsRealis - Baseline / Reference
 
 PROFESSIONAL EXPERIENCE
-Senior Business Analyst - London Borough Council
-- Led discovery workshops and mapped current-state services for a resident support programme.
-- Delivered project work across case management, reporting and digital service redesign.
-
-MANAGEMENT EXPERIENCE
-Project Manager - Transformation Portfolio
-- Coordinated multidisciplinary teams and managed delivery risks.
-
-DESIGN EXPERIENCE
-Service Designer - Customer Experience Programme
-- Created journey maps, prototypes and service blueprints.
+Software Engineer - Portfolio Projects
+- Project: GetFlow - Contributions Management Platform - Built role-based contribution workflows with Supabase and Cloudflare.
+- Project: UK Homelessness Support Data Pipeline - Built Python data pipelines using BeautifulSoup, Requests and JSON.
+- Project: Self-Hosted Remote Development Environment - Built Linux, WSL, Bash and YAML automation.
 
 PROJECTS
-Resident Portal Redesign - redesigned online application journeys and reduced avoidable contact.
-Case Management Automation - delivered workflow automation and reporting dashboards.
-
-CERTIFICATIONS
-Agile Foundation
+Project: Opportunity DecisionAI - AI-assisted opportunity qualification and dashboard reporting.
+Project: Power Platform & Reporting Solutions - Power Apps and Power Automate workflow automation with SharePoint integration.
+Project: Power BI Timesheet Dashboard - Power Query data modelling and reporting.
 
 SECURITY CLEARANCE
-BPSS cleared
+SC Cleared
+BPSS Cleared
 
-Page 2 of 3
+REFERENCES
+Available on request
+Page 2 of 5
 """
 
 
@@ -111,7 +117,12 @@ def test_extract_profile_fields_from_cv_text() -> None:
     assert fields["education"] == ["BSc Computer Science, Example University"]
     assert fields["preferred_roles"] == ["Data Engineer", "Analytics Engineer"]
     assert fields["summary"] == ""
-    assert fields["preferences"] == {"remote": "hybrid", "location": "London", "salary": "65000-85000"}
+    assert fields["preferences"] == {
+        "remote": "hybrid",
+        "location": "",
+        "salary": "65000-85000",
+        "work_authorization": "",
+    }
     assert set(fields) == {"skills", "projects", "experience", "education", "preferred_roles", "summary", "preferences"}
 
 
@@ -125,8 +136,13 @@ def test_post_cv_stores_profile_and_get_returns_it() -> None:
         assert body["cv_text"].strip().startswith("Skills:")
         assert "Python" in body["skills"]
         assert body["preferred_roles"] == ["Data Engineer", "Analytics Engineer"]
-        assert body["preferences"] == {"remote": "hybrid", "location": "London", "salary": "65000-85000"}
-        assert body["location_preference"] == "London"
+        assert body["preferences"] == {
+            "remote": "hybrid",
+            "location": "",
+            "salary": "65000-85000",
+            "work_authorization": "",
+        }
+        assert body["location_preference"] is None
         assert body["remote_preference"] == "hybrid"
         assert body["salary_min_preference"] == "65000.00"
         assert body["salary_max_preference"] == "85000.00"
@@ -187,14 +203,24 @@ def test_profile_endpoint_creates_default_user_when_missing() -> None:
 def test_emmanuel_cv_section_parser_keeps_education_tight_and_extracts_projects() -> None:
     fields = extract_profile_fields(EMMANUEL_CV_SAMPLE)
 
-    assert fields["projects"] == [
-        "Resident Portal Redesign - redesigned online application journeys and reduced avoidable contact",
-        "Case Management Automation - delivered workflow automation and reporting dashboards",
-    ]
-    assert fields["education"] == ["University of Roehampton", "BA (Hons) Business Management"]
-    assert any("resident support programme" in item for item in fields["experience"])
-    assert any("Case Management Automation" in item for item in fields["experience"])
-    assert "Page 1 of 3" not in " ".join(fields["education"])
+    project_text = " ".join(fields["projects"])
+    for project_name in [
+        "GetFlow - Contributions Management Platform",
+        "UK Homelessness Support Data Pipeline",
+        "Self-Hosted Remote Development Environment",
+        "Opportunity DecisionAI",
+        "Power Platform & Reporting Solutions",
+        "Power BI Timesheet Dashboard",
+    ]:
+        assert project_name in project_text
+    assert fields["education"] == ["Digital and Technological Solutions", "University of Roehampton", "2:1"]
+    assert any("UK Homelessness Support Data Pipeline" in item for item in fields["experience"])
+    for skill in ["Power BI", "Power Apps", "Power Automate", "Cloudflare", "Supabase", "BeautifulSoup", "Requests", "WSL", "Bash", "YAML"]:
+        assert skill in fields["skills"]
+    assert fields["preferences"]["location"] == "Milton Keynes / Broughton / United Kingdom"
+    assert fields["preferences"]["work_authorization"] == "does not require sponsorship; SC Cleared; BPSS Cleared"
+    assert "Page 1 of 5" not in " ".join(fields["education"])
     assert "LinkedIn" not in fields["summary"]
+    assert "Emmanuel Bamgbala" not in " ".join(fields["education"])
+    assert "AtkinsRealis" not in " ".join(fields["education"])
     assert len(" ".join(fields["education"])) < 120
-    assert {"Business Analyst", "Service Designer", "Project Manager"}.issubset(set(fields["preferred_roles"]))

@@ -14,6 +14,7 @@ KNOWN_SKILLS = (
     "TypeScript",
     "React",
     "Next.js",
+    "Tailwind CSS",
     "FastAPI",
     "Django",
     "Flask",
@@ -34,6 +35,20 @@ KNOWN_SKILLS = (
     "Pandas",
     "NumPy",
     "Power BI",
+    "Power Apps",
+    "Power Automate",
+    "Power Query",
+    "Excel",
+    "SharePoint",
+    "BeautifulSoup",
+    "Requests",
+    "JSON",
+    "Cloudflare",
+    "Supabase",
+    "Linux",
+    "WSL",
+    "Bash",
+    "YAML",
     "Tableau",
     "Machine Learning",
     "LLM",
@@ -44,17 +59,28 @@ KNOWN_SKILLS = (
     "Business Analysis",
     "Agile",
     "Scrum",
+    "Data Pipelines",
+    "Web Scraping",
+    "Workflow Automation",
+    "Dashboard Reporting",
+    "Systems Integration",
+    "Role-Based Access Control",
+    "Data Modelling",
+    "Automation",
+    "AI",
 )
 
 MAJOR_SECTION_HEADINGS = {
     "CAREER SUMMARY": "summary",
     "EDUCATION": "education",
     "PROFESSIONAL EXPERIENCE": "experience",
+    "WORK EXPERIENCE": "experience",
     "PROJECTS": "projects",
+    "PROJECT": "projects",
     "SKILLS": "skills",
     "EXPERIENCE": "experience",
     "CERTIFICATIONS": "certifications",
-    "SECURITY CLEARANCE": "experience",
+    "SECURITY CLEARANCE": "security_clearance",
     "EMPLOYMENT HISTORY": "experience",
     "MANAGEMENT EXPERIENCE": "experience",
     "DESIGN EXPERIENCE": "experience",
@@ -62,6 +88,7 @@ MAJOR_SECTION_HEADINGS = {
     "TARGET ROLES": "preferred_roles",
     "ROLES OF INTEREST": "preferred_roles",
     "DESIRED ROLES": "preferred_roles",
+    "REFERENCES": "ignored",
 }
 
 PREFERENCE_HEADINGS = {
@@ -87,6 +114,9 @@ ROLE_KEYWORDS = (
     "Service Designer",
     "Delivery Manager",
     "UX Designer",
+    "Power Platform Developer",
+    "Reporting Analyst",
+    "Data Analyst",
 )
 
 REPEATED_LABELS = (
@@ -97,6 +127,28 @@ REPEATED_LABELS = (
     "LinkedIn",
     "Portfolio",
     "Address",
+)
+
+KNOWN_LOCATIONS = (
+    "Milton Keynes",
+    "Broughton",
+    "United Kingdom",
+    "London",
+    "Manchester",
+    "Birmingham",
+    "Bristol",
+    "Leeds",
+    "Remote UK",
+    "UK",
+)
+
+KNOWN_PROJECT_NAMES = (
+    "GetFlow - Contributions Management Platform",
+    "UK Homelessness Support Data Pipeline",
+    "Self-Hosted Remote Development Environment",
+    "Opportunity DecisionAI",
+    "Power Platform & Reporting Solutions",
+    "Power BI Timesheet Dashboard",
 )
 
 
@@ -131,8 +183,8 @@ def extract_profile_fields(cv_text: str) -> dict[str, Any]:
     cleaned_text = clean_cv_text(cv_text)
     sections = split_cv_sections(cleaned_text)
     summary = _paragraph(sections.get("summary", []))
-    preferences = _preferences(cleaned_text, sections.get("preferences", []))
-    projects = _section_items(sections.get("projects", []))
+    preferences = _preferences(sections)
+    projects = _project_items(sections)
 
     return {
         "summary": summary,
@@ -146,18 +198,13 @@ def extract_profile_fields(cv_text: str) -> dict[str, Any]:
 
 
 def clean_cv_text(cv_text: str) -> str:
-    linkedin_seen = False
     cleaned_lines: list[str] = []
     for raw_line in cv_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
         line = " ".join(raw_line.strip().split())
         if not line:
             continue
-        if re.fullmatch(r"Page\s+\d+\s+of\s+\d+", line, flags=re.IGNORECASE):
+        if _is_noise_line(line, allow_location=True):
             continue
-        if re.search(r"(linkedin\.com|linkedin:)", line, flags=re.IGNORECASE):
-            if linkedin_seen:
-                continue
-            linkedin_seen = True
         line = _remove_repeated_label(line)
         if not line or _is_empty_bullet(line):
             continue
@@ -195,12 +242,44 @@ def _experience_items(sections: dict[str, list[str]], projects: list[str]) -> li
     return _dedupe(items + projects)
 
 
+def _project_items(sections: dict[str, list[str]]) -> list[str]:
+    candidates: list[str] = []
+    for section_name in ("projects", "experience"):
+        for line in sections.get(section_name, []):
+            candidates.extend(_projects_from_line(line))
+    for line in sections.get("projects", []):
+        cleaned = _clean_item(line)
+        if cleaned and not any(_same_project(cleaned, item) for item in candidates):
+            candidates.append(cleaned)
+    return _dedupe(candidates)
+
+
+def _projects_from_line(line: str) -> list[str]:
+    cleaned = _clean_item(line)
+    if not cleaned or _is_noise_line(cleaned):
+        return []
+
+    match = re.search(r"\bProject\s*[:\-]\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if match:
+        return [match.group(1).strip(" .")]
+
+    matches = []
+    for project_name in KNOWN_PROJECT_NAMES:
+        pattern = _project_name_pattern(project_name)
+        if re.search(pattern, cleaned, flags=re.IGNORECASE):
+            if re.search(rf"{pattern}\s*[-:\u2013\u2014]\s*(.+)", cleaned, flags=re.IGNORECASE):
+                matches.append(cleaned)
+            else:
+                matches.append(project_name)
+    return matches
+
+
 def _section_items(lines: list[str]) -> list[str]:
     items: list[str] = []
     buffer: list[str] = []
     for line in lines:
         text = _clean_item(line)
-        if not text:
+        if not text or _is_noise_line(text):
             continue
         if _starts_new_item(line):
             if buffer:
@@ -270,8 +349,11 @@ def _roles_from_phrase(value: str) -> list[str]:
     return roles
 
 
-def _preferences(full_text: str, preference_lines: list[str]) -> dict[str, str]:
-    preference_text = "\n".join(preference_lines) if preference_lines else full_text
+def _preferences(sections: dict[str, list[str]]) -> dict[str, str]:
+    preference_text = "\n".join(sections.get("preferences", []))
+    searchable_text = preference_text or "\n".join(
+        sections.get("preamble", []) + sections.get("summary", []) + sections.get("security_clearance", [])
+    )
     salary_min, salary_max = _salary_range(preference_text)
     salary = ""
     if salary_min and salary_max:
@@ -279,20 +361,23 @@ def _preferences(full_text: str, preference_lines: list[str]) -> dict[str, str]:
     elif salary_min:
         salary = str(int(salary_min))
     return {
-        "remote": _remote_preference(preference_text) or "",
-        "location": _location_preference(preference_text) or "",
+        "remote": _remote_preference(searchable_text) or "",
+        "location": _location_preference(sections.get("preamble", [])) or "",
         "salary": salary,
+        "work_authorization": _work_authorization(searchable_text) or "",
     }
 
 
-def _location_preference(text: str) -> str | None:
-    match = re.search(r"\b(?:location|based in|preferred location)\s*[:\-]?\s*([A-Za-z ,]+)", text, flags=re.IGNORECASE)
-    if match:
-        value = match.group(1).strip(" ,.")
-        return value[:255] or None
-    for place in ("London", "Manchester", "Birmingham", "Bristol", "Leeds", "Remote UK", "UK"):
+def _location_preference(header_lines: list[str]) -> str | None:
+    text = "\n".join(header_lines[:10])
+    found = []
+    for place in KNOWN_LOCATIONS:
         if re.search(rf"\b{re.escape(place)}\b", text, flags=re.IGNORECASE):
-            return place
+            found.append(place)
+    if "United Kingdom" in found and "UK" in found:
+        found.remove("UK")
+    if found:
+        return " / ".join(_dedupe(found))
     return None
 
 
@@ -307,6 +392,17 @@ def _remote_preference(text: str) -> str | None:
     if "remote" in lowered:
         return "remote"
     return None
+
+
+def _work_authorization(text: str) -> str | None:
+    values = []
+    if re.search(r"does\s+not\s+require\s+sponsorship|no\s+sponsorship", text, flags=re.IGNORECASE):
+        values.append("does not require sponsorship")
+    if re.search(r"\bSC\s+Cleared\b|\bSC\s+Clearance\b", text, flags=re.IGNORECASE):
+        values.append("SC Cleared")
+    if re.search(r"\bBPSS\s+Cleared\b|\bBPSS\b", text, flags=re.IGNORECASE):
+        values.append("BPSS Cleared")
+    return "; ".join(_dedupe(values)) if values else None
 
 
 def _salary_range(text: str) -> tuple[Decimal | None, Decimal | None]:
@@ -362,6 +458,37 @@ def _clean_item(value: str) -> str:
 
 def _is_empty_bullet(line: str) -> bool:
     return bool(re.fullmatch(r"[-*\u2022\s]+", line))
+
+
+def _is_noise_line(line: str, *, allow_location: bool = False) -> bool:
+    normalized = line.strip()
+    if not normalized:
+        return True
+    if re.fullmatch(r"Page\s+\d+\s+of\s+\d+", normalized, flags=re.IGNORECASE):
+        return True
+    if re.search(r"(linkedin\.com|linkedin\s*:)", normalized, flags=re.IGNORECASE):
+        return True
+    if re.search(r"AtkinsR.alis\s*-\s*Baseline|AtkinsR.alis\s*-\s*R.f.rence", normalized, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\b[\w.+-]+@[\w.-]+\.\w+\b", normalized):
+        return True
+    if re.search(r"\b(?:phone|mobile|tel|portfolio)\s*:", normalized, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"(?:\+?\d[\d\s().-]{7,})", normalized):
+        return True
+    if re.fullmatch(r"Emmanuel\s+Bamgbala", normalized, flags=re.IGNORECASE):
+        return True
+    if not allow_location and any(re.fullmatch(re.escape(place), normalized, flags=re.IGNORECASE) for place in KNOWN_LOCATIONS):
+        return True
+    return False
+
+
+def _same_project(left: str, right: str) -> bool:
+    return left.casefold() == right.casefold() or left.casefold().startswith(right.casefold())
+
+
+def _project_name_pattern(project_name: str) -> str:
+    return re.escape(project_name).replace(r"\-", r"[-\u2013\u2014]")
 
 
 def _remove_repeated_label(line: str) -> str:

@@ -102,13 +102,14 @@ export default function ProfilePage() {
                   label="Salary"
                   value={formatSalary(profile.salary_min_preference, profile.salary_max_preference)}
                 />
+                <Metric label="Authorization" value={profile.preferences.work_authorization || "Not listed"} />
               </div>
             </SummaryBlock>
             <SummaryBlock title="Experience">
               <ListItems items={profile.experience} />
             </SummaryBlock>
             <SummaryBlock title="Projects">
-              <ListItems items={profile.projects} />
+              <ProjectItems items={profile.projects} />
             </SummaryBlock>
             <SummaryBlock title="Education">
               <ListItems items={profile.education} />
@@ -139,6 +140,25 @@ function ListItems({ items }: { items: string[] }) {
         <li key={item}>{item}</li>
       ))}
     </ul>
+  );
+}
+
+function ProjectItems({ items }: { items: string[] }) {
+  if (!items.length) {
+    return <span className="muted-text">None extracted</span>;
+  }
+  return (
+    <div className="project-list">
+      {items.map((item) => {
+        const [title, ...description] = item.split(/\s[-:]\s/);
+        return (
+          <article key={item} className="project-item">
+            <strong>{title}</strong>
+            {description.length ? <span>{description.join(" - ")}</span> : null}
+          </article>
+        );
+      })}
+    </div>
   );
 }
 

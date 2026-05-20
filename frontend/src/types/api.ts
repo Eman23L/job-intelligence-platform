@@ -142,6 +142,7 @@ export interface UserProfile {
     remote: string;
     location: string;
     salary: string;
+    work_authorization?: string;
   };
   location_preference: string | null;
   remote_preference: string | null;

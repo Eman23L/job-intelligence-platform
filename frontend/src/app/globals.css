@@ -284,13 +284,16 @@ button:disabled {
 
 .badge,
 .skill-badge {
+  align-items: center;
   border-radius: 999px;
   display: inline-flex;
   font-size: 0.8rem;
   font-weight: 700;
   line-height: 1;
-  padding: 0.4rem 0.55rem;
+  min-height: 0;
+  padding: 0.32rem 0.5rem;
   white-space: nowrap;
+  width: auto;
 }
 
 .badge.good,
@@ -394,6 +397,29 @@ textarea {
   padding-left: 1.1rem;
 }
 
+.project-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.project-item {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.65rem;
+}
+
+.project-item strong {
+  color: #fff;
+}
+
+.project-item span {
+  color: #d5dee7;
+  line-height: 1.45;
+}
+
 input:focus,
 select:focus,
 textarea:focus {
@@ -467,7 +493,8 @@ textarea:focus {
 .badge-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  align-items: flex-start;
+  gap: 0.4rem;
 }
 
 .compact-counts {
