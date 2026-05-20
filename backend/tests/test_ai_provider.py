@@ -4,10 +4,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.models import Base, Job, JobAnalysis, JobSource, User, UserProfile
+from app.db.models import AIConversationMessage, Base, Job, JobAnalysis, JobScore, JobSource, User, UserProfile
 from app.db.session import get_db
 from app.main import app
 from app.services.ai_provider import AIProviderError, GroqProvider
+from app.services.profile_context import build_profile_context
 
 
 class FakeClient:
@@ -95,7 +96,28 @@ def test_ai_test_endpoint_returns_provider_model_and_response(monkeypatch) -> No
     }
 
 
-def test_ai_chat_endpoint_uses_profile_and_jobs_context(monkeypatch) -> None:
+def test_compressed_profile_context_excludes_raw_cv() -> None:
+    profile = UserProfile(
+        user_id=1,
+        cv_text="Raw private CV sentence that should not be sent.\nEmmanuel Bamgbala",
+        summary="Automation engineer with Power BI experience.",
+        skills=["Python", "Power BI", "Power Apps"],
+        experience=["Built reporting automation."],
+        projects=["Power BI Timesheet Dashboard - Built reporting dashboards with Power BI."],
+        education=["University of Roehampton"],
+        preferred_roles=["Automation Engineer"],
+        preferences={"remote": "hybrid", "location": "Milton Keynes", "salary": "", "work_authorization": "BPSS Cleared"},
+    )
+
+    context = build_profile_context(profile)
+    serialized = str(context)
+
+    assert context["core_skills"] == ["Python", "Power BI", "Power Apps"]
+    assert context["strong_projects"][0]["name"] == "Power BI Timesheet Dashboard"
+    assert "Raw private CV sentence" not in serialized
+
+
+def test_ai_chat_endpoint_uses_compressed_profile_and_scored_jobs_context(monkeypatch) -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -110,7 +132,7 @@ def test_ai_chat_endpoint_uses_profile_and_jobs_context(monkeypatch) -> None:
         db.add(
             UserProfile(
                 user_id=user.id,
-                cv_text="CV text",
+                cv_text="Highly private raw sentence",
                 summary="Automation engineer with Power BI experience.",
                 skills=["Python", "Power BI"],
                 experience=["Built reporting automation."],
@@ -137,6 +159,18 @@ def test_ai_chat_endpoint_uses_profile_and_jobs_context(monkeypatch) -> None:
         db.add(job)
         db.flush()
         db.add(JobAnalysis(job_id=job.id, role_family="Automation Engineer"))
+        db.add(
+            JobScore(
+                job_id=job.id,
+                user_id=user.id,
+                total_score=88,
+                recommendation_tier="Excellent match",
+                explanation=(
+                    '{"recommendation": "apply", "matched_skills": ["Python", "Power BI"], '
+                    '"missing_skills": ["SQL"], "risks": ["Salary not listed."]}'
+                ),
+            )
+        )
         db.commit()
 
     captured = {}
@@ -167,8 +201,62 @@ def test_ai_chat_endpoint_uses_profile_and_jobs_context(monkeypatch) -> None:
         "response": "Use the profile and job context.",
     }
     prompt = captured["messages"][1]["content"]
+    serialized_messages = "\n".join(message["content"] for message in captured["messages"])
     assert "Automation engineer with Power BI experience" in prompt
     assert "Power BI Timesheet Dashboard" in prompt
-    assert "Automation Engineer at Example Ltd" in prompt
-    assert "Which jobs should I apply for first?" in prompt
+    assert "Raw CV text is intentionally omitted" in prompt
+    assert "Highly private raw sentence" not in prompt
+    assert '"score": 88.0' in prompt
+    assert '"tier": "Excellent match"' in prompt
+    assert '"recommendation": "apply"' in prompt
+    assert '"matched_skills": [' in prompt
+    assert "Which jobs should I apply for first?" in serialized_messages
     assert "Do not invent experience" in captured["messages"][0]["content"]
+
+
+def test_ai_chat_saves_messages_and_history_endpoints_work(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        db.add(User(email="history@example.invalid"))
+        db.commit()
+
+    class FakeProvider:
+        provider_name = "groq"
+        model_name = "llama-3.1-8b-instant"
+
+        def send_chat(self, messages):
+            assert any(message["role"] == "user" and message["content"] == "What should I do next?" for message in messages)
+            return "Apply to the strongest scored roles first."
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    monkeypatch.setattr("app.api.ai.get_ai_provider", lambda: FakeProvider())
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        chat = client.post("/ai/chat", json={"message": "What should I do next?"})
+        history = client.get("/ai/history")
+        cleared = client.delete("/ai/history")
+        empty = client.get("/ai/history")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert chat.status_code == 200
+    assert history.status_code == 200
+    assert [message["role"] for message in history.json()] == ["user", "assistant"]
+    assert history.json()[0]["content"] == "What should I do next?"
+    assert history.json()[1]["content"] == "Apply to the strongest scored roles first."
+    assert cleared.status_code == 200
+    assert cleared.json()["deleted"] == 2
+    assert empty.json() == []
+
+    with TestingSession() as db:
+        assert db.query(AIConversationMessage).count() == 0

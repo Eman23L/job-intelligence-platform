@@ -179,6 +179,14 @@ export interface AIChatResponse {
   response: string;
 }
 
+export interface AIHistoryMessage {
+  id: number;
+  role: "user" | "assistant" | "system";
+  content: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
 export interface SkillGapItem {
   skill_name: string;
   count: number;

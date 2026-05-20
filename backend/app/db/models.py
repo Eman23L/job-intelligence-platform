@@ -34,6 +34,7 @@ class User(Base):
     job_scores: Mapped[list["JobScore"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     missing_skills: Mapped[list["MissingSkill"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     saved_jobs: Mapped[list["SavedJob"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    ai_messages: Mapped[list["AIConversationMessage"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class UserSkill(Base):
@@ -318,3 +319,16 @@ class JobEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     job: Mapped[Job] = relationship(back_populates="events")
+
+
+class AIConversationMessage(Base):
+    __tablename__ = "ai_conversation_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="ai_messages")

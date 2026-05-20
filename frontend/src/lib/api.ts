@@ -1,5 +1,6 @@
 import type {
   AIChatResponse,
+  AIHistoryMessage,
   AnalyticsOverview,
   JobDetail,
   JobScorecard,
@@ -137,5 +138,7 @@ export const api = {
   saveProfileCv: (cvText: string) =>
     request<UserProfile>("/profile/cv", { method: "POST", body: JSON.stringify({ cv_text: cvText }) }),
   aiChat: (message: string) =>
-    request<AIChatResponse>("/ai/chat", { method: "POST", body: JSON.stringify({ message }) })
+    request<AIChatResponse>("/ai/chat", { method: "POST", body: JSON.stringify({ message }) }),
+  aiHistory: () => request<AIHistoryMessage[]>("/ai/history"),
+  clearAiHistory: () => request<{ deleted: number }>("/ai/history", { method: "DELETE" })
 };

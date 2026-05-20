@@ -1,14 +1,17 @@
+import json
 from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Job, JobAnalysis, JobScore, User
+from app.db.models import AIConversationMessage, Job, JobAnalysis, JobScore, User
 from app.db.session import get_db
 from app.services.ai_provider import AIProviderError, get_ai_provider
 from app.services.profile import get_profile
+from app.services.profile_context import build_profile_context
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -33,6 +36,14 @@ class AIChatResponse(BaseModel):
     response: str
 
 
+class AIHistoryMessage(BaseModel):
+    id: int
+    role: str
+    content: str
+    metadata: dict[str, Any] | None = None
+    created_at: str
+
+
 @router.post("/test", response_model=AITestResponse)
 def test_ai_provider(payload: AITestRequest):
     provider = get_ai_provider()
@@ -45,79 +56,180 @@ def test_ai_provider(payload: AITestRequest):
 
 @router.post("/chat", response_model=AIChatResponse)
 def chat_with_advisor(payload: AIChatRequest, db: Session = Depends(get_db)):
+    user = _default_user(db)
+    user_message = _save_message(db, user, "user", payload.message, {"source": "ai_advisor"})
+    db.flush()
     provider = get_ai_provider()
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are an AI career advisor for a job search dashboard. Use only the provided CV/profile "
-                "and scraped jobs context. Do not invent experience, credentials, employers, or projects. "
-                "Say clearly when profile or job data is missing. This is advisory only; do not create or imply "
-                "a final scoring system."
-            ),
+            "content": _system_prompt(),
         },
         {
             "role": "user",
-            "content": _advisor_prompt(db, payload.message),
+            "content": _advisor_context_prompt(db, user),
         },
     ]
+    messages.extend(_conversation_memory(db, user, latest_user_message_id=user_message.id))
     try:
         response = provider.send_chat(messages)
     except AIProviderError as exc:
+        db.commit()
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    _save_message(db, user, "assistant", response, {"provider": provider.provider_name, "model": provider.model_name})
+    db.commit()
     return AIChatResponse(provider=provider.provider_name, model=provider.model_name, response=response)
 
 
-def _advisor_prompt(db: Session, question: str) -> str:
-    user = db.scalar(select(User).order_by(User.id))
-    profile = get_profile(db, user) if user is not None else None
+@router.get("/history", response_model=list[AIHistoryMessage])
+def get_ai_history(limit: int = 50, db: Session = Depends(get_db)):
+    user = _default_user(db)
+    messages = db.scalars(
+        select(AIConversationMessage)
+        .where(AIConversationMessage.user_id == user.id)
+        .order_by(desc(AIConversationMessage.created_at), desc(AIConversationMessage.id))
+        .limit(min(max(limit, 1), 100))
+    ).all()
+    return [_history_message(message) for message in reversed(messages)]
+
+
+@router.delete("/history")
+def clear_ai_history(db: Session = Depends(get_db)):
+    user = _default_user(db)
+    deleted = (
+        db.query(AIConversationMessage)
+        .filter(AIConversationMessage.user_id == user.id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return {"deleted": deleted}
+
+
+def _advisor_context_prompt(db: Session, user: User) -> str:
+    profile = get_profile(db, user)
+    context = {
+        "profile": build_profile_context(profile),
+        "jobs": _jobs_context(db, user),
+    }
     return (
-        "CV/Profile context:\n"
-        f"{_profile_context(profile)}\n\n"
-        "Top scraped jobs context:\n"
-        f"{_jobs_context(db)}\n\n"
-        f"User question:\n{question}"
+        "Structured advisor context follows as compact JSON. Use this context and the conversation memory. "
+        "Raw CV text is intentionally omitted.\n"
+        f"{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
 
 
-def _profile_context(profile) -> str:
-    if profile is None:
-        return "No saved CV/profile is available."
-    lines = [
-        f"Summary: {profile.summary or 'Not provided'}",
-        f"Skills: {', '.join(profile.skills or []) or 'Not provided'}",
-        f"Preferred roles: {', '.join(profile.preferred_roles or []) or 'Not provided'}",
-        f"Preferences: {profile.preferences or {}}",
-        f"Projects: {' | '.join((profile.projects or [])[:8]) or 'Not provided'}",
-        f"Experience: {' | '.join((profile.experience or [])[:8]) or 'Not provided'}",
-        f"Education: {' | '.join(profile.education or []) or 'Not provided'}",
-    ]
-    return "\n".join(lines)
-
-
-def _jobs_context(db: Session) -> str:
-    rows = db.execute(
+def _jobs_context(db: Session, user: User) -> list[dict[str, Any]]:
+    scored_rows = db.execute(
         select(Job, JobAnalysis, JobScore)
+        .join(JobScore, JobScore.job_id == Job.id)
         .outerjoin(JobAnalysis, JobAnalysis.job_id == Job.id)
-        .outerjoin(JobScore, JobScore.job_id == Job.id)
-        .where(Job.status != "excluded")
-        .order_by(desc(Job.posted_at), desc(Job.id))
+        .where(Job.status != "excluded", JobScore.user_id == user.id)
+        .order_by(desc(JobScore.total_score), desc(JobScore.scored_at), desc(Job.id))
         .limit(10)
     ).all()
+    rows = scored_rows
     if not rows:
-        return "No scraped jobs are available."
+        rows = db.execute(
+            select(Job, JobAnalysis, JobScore)
+            .outerjoin(JobAnalysis, JobAnalysis.job_id == Job.id)
+            .outerjoin(JobScore, JobScore.job_id == Job.id)
+            .where(Job.status != "excluded")
+            .order_by(desc(Job.posted_at), desc(Job.id))
+            .limit(10)
+        ).all()
+    if not rows:
+        return []
     items = []
-    for index, (job, analysis, score) in enumerate(rows, start=1):
-        salary = _salary_text(job.normalized_annual_min, job.normalized_annual_max, job.salary_currency)
-        items.append(
-            (
-                f"{index}. {job.title} at {job.company_name or 'Unknown company'}; "
-                f"location={job.location or 'Not listed'}; remote={job.remote_type or 'Not listed'}; "
-                f"salary={salary}; role_family={analysis.role_family if analysis else 'Not analysed'}; "
-                f"tier={score.recommendation_tier if score else 'Not scored'}"
+    for job, analysis, score in rows:
+        scorecard = _scorecard(score)
+        item = {
+            "title": job.title,
+            "company": job.company_name or "",
+            "location": job.location or "",
+            "remote": job.remote_type or "",
+            "salary": _salary_text(job.normalized_annual_min, job.normalized_annual_max, job.salary_currency),
+            "role_family": analysis.role_family if analysis else "",
+        }
+        if score is not None:
+            item.update(
+                {
+                    "score": float(score.total_score),
+                    "tier": score.recommendation_tier or "",
+                    "recommendation": scorecard.get("recommendation", ""),
+                    "matched_skills": scorecard.get("matched_skills", []),
+                    "missing_skills": scorecard.get("missing_skills", []),
+                    "risks": scorecard.get("risks", []),
+                }
             )
-        )
-    return "\n".join(items)
+        items.append(item)
+    return items
+
+
+def _system_prompt() -> str:
+    return (
+        "You are an AI career advisor for a job search dashboard. Be concise and useful. "
+        "Use only the structured profile, scored jobs, and conversation memory provided. "
+        "Do not invent experience, credentials, employers, projects, clearance, or preferences. "
+        "Do not repeat the user's name constantly. Do not start every answer with 'Based on the provided CV'. "
+        "Give decisive recommendations when evidence is strong. Mention missing data once, not repeatedly. "
+        "Use bullets and clear ranking. Use scoring evidence when available. AI explains evidence but does not create scores."
+    )
+
+
+def _conversation_memory(db: Session, user: User, latest_user_message_id: int) -> list[dict[str, str]]:
+    rows = db.scalars(
+        select(AIConversationMessage)
+        .where(AIConversationMessage.user_id == user.id, AIConversationMessage.role.in_(["user", "assistant"]))
+        .order_by(desc(AIConversationMessage.created_at), desc(AIConversationMessage.id))
+        .limit(12)
+    ).all()
+    messages = list(reversed(rows))
+    if not any(message.id == latest_user_message_id for message in messages):
+        latest = db.get(AIConversationMessage, latest_user_message_id)
+        if latest is not None:
+            messages.append(latest)
+    return [{"role": message.role, "content": message.content} for message in messages]
+
+
+def _save_message(
+    db: Session,
+    user: User,
+    role: str,
+    content: str,
+    metadata: dict[str, Any] | None = None,
+) -> AIConversationMessage:
+    message = AIConversationMessage(user_id=user.id, role=role, content=content, metadata_json=metadata)
+    db.add(message)
+    return message
+
+
+def _scorecard(score: JobScore | None) -> dict[str, Any]:
+    if score is None or not score.explanation:
+        return {}
+    try:
+        payload = json.loads(score.explanation)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _history_message(message: AIConversationMessage) -> AIHistoryMessage:
+    return AIHistoryMessage(
+        id=message.id,
+        role=message.role,
+        content=message.content,
+        metadata=message.metadata_json,
+        created_at=message.created_at.isoformat(),
+    )
+
+
+def _default_user(db: Session) -> User:
+    user = db.scalar(select(User).order_by(User.id))
+    if user is None:
+        user = User(email="advisor@example.invalid")
+        db.add(user)
+        db.flush()
+    return user
 
 
 def _salary_text(min_value: Decimal | None, max_value: Decimal | None, currency: str | None) -> str:

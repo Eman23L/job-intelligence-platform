@@ -1,9 +1,10 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { api } from "@/lib/api";
+import type { AIHistoryMessage } from "@/types/api";
 
 const suggestedPrompts = [
   "Which jobs should I apply for first?",
@@ -18,15 +19,22 @@ type ChatMessage = {
 };
 
 export default function AIAdvisorPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      content: "Ask about your saved CV/profile, scraped jobs, and career direction."
-    }
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .aiHistory()
+      .then((history) => {
+        setMessages(history.map(historyMessageToChat));
+        setError(null);
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setHistoryLoading(false));
+  }, []);
 
   const sendMessage = async (message: string) => {
     const trimmed = message.trim();
@@ -47,6 +55,19 @@ export default function AIAdvisorPage() {
     }
   };
 
+  const clearChat = async () => {
+    if (loading || historyLoading) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.clearAiHistory();
+      setMessages([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to clear chat history");
+    }
+  };
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     void sendMessage(input);
@@ -60,6 +81,9 @@ export default function AIAdvisorPage() {
             <h2>AI Advisor</h2>
             <p className="muted-text">Ask questions about your CV, scraped jobs, and career direction.</p>
           </div>
+          <button type="button" className="secondary-button compact-button" onClick={() => void clearChat()} disabled={loading || historyLoading || messages.length === 0}>
+            Clear chat
+          </button>
         </div>
 
         <div className="suggested-prompts">
@@ -71,6 +95,13 @@ export default function AIAdvisorPage() {
         </div>
 
         <div className="chat-window" aria-live="polite">
+          {historyLoading ? <LoadingState label="Loading chat history" /> : null}
+          {!historyLoading && messages.length === 0 ? (
+            <div className="chat-message assistant">
+              <span>AI Advisor</span>
+              <p>Ask about your saved CV/profile, scraped jobs, and career direction.</p>
+            </div>
+          ) : null}
           {messages.map((message, index) => (
             <div key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
               <span>{message.role === "user" ? "You" : "AI Advisor"}</span>
@@ -96,4 +127,11 @@ export default function AIAdvisorPage() {
       </section>
     </div>
   );
+}
+
+function historyMessageToChat(message: AIHistoryMessage): ChatMessage {
+  return {
+    role: message.role === "assistant" ? "assistant" : "user",
+    content: message.content
+  };
 }
