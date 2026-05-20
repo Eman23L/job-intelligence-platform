@@ -4,12 +4,36 @@ import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { formatDate, formatSalary, formatSalaryPeriod } from "@/lib/format";
 
-export function JobsTable({ jobs }: { jobs: JobListItem[] }) {
+export function JobsTable({
+  jobs,
+  selectedIds,
+  onToggle,
+  onToggleAll,
+  onDelete,
+  onExclude
+}: {
+  jobs: JobListItem[];
+  selectedIds: Set<number>;
+  onToggle: (jobId: number, checked: boolean) => void;
+  onToggleAll: (checked: boolean) => void;
+  onDelete: (jobId: number) => void;
+  onExclude: (jobId: number) => void;
+}) {
+  const allSelected = jobs.length > 0 && jobs.every((job) => selectedIds.has(job.id));
+
   return (
     <div className="table-wrap">
       <table className="data-table">
         <thead>
           <tr>
+            <th className="select-cell">
+              <input
+                type="checkbox"
+                aria-label="Select all jobs on this page"
+                checked={allSelected}
+                onChange={(event) => onToggleAll(event.target.checked)}
+              />
+            </th>
             <th>Title</th>
             <th>Company</th>
             <th>Location</th>
@@ -20,15 +44,25 @@ export function JobsTable({ jobs }: { jobs: JobListItem[] }) {
             <th>Tier</th>
             <th>Score</th>
             <th>Skills</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           {jobs.map((job) => (
             <tr key={job.id}>
+              <td className="select-cell">
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${job.title}`}
+                  checked={selectedIds.has(job.id)}
+                  onChange={(event) => onToggle(job.id, event.target.checked)}
+                />
+              </td>
               <td>
                 <Link href={`/jobs/${job.id}`} className="table-link">
                   {job.title}
                 </Link>
+                {job.status === "excluded" ? <span className="status-note">Excluded</span> : null}
               </td>
               <td>{job.company_name ?? "Unknown"}</td>
               <td>{job.location ?? "Not listed"}</td>
@@ -52,6 +86,16 @@ export function JobsTable({ jobs }: { jobs: JobListItem[] }) {
                 <span className="compact-counts">
                   {job.matched_skills_count} matched / {job.missing_skills_count} missing
                 </span>
+              </td>
+              <td>
+                <div className="row-actions">
+                  <button type="button" className="secondary-button compact-button" onClick={() => onExclude(job.id)}>
+                    Exclude
+                  </button>
+                  <button type="button" className="danger-button compact-button" onClick={() => onDelete(job.id)}>
+                    Delete
+                  </button>
+                </div>
               </td>
             </tr>
           ))}

@@ -9,8 +9,18 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobAnalysis, JobScore, JobSkill, User
 from app.db.session import get_db
-from app.schemas.database import JobAnalysisRead, JobDetail, JobScoreRead, JobSkillRead, PaginatedJobs, SavedJobRead
+from app.schemas.database import (
+    BulkJobActionResult,
+    JobAnalysisRead,
+    JobDetail,
+    JobIdsRequest,
+    JobScoreRead,
+    JobSkillRead,
+    PaginatedJobs,
+    SavedJobRead,
+)
 from app.services.analysis import analyse_all_jobs, analyse_job
+from app.services.job_cleanup import delete_job, delete_jobs, exclude_jobs
 from app.services.job_discovery import JobFilters, job_detail, list_jobs
 from app.services.saved_jobs import set_saved_job_status
 from app.services.scoring import score_all_jobs, score_job
@@ -81,9 +91,28 @@ def get_jobs(
         logger.info("jobs.list request finished page=%s page_size=%s sort=%s elapsed_ms=%s", page, page_size, sort, elapsed_ms)
 
 
+@router.post("/bulk-delete", response_model=BulkJobActionResult)
+def bulk_delete_jobs(payload: JobIdsRequest, db: Session = Depends(get_db)):
+    deleted_ids = delete_jobs(db, payload.job_ids)
+    return BulkJobActionResult(affected=len(deleted_ids), job_ids=deleted_ids)
+
+
+@router.post("/bulk-exclude", response_model=BulkJobActionResult)
+def bulk_exclude_jobs(payload: JobIdsRequest, db: Session = Depends(get_db)):
+    excluded_ids = exclude_jobs(db, payload.job_ids)
+    return BulkJobActionResult(affected=len(excluded_ids), job_ids=excluded_ids)
+
+
 @router.get("/{job_id}", response_model=JobDetail)
 def get_job_detail(job_id: int, db: Session = Depends(get_db)):
     return job_detail(db, _get_job_or_404(db, job_id))
+
+
+@router.delete("/{job_id}", response_model=BulkJobActionResult)
+def delete_single_job(job_id: int, db: Session = Depends(get_db)):
+    job = _get_job_or_404(db, job_id)
+    delete_job(db, job)
+    return BulkJobActionResult(affected=1, job_ids=[job_id])
 
 
 @router.post("/{job_id}/analyse", response_model=JobAnalysisRead)

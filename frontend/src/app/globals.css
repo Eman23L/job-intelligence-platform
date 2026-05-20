@@ -71,6 +71,12 @@ button:disabled {
   color: var(--text);
 }
 
+.danger-button {
+  background: #3a2024;
+  border-color: rgba(255, 107, 95, 0.45);
+  color: #ffd4d0;
+}
+
 .app-shell {
   background:
     radial-gradient(circle at top left, rgba(24, 182, 164, 0.08), transparent 32rem),
@@ -192,6 +198,10 @@ button:disabled {
   color: var(--muted);
 }
 
+.muted-text {
+  color: var(--muted);
+}
+
 .stat-card strong {
   color: #fff;
   font-size: 1.75rem;
@@ -209,6 +219,14 @@ button:disabled {
   margin-bottom: 1rem;
 }
 
+.panel-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
 .panel-header h2,
 .panel h2,
 .panel h3 {
@@ -221,7 +239,7 @@ button:disabled {
 
 .data-table {
   border-collapse: collapse;
-  min-width: 980px;
+  min-width: 1120px;
   width: 100%;
 }
 
@@ -246,6 +264,22 @@ button:disabled {
 .table-link {
   color: #65e4d7;
   font-weight: 700;
+}
+
+.select-cell {
+  width: 42px;
+}
+
+.select-cell input {
+  min-height: auto;
+  width: auto;
+}
+
+.status-note {
+  color: var(--danger);
+  display: block;
+  font-size: 0.78rem;
+  margin-top: 0.25rem;
 }
 
 .badge,
@@ -414,6 +448,17 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.compact-button {
+  min-height: 32px;
+  padding: 0.35rem 0.55rem;
 }
 
 .metric-list {

@@ -38,6 +38,25 @@ def test_rejects_generic_navigation_heavy_page() -> None:
     assert "description appears navigation/footer-heavy" in result.reasons
 
 
+def test_rejects_jobserve_marketing_and_browser_pages() -> None:
+    for title in ["Browser Information", "Why Choose JobServe?", "Find Jobs with JobServe.com"]:
+        result = validate_normalised_job(
+            {
+                "title": title,
+                "company_name": None,
+                "location": None,
+                "salary_min": None,
+                "salary_max": None,
+                "description_text": "Generic JobServe website page content.",
+                "canonical_url": "https://www.jobserve.com/gb/en/info",
+            },
+            source_name="JobServe",
+        )
+
+        assert not result.is_valid
+        assert result.reasons
+
+
 def test_accepts_real_job_with_minimal_structured_signals() -> None:
     result = validate_normalised_job(
         {

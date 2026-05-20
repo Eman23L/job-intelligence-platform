@@ -34,6 +34,7 @@ export interface JobListItem {
   total_score: string | null;
   matched_skills_count: number;
   missing_skills_count: number;
+  status: string;
 }
 
 export interface PaginatedJobs {

@@ -83,7 +83,7 @@ export function FiltersBar({
           checked={filters.exclude_excluded}
           onChange={(event) => update("exclude_excluded", event.target.checked)}
         />
-        Exclude excluded
+        Hide excluded jobs
       </label>
       <button type="button" className="secondary-button" onClick={onReset}>
         Reset

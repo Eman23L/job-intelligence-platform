@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -135,6 +135,68 @@ def test_save_reject_and_mark_applied() -> None:
         assert reject_response.json()["status"] == "rejected"
         assert applied_response.status_code == 200
         assert applied_response.json()["status"] == "applied"
+
+
+def test_delete_job_removes_related_records() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        ids = _seed_phase6_data(db)
+        job_id = ids["excellent"]
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).delete(f"/jobs/{job_id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"affected": 1, "job_ids": [job_id]}
+    with TestingSession() as db:
+        assert db.get(Job, job_id) is None
+        assert db.scalar(select(func.count(JobAnalysis.id)).where(JobAnalysis.job_id == job_id)) == 0
+        assert db.scalar(select(func.count(JobScore.id)).where(JobScore.job_id == job_id)) == 0
+        assert db.scalar(select(func.count(JobSkill.id)).where(JobSkill.job_id == job_id)) == 0
+        assert db.scalar(select(func.count(MissingSkill.id)).where(MissingSkill.job_id == job_id)) == 0
+        assert db.scalar(select(func.count(SavedJob.id)).where(SavedJob.job_id == job_id)) == 0
+
+
+def test_bulk_exclude_removes_job_from_analytics_and_filtered_list() -> None:
+    with phase6_client() as (client, ids):
+        excluded = client.post("/jobs/bulk-exclude", json={"job_ids": [ids["strong"]]})
+        overview = client.get("/analytics/overview")
+        role_fit = client.get("/analytics/role-fit")
+        skill_gaps = client.get("/analytics/skill-gaps")
+        hidden_list = client.get("/jobs?exclude_excluded=true&page_size=100")
+
+        assert excluded.status_code == 200
+        assert excluded.json() == {"affected": 1, "job_ids": [ids["strong"]]}
+        assert overview.json()["total_jobs"] == 3
+        assert overview.json()["applied_jobs"] == 0
+        assert "Analytics Engineer" not in {item["role_family"] for item in role_fit.json()["items"]}
+        assert "dbt" not in {item["skill_name"] for item in skill_gaps.json()["missing_skill_frequency"]}
+        assert ids["strong"] not in {item["id"] for item in hidden_list.json()["items"]}
+
+
+def test_bulk_delete_updates_jobs_list() -> None:
+    with phase6_client() as (client, ids):
+        response = client.post("/jobs/bulk-delete", json={"job_ids": [ids["strong"], ids["stretch"]]})
+        listed = client.get("/jobs?page_size=100")
+
+        assert response.status_code == 200
+        assert set(response.json()["job_ids"]) == {ids["strong"], ids["stretch"]}
+        body = listed.json()
+        assert body["total_count"] == 2
+        assert {item["id"] for item in body["items"]} == {ids["excellent"], ids["excluded"]}
 
 
 def test_saved_jobs_list_and_patch() -> None:

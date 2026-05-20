@@ -285,6 +285,7 @@ class JobListItem(BaseModel):
     total_score: Decimal | None = None
     matched_skills_count: int
     missing_skills_count: int
+    status: str
 
 
 class PaginatedJobs(BaseModel):
@@ -293,6 +294,15 @@ class PaginatedJobs(BaseModel):
     page_size: int
     total_count: int
     total_pages: int
+
+
+class JobIdsRequest(BaseModel):
+    job_ids: list[int] = Field(min_length=1)
+
+
+class BulkJobActionResult(BaseModel):
+    affected: int
+    job_ids: list[int]
 
 
 class JobCompanyRead(ORMModel):

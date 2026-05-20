@@ -1,7 +1,7 @@
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -21,20 +21,35 @@ from app.schemas.database import (
 
 def overview(db: Session) -> AnalyticsOverview:
     try:
-        scores = db.scalars(select(JobScore)).all()
+        scores = db.scalars(select(JobScore).join(Job).where(_included_job_filter())).all()
         score_values = [score.total_score for score in scores if score.total_score is not None]
         return AnalyticsOverview(
-            total_jobs=db.scalar(select(func.count(Job.id))) or 0,
-            analysed_jobs=db.scalar(select(func.count(JobAnalysis.id))) or 0,
+            total_jobs=db.scalar(select(func.count(Job.id)).where(Job.status != "excluded")) or 0,
+            analysed_jobs=(
+                db.scalar(select(func.count(JobAnalysis.id)).join(Job).where(_included_job_filter())) or 0
+            ),
             scored_jobs=len(scores),
-            saved_jobs=db.scalar(select(func.count(SavedJob.id)).where(SavedJob.status == "saved")) or 0,
-            applied_jobs=db.scalar(select(func.count(SavedJob.id)).where(SavedJob.status == "applied")) or 0,
+            saved_jobs=(
+                db.scalar(select(func.count(SavedJob.id)).join(Job).where(Job.status != "excluded", SavedJob.status == "saved"))
+                or 0
+            ),
+            applied_jobs=(
+                db.scalar(select(func.count(SavedJob.id)).join(Job).where(Job.status != "excluded", SavedJob.status == "applied"))
+                or 0
+            ),
             excellent_matches=sum(1 for score in scores if score.recommendation_tier == "Excellent match"),
             strong_matches=sum(1 for score in scores if score.recommendation_tier == "Strong match"),
             stretch_roles=sum(1 for score in scores if score.recommendation_tier == "Stretch role"),
-            excluded_jobs=sum(1 for score in scores if score.recommendation_tier == "excluded"),
+            excluded_jobs=(
+                db.scalar(
+                    select(func.count(func.distinct(Job.id)))
+                    .outerjoin(JobScore)
+                    .where(or_(Job.status == "excluded", JobScore.recommendation_tier == "excluded"))
+                )
+                or 0
+            ),
             average_score=_avg(score_values) or Decimal("0"),
-            newest_job_date=db.scalar(select(func.max(Job.posted_at))),
+            newest_job_date=db.scalar(select(func.max(Job.posted_at)).where(Job.status != "excluded")),
         )
     except SQLAlchemyError:
         return _empty_overview()
@@ -57,7 +72,7 @@ def _empty_overview() -> AnalyticsOverview:
 
 
 def role_fit(db: Session) -> RoleFitAnalytics:
-    analyses = db.scalars(select(JobAnalysis)).all()
+    analyses = db.scalars(select(JobAnalysis).join(Job).where(_included_job_filter())).all()
     grouped: dict[str | None, list[JobAnalysis]] = defaultdict(list)
     for analysis in analyses:
         grouped[analysis.role_family].append(analysis)
@@ -84,9 +99,9 @@ def role_fit(db: Session) -> RoleFitAnalytics:
 
 
 def skill_gaps(db: Session) -> SkillGapAnalytics:
-    missing_rows = db.scalars(select(MissingSkill)).all()
+    missing_rows = db.scalars(select(MissingSkill).join(Job).where(_included_job_filter())).all()
     missing_items = _missing_summary(missing_rows)
-    skill_counts = Counter(db.scalars(select(JobSkill.skill_name)).all())
+    skill_counts = Counter(db.scalars(select(JobSkill.skill_name).join(Job).where(_included_job_filter())).all())
     linked = [
         SkillGapItem(skill_name=name, count=count, highest_priority=None)
         for name, count in skill_counts.most_common()
@@ -106,7 +121,7 @@ def skill_gaps(db: Session) -> SkillGapAnalytics:
 
 
 def salary(db: Session) -> SalaryAnalytics:
-    jobs = db.scalars(select(Job)).all()
+    jobs = db.scalars(select(Job).where(Job.status != "excluded")).all()
     jobs_with_salary = [job for job in jobs if job.normalized_annual_min is not None or job.normalized_annual_max is not None]
     return SalaryAnalytics(
         average_salary_min=_avg([job.normalized_annual_min for job in jobs if job.normalized_annual_min is not None]),
@@ -127,7 +142,9 @@ def source_health(db: Session) -> SourceHealthAnalytics:
             SourceHealthItem(
                 source_id=source.id,
                 source_name=source.name,
-                jobs_count=db.scalar(select(func.count(Job.id)).where(Job.source_id == source.id)) or 0,
+                jobs_count=(
+                    db.scalar(select(func.count(Job.id)).where(Job.source_id == source.id, Job.status != "excluded")) or 0
+                ),
                 last_scrape_run_id=run.id if run else None,
                 last_scrape_started_at=run.started_at if run else None,
                 last_scrape_finished_at=run.finished_at if run else None,
@@ -161,7 +178,7 @@ def _missing_summary(rows: list[MissingSkill]) -> list[SkillGapItem]:
 
 
 def _salary_by_role_family(db: Session) -> list[SalaryGroup]:
-    analyses = db.scalars(select(JobAnalysis)).all()
+    analyses = db.scalars(select(JobAnalysis).join(Job).where(_included_job_filter())).all()
     grouped: dict[str | None, list[Job]] = defaultdict(list)
     for analysis in analyses:
         job = db.get(Job, analysis.job_id)
@@ -198,3 +215,7 @@ def _avg(values: list[Decimal | None]) -> Decimal | None:
     if not clean:
         return None
     return Decimal(str(round(sum(clean) / len(clean), 2)))
+
+
+def _included_job_filter():
+    return Job.status != "excluded"

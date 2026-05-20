@@ -95,6 +95,17 @@ export const api = {
   overview: () => request<AnalyticsOverview>("/analytics/overview"),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
+  deleteJob: (id: string | number) => request<{ affected: number; job_ids: number[] }>(`/jobs/${id}`, { method: "DELETE" }),
+  bulkDeleteJobs: (jobIds: number[]) =>
+    request<{ affected: number; job_ids: number[] }>("/jobs/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({ job_ids: jobIds })
+    }),
+  bulkExcludeJobs: (jobIds: number[]) =>
+    request<{ affected: number; job_ids: number[] }>("/jobs/bulk-exclude", {
+      method: "POST",
+      body: JSON.stringify({ job_ids: jobIds })
+    }),
   saveJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/save`, { method: "POST" }),
   rejectJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/reject`, { method: "POST" }),
   markApplied: (id: string | number) => request<SavedJob>(`/jobs/${id}/mark-applied`, { method: "POST" }),
