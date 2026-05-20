@@ -61,11 +61,13 @@ class UserProfileRead(ORMModel):
     id: int
     user_id: int
     cv_text: str
+    summary: str
     skills: list[str]
     experience: list[str]
     projects: list[str]
     education: list[str]
     preferred_roles: list[str]
+    preferences: dict[str, str]
     location_preference: str | None = None
     remote_preference: str | None = None
     salary_min_preference: Decimal | None = None

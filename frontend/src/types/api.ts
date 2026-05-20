@@ -132,11 +132,17 @@ export interface UserProfile {
   id: number;
   user_id: number;
   cv_text: string;
+  summary: string;
   skills: string[];
   experience: string[];
   projects: string[];
   education: string[];
   preferred_roles: string[];
+  preferences: {
+    remote: string;
+    location: string;
+    salary: string;
+  };
   location_preference: string | null;
   remote_preference: string | null;
   salary_min_preference: string | null;

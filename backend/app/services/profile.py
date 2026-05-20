@@ -1,5 +1,6 @@
 import re
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,16 +38,66 @@ KNOWN_SKILLS = (
     "Machine Learning",
     "LLM",
     "RAG",
+    "Project Management",
+    "Stakeholder Management",
+    "Service Design",
+    "Business Analysis",
+    "Agile",
+    "Scrum",
 )
 
-SECTION_ALIASES = {
-    "skills": ("skills", "technical skills", "technologies"),
-    "experience": ("experience", "work experience", "employment", "professional experience"),
-    "projects": ("projects", "project experience"),
-    "education": ("education", "qualifications"),
-    "preferred_roles": ("preferred roles", "target roles", "roles of interest", "desired roles"),
-    "preferences": ("preferences", "job preferences", "role preferences"),
+MAJOR_SECTION_HEADINGS = {
+    "CAREER SUMMARY": "summary",
+    "EDUCATION": "education",
+    "PROFESSIONAL EXPERIENCE": "experience",
+    "PROJECTS": "projects",
+    "SKILLS": "skills",
+    "EXPERIENCE": "experience",
+    "CERTIFICATIONS": "certifications",
+    "SECURITY CLEARANCE": "experience",
+    "EMPLOYMENT HISTORY": "experience",
+    "MANAGEMENT EXPERIENCE": "experience",
+    "DESIGN EXPERIENCE": "experience",
+    "PREFERRED ROLES": "preferred_roles",
+    "TARGET ROLES": "preferred_roles",
+    "ROLES OF INTEREST": "preferred_roles",
+    "DESIRED ROLES": "preferred_roles",
 }
+
+PREFERENCE_HEADINGS = {
+    "PREFERENCES",
+    "JOB PREFERENCES",
+    "ROLE PREFERENCES",
+}
+
+ROLE_KEYWORDS = (
+    "Data Engineer",
+    "Analytics Engineer",
+    "Software Engineer",
+    "Full Stack Developer",
+    "Backend Developer",
+    "Frontend Developer",
+    "Machine Learning Engineer",
+    "AI Engineer",
+    "Automation Engineer",
+    "Project Manager",
+    "Programme Manager",
+    "Product Manager",
+    "Business Analyst",
+    "Service Designer",
+    "Delivery Manager",
+    "UX Designer",
+)
+
+REPEATED_LABELS = (
+    "Name",
+    "Email",
+    "Phone",
+    "Mobile",
+    "LinkedIn",
+    "Portfolio",
+    "Address",
+)
 
 
 def get_profile(db: Session, user: User) -> UserProfile | None:
@@ -55,85 +106,183 @@ def get_profile(db: Session, user: User) -> UserProfile | None:
 
 def upsert_cv_profile(db: Session, user: User, cv_text: str) -> UserProfile:
     extracted = extract_profile_fields(cv_text)
+    salary_min, salary_max = _salary_preference_bounds(extracted["preferences"]["salary"])
+    storage_fields = {
+        **extracted,
+        "location_preference": extracted["preferences"]["location"] or None,
+        "remote_preference": extracted["preferences"]["remote"] or None,
+        "salary_min_preference": salary_min,
+        "salary_max_preference": salary_max,
+    }
     profile = get_profile(db, user)
     if profile is None:
-        profile = UserProfile(user_id=user.id, cv_text=cv_text, **extracted)
+        profile = UserProfile(user_id=user.id, cv_text=cv_text, **storage_fields)
         db.add(profile)
     else:
         profile.cv_text = cv_text
-        for field, value in extracted.items():
+        for field, value in storage_fields.items():
             setattr(profile, field, value)
     db.commit()
     db.refresh(profile)
     return profile
 
 
-def extract_profile_fields(cv_text: str) -> dict:
-    text = cv_text.strip()
-    sections = _sections(text)
-    preference_text = "\n".join(
-        value for value in [sections.get("preferences", ""), sections.get("preferred_roles", ""), text] if value
-    )
-    salary_min, salary_max = _salary_range(preference_text)
+def extract_profile_fields(cv_text: str) -> dict[str, Any]:
+    cleaned_text = clean_cv_text(cv_text)
+    sections = split_cv_sections(cleaned_text)
+    summary = _paragraph(sections.get("summary", []))
+    preferences = _preferences(cleaned_text, sections.get("preferences", []))
+    projects = _section_items(sections.get("projects", []))
+
     return {
-        "skills": _skills(text, sections.get("skills", "")),
-        "experience": _section_items(sections.get("experience", "")),
-        "projects": _section_items(sections.get("projects", "")),
-        "education": _section_items(sections.get("education", "")),
-        "preferred_roles": _preferred_roles(sections.get("preferred_roles", ""), text),
-        "location_preference": _location_preference(preference_text),
-        "remote_preference": _remote_preference(preference_text),
-        "salary_min_preference": salary_min,
-        "salary_max_preference": salary_max,
+        "summary": summary,
+        "skills": _skills(cleaned_text, sections.get("skills", [])),
+        "experience": _experience_items(sections, projects),
+        "projects": projects,
+        "education": _section_items(sections.get("education", [])),
+        "preferred_roles": _preferred_roles(sections, projects),
+        "preferences": preferences,
     }
 
 
-def _sections(text: str) -> dict[str, str]:
-    section_lookup = {alias: key for key, aliases in SECTION_ALIASES.items() for alias in aliases}
-    current: str | None = None
-    output: dict[str, list[str]] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        normalized = line.lower().rstrip(":")
-        if normalized in section_lookup:
-            current = section_lookup[normalized]
-            output.setdefault(current, [])
+def clean_cv_text(cv_text: str) -> str:
+    linkedin_seen = False
+    cleaned_lines: list[str] = []
+    for raw_line in cv_text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
             continue
-        if current and line:
-            output[current].append(line)
-    return {key: "\n".join(lines) for key, lines in output.items()}
+        if re.fullmatch(r"Page\s+\d+\s+of\s+\d+", line, flags=re.IGNORECASE):
+            continue
+        if re.search(r"(linkedin\.com|linkedin:)", line, flags=re.IGNORECASE):
+            if linkedin_seen:
+                continue
+            linkedin_seen = True
+        line = _remove_repeated_label(line)
+        if not line or _is_empty_bullet(line):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
 
 
-def _skills(text: str, skill_section: str) -> list[str]:
+def split_cv_sections(cv_text: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    current = "preamble"
+    sections.setdefault(current, [])
+
+    for line in cv_text.splitlines():
+        heading = _section_key(line)
+        if heading is not None:
+            current = heading
+            sections.setdefault(current, [])
+            continue
+        sections.setdefault(current, []).append(line)
+    return {key: lines for key, lines in sections.items() if lines}
+
+
+def _section_key(line: str) -> str | None:
+    normalized = re.sub(r"[^A-Za-z ]+", "", line).upper().strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    if normalized in MAJOR_SECTION_HEADINGS:
+        return MAJOR_SECTION_HEADINGS[normalized]
+    if normalized in PREFERENCE_HEADINGS:
+        return "preferences"
+    return None
+
+
+def _experience_items(sections: dict[str, list[str]], projects: list[str]) -> list[str]:
+    items = _section_items(sections.get("experience", []))
+    return _dedupe(items + projects)
+
+
+def _section_items(lines: list[str]) -> list[str]:
+    items: list[str] = []
+    buffer: list[str] = []
+    for line in lines:
+        text = _clean_item(line)
+        if not text:
+            continue
+        if _starts_new_item(line):
+            if buffer:
+                items.append(" ".join(buffer))
+            buffer = [text]
+        elif buffer and _looks_continuation(text):
+            buffer.append(text)
+        else:
+            if buffer:
+                items.append(" ".join(buffer))
+            buffer = [text]
+    if buffer:
+        items.append(" ".join(buffer))
+    return _dedupe([item for item in items if len(item) > 1])
+
+
+def _skills(full_text: str, skill_lines: list[str]) -> list[str]:
     found = []
-    haystack = text.lower()
+    haystack = full_text.lower()
     for skill in KNOWN_SKILLS:
         if re.search(rf"(?<![A-Za-z0-9+#.]){re.escape(skill.lower())}(?![A-Za-z0-9+#.])", haystack):
             found.append(skill)
-    for item in _split_listish(skill_section):
+    for item in _split_listish("\n".join(skill_lines)):
         if 1 <= len(item) <= 40 and item.lower() not in {skill.lower() for skill in found}:
             found.append(item)
     return _dedupe(found)
 
 
-def _section_items(section_text: str) -> list[str]:
-    if not section_text.strip():
-        return []
-    items = _split_listish(section_text)
-    return items or [line.strip() for line in section_text.splitlines() if line.strip()]
+def _preferred_roles(sections: dict[str, list[str]], projects: list[str]) -> list[str]:
+    explicit_roles = _split_listish("\n".join(sections.get("preferred_roles", [])))
+    if explicit_roles:
+        return _dedupe(explicit_roles)
 
-
-def _preferred_roles(section_text: str, full_text: str) -> list[str]:
-    roles = _split_listish(section_text)
-    if roles:
-        return _dedupe(roles)
-    matches = re.findall(
-        r"\b(?:data engineer|analytics engineer|software engineer|full stack developer|backend developer|"
-        r"frontend developer|machine learning engineer|ai engineer|automation engineer)\b",
-        full_text,
-        flags=re.IGNORECASE,
+    source_text = "\n".join(
+        sections.get("summary", [])
+        + sections.get("experience", [])
+        + sections.get("projects", [])
+        + sections.get("skills", [])
     )
-    return _dedupe([match.title() for match in matches])
+    roles = []
+    for role in ROLE_KEYWORDS:
+        if re.search(rf"\b{re.escape(role)}\b", source_text, flags=re.IGNORECASE):
+            roles.append(role)
+    for project in projects:
+        project_name = re.split(r"\s+[-:]\s+", project, maxsplit=1)[0]
+        for role in _roles_from_phrase(project_name):
+            roles.append(role)
+    for line in sections.get("skills", []):
+        for role in _roles_from_phrase(line):
+            roles.append(role)
+    return _dedupe(roles)
+
+
+def _roles_from_phrase(value: str) -> list[str]:
+    lowered = value.lower()
+    roles = []
+    if "management" in lowered:
+        roles.append("Project Manager")
+    if "design" in lowered:
+        roles.append("Service Designer")
+    if "analysis" in lowered or "analyst" in lowered:
+        roles.append("Business Analyst")
+    if "automation" in lowered:
+        roles.append("Automation Engineer")
+    if "data" in lowered:
+        roles.append("Data Engineer")
+    return roles
+
+
+def _preferences(full_text: str, preference_lines: list[str]) -> dict[str, str]:
+    preference_text = "\n".join(preference_lines) if preference_lines else full_text
+    salary_min, salary_max = _salary_range(preference_text)
+    salary = ""
+    if salary_min and salary_max:
+        salary = f"{int(salary_min)}-{int(salary_max)}"
+    elif salary_min:
+        salary = str(int(salary_min))
+    return {
+        "remote": _remote_preference(preference_text) or "",
+        "location": _location_preference(preference_text) or "",
+        "salary": salary,
+    }
 
 
 def _location_preference(text: str) -> str | None:
@@ -171,10 +320,54 @@ def _salary_range(text: str) -> tuple[Decimal | None, Decimal | None]:
     return min(amounts), max(amounts)
 
 
+def _salary_preference_bounds(value: str) -> tuple[Decimal | None, Decimal | None]:
+    if not value:
+        return None, None
+    amounts = [Decimal(match) for match in re.findall(r"\d+", value)]
+    if not amounts:
+        return None, None
+    return min(amounts), max(amounts)
+
+
+def _paragraph(lines: list[str]) -> str:
+    return " ".join(_clean_item(line) for line in lines if _clean_item(line)).strip()
+
+
 def _split_listish(value: str) -> list[str]:
     cleaned = value.replace("\u2022", "\n").replace(";", "\n")
     parts = re.split(r"[\n,]+", cleaned)
-    return [part.strip(" -*\t.") for part in parts if part.strip(" -*\t.")]
+    return [_clean_item(part) for part in parts if _clean_item(part)]
+
+
+def _starts_new_item(line: str) -> bool:
+    stripped = line.strip()
+    return bool(
+        re.match(r"^[-*\u2022]\s+", stripped)
+        or re.match(r"^\d+[.)]\s+", stripped)
+        or re.search(r"\b(?:Ltd|Limited|Council|NHS|University|Bank|Group|Agency)\b", stripped)
+        or re.search(r"\b(?:Project|Programme|Manager|Engineer|Analyst|Designer|Consultant)\b", stripped)
+    )
+
+
+def _looks_continuation(text: str) -> bool:
+    return bool(text and text[0].islower())
+
+
+def _clean_item(value: str) -> str:
+    value = value.strip()
+    value = re.sub(r"^[-*\u2022]\s*", "", value)
+    value = re.sub(r"^\d+[.)]\s*", "", value)
+    return value.strip(" \t.")
+
+
+def _is_empty_bullet(line: str) -> bool:
+    return bool(re.fullmatch(r"[-*\u2022\s]+", line))
+
+
+def _remove_repeated_label(line: str) -> str:
+    for label in REPEATED_LABELS:
+        line = re.sub(rf"^(?:{label}\s*[:\-]\s*){{2,}}", f"{label}: ", line, flags=re.IGNORECASE)
+    return line.strip()
 
 
 def _dedupe(items: list[str]) -> list[str]:
