@@ -123,7 +123,7 @@ def extract_jobserve_job_ids(html: str) -> list[str]:
     value = str(field.get("value") or "") if field else ""
     seen: set[str] = set()
     job_ids: list[str] = []
-    for item in re.split(r"[#,\|;\s]+", value):
+    for item in re.split(r"[#%,\|;\s]+", value):
         job_id = item.strip()
         if not job_id or job_id in seen:
             continue
@@ -315,6 +315,8 @@ def _find_apply_link(soup: BeautifulSoup) -> str | None:
     for anchor in soup.find_all("a", href=True):
         text = anchor.get_text(" ", strip=True).lower()
         href = str(anchor["href"])
+        if href.lower().startswith("javascript:"):
+            continue
         if "apply" in text or "apply" in href.lower():
             return href
     return None

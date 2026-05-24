@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -29,6 +29,7 @@ from app.scrapers.policies.robots import check_robots_allowed
 from app.scrapers.registry import adapter_registry
 from app.scrapers.job_boards import JobRecord
 from app.scrapers.jobserve import JobServeAdapter, JobServeSourceAdapter, is_jobserve_search_page
+from app.scrapers.jobserve import extract_jobserve_job_ids
 from app.scrapers.utils.hashing import content_hash
 from app.services.analysis import analyse_job
 from app.services.job_validation import validate_normalised_job
@@ -52,6 +53,15 @@ class FetchResult:
     status_code: int
     text: str
     content_type: str | None = None
+
+
+@dataclass(frozen=True)
+class JobServeSearchResultPage:
+    url: str
+    html: str
+    job_ids: list[str]
+    status_code: int
+    cookies: dict[str, str]
 
 
 def create_source_from_url(db: Session, payload) -> JobSource:
@@ -138,17 +148,27 @@ def scrape_source_now(db: Session, source: JobSource, payload: ScrapeNowRequest)
 
 def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) -> JobServeSearchScrapeResult:
     source = _get_or_create_jobserve_search_source(db)
-    search_url = build_jobserve_search_url(payload)
-    adapter = JobServeAdapter(min_delay_seconds=DEFAULT_DELAY_SECONDS)
-    adapter.detail_referer = search_url
+    try:
+        search_page = _fetch_jobserve_search_results(payload)
+    except Exception as exc:  # noqa: BLE001
+        return JobServeSearchScrapeResult(
+            source_id=source.id,
+            search_url=build_jobserve_search_url(payload),
+            jobs_found=0,
+            jobs_created=0,
+            jobs_updated=0,
+            jobs_skipped=0,
+            parsed_jobs=[],
+            errors=[str(exc)],
+            warnings=[],
+        )
+    search_url = search_page.url
     warnings: list[str] = []
     errors: list[str] = []
     created = updated = skipped = 0
     parsed_jobs: list[dict[str, str | None]] = []
 
-    try:
-        pages = adapter.discover_search_pages(search_url, max_pages=payload.max_pages)
-    except Exception as exc:  # noqa: BLE001
+    if search_page.status_code >= 400:
         return JobServeSearchScrapeResult(
             source_id=source.id,
             search_url=search_url,
@@ -157,18 +177,14 @@ def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) ->
             jobs_updated=0,
             jobs_skipped=0,
             parsed_jobs=[],
-            errors=[str(exc)],
+            errors=[f"JobServe search returned HTTP {search_page.status_code}"],
             warnings=warnings,
         )
 
-    job_ids: list[str] = []
-    seen_ids: set[str] = set()
-    for _, html in pages:
-        for job_id in adapter.extract_job_ids(html):
-            if job_id in seen_ids:
-                continue
-            seen_ids.add(job_id)
-            job_ids.append(job_id)
+    page_size = _hidden_int(search_page.html, "pgSize", default=25)
+    job_ids = search_page.job_ids[: max(1, payload.max_pages) * page_size]
+    if not job_ids:
+        warnings.append("JobServe search completed but no hidden job IDs were found in the result HTML.")
 
     records, detail_errors = _fetch_jobserve_detail_records(
         job_ids,
@@ -223,14 +239,81 @@ def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) ->
 
 
 def build_jobserve_search_url(payload: JobServeSearchScrapeRequest) -> str:
-    params: dict[str, str] = {"q": payload.keywords.strip()}
-    if payload.location and payload.location.strip():
-        params["l"] = payload.location.strip()
-    if payload.posted_within_days:
-        params["postedwithin"] = str(payload.posted_within_days)
+    return "https://www.jobserve.com/gb/en/Job-Search/"
+
+
+def _fetch_jobserve_search_results(payload: JobServeSearchScrapeRequest) -> JobServeSearchResultPage:
+    base_url = build_jobserve_search_url(payload)
+    session = requests.Session()
+    headers = {"User-Agent": BROWSER_USER_AGENT}
+    initial = session.get(base_url, headers=headers, timeout=20)
+    initial.raise_for_status()
+    form_data, action_url = _jobserve_search_form_payload(initial.text, base_url, payload)
+    response = session.post(
+        action_url,
+        data=form_data,
+        headers={**headers, "Referer": base_url},
+        timeout=30,
+        allow_redirects=True,
+    )
+    return JobServeSearchResultPage(
+        url=response.url,
+        html=response.text,
+        job_ids=extract_jobserve_job_ids(response.text),
+        status_code=response.status_code,
+        cookies=session.cookies.get_dict(),
+    )
+
+
+def _jobserve_search_form_payload(html: str, base_url: str, payload: JobServeSearchScrapeRequest) -> tuple[dict[str, Any], str]:
+    soup = BeautifulSoup(html, "html.parser")
+    form = soup.find("form", id="frm1") or soup.find("form")
+    if form is None:
+        raise ValueError("JobServe search form not found")
+    data: dict[str, Any] = {}
+    for field in form.find_all("input"):
+        name = field.get("name")
+        if not name:
+            continue
+        input_type = str(field.get("type") or "text").lower()
+        if input_type == "submit":
+            continue
+        if input_type in {"checkbox", "radio"}:
+            if field.has_attr("checked"):
+                data[name] = field.get("value") or "on"
+            continue
+        data[name] = field.get("value") or ""
+    for field in form.find_all("select"):
+        name = field.get("name")
+        if not name:
+            continue
+        selected = [option.get("value") or "" for option in field.find_all("option") if option.has_attr("selected")]
+        if field.has_attr("multiple"):
+            data[name] = selected
+        else:
+            first = field.find("option")
+            data[name] = selected[0] if selected else (first.get("value") if first else "")
+
+    data["ctl00$main$srch$ctl_qs$txtKey"] = payload.keywords.strip()
+    data["ctl00$main$srch$ctl_qs$txtLoc"] = (payload.location or "").strip()
+    data["selAge"] = str(payload.posted_within_days or 7)
+    data["ctl00$main$srch$ctl_qs$btnSearch"] = "Search"
+    remote_name = "ctl00$main$srch$ctl_qs$RemoteWorking$chkRemoteWorking"
     if payload.remote_only:
-        params["remote"] = "true"
-    return f"https://www.jobserve.com/gb/en/JobSearch.aspx?{urlencode(params)}"
+        data[remote_name] = "on"
+    else:
+        data.pop(remote_name, None)
+    action_url = urljoin(base_url, form.get("action") or "./JobServeHome.aspx")
+    return data, action_url
+
+
+def _hidden_int(html: str, element_id: str, *, default: int) -> int:
+    soup = BeautifulSoup(html, "html.parser")
+    field = soup.find("input", id=element_id)
+    try:
+        return int(str(field.get("value"))) if field else default
+    except (TypeError, ValueError):
+        return default
 
 
 def start_scrape_source_now(db: Session, source: JobSource, payload: ScrapeNowRequest) -> ScrapeStartResult:
@@ -667,7 +750,8 @@ def _normalise_jobserve_record(source: JobSource, record: JobRecord) -> dict[str
     if record.skills:
         description = f"{description}\n\nSkills: {', '.join(record.skills)}".strip()
     title = record.title or "Untitled JobServe job"
-    canonical_url = record.apply_link or record.url or f"https://www.jobserve.com/gb/en/job/{record.source_job_id or content_hash(title)}"
+    apply_link = record.apply_link if record.apply_link and not record.apply_link.lower().startswith("javascript:") else None
+    canonical_url = apply_link or record.url or f"https://www.jobserve.com/gb/en/job/{record.source_job_id or content_hash(title)}"
     normalised = normalise_job_fields(
         title=title,
         company_name=record.recruiter,

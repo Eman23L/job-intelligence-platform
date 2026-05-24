@@ -63,8 +63,10 @@ def validate_normalised_job(item: dict[str, Any], *, source_name: str | None = N
         reasons.append("missing real job title")
 
     blocked_target = " ".join(value for value in [title, description, url] if value).lower()
+    navigation_target = " ".join(value for value in [title, url] if value).lower()
     for phrase in BLOCKED_JOB_PHRASES:
-        if phrase in blocked_target:
+        target = navigation_target if phrase in {"sign in", "signin", "register"} else blocked_target
+        if phrase in target:
             reasons.append(f"blocked phrase: {phrase}")
 
     has_salary = _has_salary(salary_min) or _has_salary(salary_max)
@@ -78,7 +80,14 @@ def validate_normalised_job(item: dict[str, Any], *, source_name: str | None = N
     if has_description and _looks_navigation_heavy(description):
         reasons.append("description appears navigation/footer-heavy")
 
-    if "jobserve" in source and url and "jobserve.com" in url.lower() and "/apply/" not in url.lower() and "/job/" not in url.lower():
+    if (
+        "jobserve" in source
+        and url
+        and "jobserve.com" in url.lower()
+        and "/apply/" not in url.lower()
+        and "/job/" not in url.lower()
+        and "search-jobs-in" not in url.lower()
+    ):
         reasons.append("JobServe URL is not a job/apply URL")
 
     return JobValidationResult(is_valid=not reasons, reasons=reasons)

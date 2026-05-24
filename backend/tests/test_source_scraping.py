@@ -328,9 +328,15 @@ def test_jobserve_search_scrape_summary_dedupe_and_fingerprints(monkeypatch) -> 
     jobserve_html = (FIXTURES / "jobserve_search.html").read_text(encoding="utf-8")
 
     monkeypatch.setattr(
-        source_scraping.JobServeAdapter,
-        "discover_search_pages",
-        lambda self, search_url, *, max_pages: [(search_url, jobserve_html)],
+        source_scraping,
+        "_fetch_jobserve_search_results",
+        lambda payload: source_scraping.JobServeSearchResultPage(
+            url="https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture",
+            html=jobserve_html,
+            job_ids=["D8DF", "A12345", "B67890"],
+            status_code=200,
+            cookies={"JSFX": "fixture"},
+        ),
     )
     monkeypatch.setattr(
         source_scraping,
