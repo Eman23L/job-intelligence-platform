@@ -8,7 +8,6 @@ import type {
   JobDetail,
   JobAvailabilityResult,
   JobServeSearchPayload,
-  JobServeSearchResult,
   JobScorecard,
   JobsRescoreResult,
   PaginatedJobs,
@@ -20,8 +19,11 @@ import type {
   ScrapeRunStatus,
   ScrapeStartResult,
   Source,
+  SourceDeleteResult,
   SourceFromUrlPayload,
   SourceHealthAnalytics,
+  SourceScrapeRunStart,
+  SourceScrapeRunStatus,
   SourceTestResult,
   UserProfile
 } from "@/types/api";
@@ -158,11 +160,14 @@ export const api = {
   scrapeSourceNow: (id: number, body: ScrapeNowPayload) =>
     request<ScrapeStartResult>(`/sources/${id}/scrape-now`, { method: "POST", body: JSON.stringify(body) }),
   searchScrapeJobServe: (body: JobServeSearchPayload) =>
-    request<JobServeSearchResult>("/sources/jobserve/search-scrape", {
+    request<SourceScrapeRunStart>("/sources/jobserve/search-scrape", {
       method: "POST",
       timeoutMs: SOURCES_REQUEST_TIMEOUT_MS,
       body: JSON.stringify(body)
     }),
+  sourceScrapeRun: (id: number) => request<SourceScrapeRunStatus>(`/sources/scrape-runs/${id}`),
+  deleteSource: (id: number, deleteJobs = false) =>
+    request<SourceDeleteResult>(`/sources/${id}?delete_jobs=${deleteJobs ? "true" : "false"}`, { method: "DELETE" }),
   scrapeRun: (id: number) => request<ScrapeRunStatus>(`/scrape-runs/${id}`),
   profile: () => request<UserProfile | null>("/profile"),
   saveProfileCv: (cvText: string) =>

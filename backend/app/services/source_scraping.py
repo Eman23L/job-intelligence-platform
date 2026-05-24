@@ -20,6 +20,8 @@ from app.schemas.database import (
     ScrapeNowResult,
     ScrapeRunStatus,
     ScrapeStartResult,
+    SourceScrapeRunStart,
+    SourceScrapeRunStatus,
     SourceTestResult,
 )
 from app.scrapers.parsers.html import extract_text
@@ -146,7 +148,12 @@ def scrape_source_now(db: Session, source: JobSource, payload: ScrapeNowRequest)
     return execute_scrape_source_now(db, source, payload)
 
 
-def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) -> JobServeSearchScrapeResult:
+def search_scrape_jobserve(
+    db: Session,
+    payload: JobServeSearchScrapeRequest,
+    *,
+    scrape_run_id: int | None = None,
+) -> JobServeSearchScrapeResult:
     source = _get_or_create_jobserve_search_source(db)
     try:
         search_page = _fetch_jobserve_search_results(payload)
@@ -183,14 +190,24 @@ def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) ->
 
     page_size = _hidden_int(search_page.html, "pgSize", default=25)
     job_ids = search_page.job_ids[: max(1, payload.max_pages) * page_size]
+    _update_scrape_run_progress(db, scrape_run_id, found=len(job_ids), created=created, updated=updated, skipped=skipped)
     if not job_ids:
         warnings.append("JobServe search completed but no hidden job IDs were found in the result HTML.")
 
+    detail_started = time.perf_counter()
     records, detail_errors = _fetch_jobserve_detail_records(
         job_ids,
         referer=search_url,
-        delay_seconds=DEFAULT_DELAY_SECONDS,
-        max_workers=min(8, len(job_ids) or 1),
+        delay_seconds=1,
+        max_workers=1,
+    )
+    LOGGER.info(
+        "JobServe search detail fetch completed search_url=%s detail_requests=%s records=%s failures=%s duration_ms=%s",
+        search_url,
+        len(job_ids),
+        len(records),
+        len(detail_errors),
+        int((time.perf_counter() - detail_started) * 1000),
     )
     errors.extend(detail_errors)
     parsed_jobs = [_job_record_summary(record) for record in records]
@@ -202,6 +219,7 @@ def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) ->
             if not validation.is_valid:
                 skipped += 1
                 warnings.append(_rejection_message("JobServe search", normalised, validation.reasons))
+                _update_scrape_run_progress(db, scrape_run_id, found=len(job_ids), created=created, updated=updated, skipped=skipped)
                 continue
             db.add(
                 RawJobSnapshot(
@@ -219,10 +237,12 @@ def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) ->
                 created += 1
             else:
                 updated += 1
+            _update_scrape_run_progress(db, scrape_run_id, found=len(job_ids), created=created, updated=updated, skipped=skipped)
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             skipped += 1
             errors.append(f"JobServe search {record.source_job_id}: {exc}")
+            _update_scrape_run_progress(db, scrape_run_id, found=len(job_ids), created=created, updated=updated, skipped=skipped)
             continue
     db.commit()
     return JobServeSearchScrapeResult(
@@ -236,6 +256,115 @@ def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) ->
         errors=errors,
         warnings=warnings,
     )
+
+
+def start_jobserve_search_scrape(db: Session, payload: JobServeSearchScrapeRequest) -> SourceScrapeRunStart:
+    source = _get_or_create_jobserve_search_source(db)
+    run = ScrapeRun(
+        source_id=source.id,
+        status="running",
+        started_at=datetime.now(tz=timezone.utc),
+        errors=[],
+        parsed_jobs=[],
+        jobs_found=0,
+        jobs_created=0,
+        jobs_updated=0,
+        jobs_skipped=0,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    LOGGER.info(
+        "JobServe search scrape queued run_id=%s keywords=%s location=%s max_pages=%s",
+        run.id,
+        payload.keywords,
+        payload.location,
+        payload.max_pages,
+    )
+    return SourceScrapeRunStart(run_id=run.id, status="running")
+
+
+def run_jobserve_search_scrape_background(scrape_run_id: int, payload_data: dict[str, Any]) -> None:
+    started = time.perf_counter()
+    payload = JobServeSearchScrapeRequest(**payload_data)
+    with SessionLocal() as db:
+        run = db.get(ScrapeRun, scrape_run_id)
+        if run is None:
+            return
+        try:
+            result = search_scrape_jobserve(db, payload, scrape_run_id=scrape_run_id)
+            run = db.get(ScrapeRun, scrape_run_id)
+            if run is None:
+                return
+            run.status = "failed" if result.errors else "completed"
+            run.finished_at = datetime.now(tz=timezone.utc)
+            run.jobs_found = result.jobs_found
+            run.jobs_created = result.jobs_created
+            run.jobs_updated = result.jobs_updated
+            run.jobs_skipped = result.jobs_skipped
+            run.parsed_jobs = [item.model_dump() if hasattr(item, "model_dump") else item for item in result.parsed_jobs]
+            run.errors = result.errors
+            run.error_message = "; ".join(result.errors[:5]) if result.errors else None
+            db.commit()
+            LOGGER.info(
+                "JobServe search scrape finished run_id=%s status=%s duration_ms=%s pages_requested=%s details_found=%s failures=%s",
+                scrape_run_id,
+                run.status,
+                int((time.perf_counter() - started) * 1000),
+                payload.max_pages,
+                result.jobs_found,
+                len(result.errors),
+            )
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            run = db.get(ScrapeRun, scrape_run_id)
+            if run is not None:
+                run.status = "failed"
+                run.finished_at = datetime.now(tz=timezone.utc)
+                run.error_message = str(exc)
+                run.errors = [str(exc)]
+                db.commit()
+            LOGGER.exception(
+                "JobServe search scrape failed run_id=%s duration_ms=%s",
+                scrape_run_id,
+                int((time.perf_counter() - started) * 1000),
+            )
+
+
+def get_source_scrape_run_status(db: Session, run_id: int) -> SourceScrapeRunStatus | None:
+    run = db.get(ScrapeRun, run_id)
+    if run is None:
+        return None
+    return SourceScrapeRunStatus(
+        run_id=run.id,
+        status=run.status,
+        found=run.jobs_found or 0,
+        created=run.jobs_created or 0,
+        updated=run.jobs_updated or 0,
+        skipped=run.jobs_skipped or 0,
+        error=run.error_message,
+    )
+
+
+def _update_scrape_run_progress(
+    db: Session,
+    scrape_run_id: int | None,
+    *,
+    found: int,
+    created: int,
+    updated: int,
+    skipped: int,
+) -> None:
+    if scrape_run_id is None:
+        return
+    run = db.get(ScrapeRun, scrape_run_id)
+    if run is None:
+        return
+    run.jobs_found = found
+    run.jobs_created = created
+    run.jobs_updated = updated
+    run.jobs_skipped = skipped
+    db.commit()
 
 
 def build_jobserve_search_url(payload: JobServeSearchScrapeRequest) -> str:

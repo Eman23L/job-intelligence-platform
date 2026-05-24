@@ -377,20 +377,23 @@ export interface JobServeSearchPayload {
   max_pages?: number;
 }
 
-export interface JobServeSearchResult {
+export interface SourceScrapeRunStart {
+  run_id: number;
+  status: "running" | "completed" | "failed" | string;
+}
+
+export interface SourceScrapeRunStatus {
+  run_id: number;
+  status: "running" | "completed" | "failed" | string;
+  found: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  error: string | null;
+}
+
+export interface SourceDeleteResult {
   source_id: number;
-  search_url: string;
-  jobs_found: number;
-  jobs_created: number;
-  jobs_updated: number;
-  jobs_skipped: number;
-  parsed_jobs: Array<{
-    source_job_id: string | null;
-    title: string | null;
-    company_name: string | null;
-    location: string | null;
-    canonical_url: string | null;
-  }>;
-  errors: string[];
-  warnings: string[];
+  action: string;
+  deleted_jobs: boolean;
 }

@@ -374,12 +374,15 @@ def test_jobserve_search_scrape_summary_dedupe_and_fingerprints(monkeypatch) -> 
 
         assert first.status_code == 200
         assert second.status_code == 200
-        assert first.json()["jobs_found"] == 3
-        assert first.json()["jobs_created"] == 3
-        assert first.json()["jobs_updated"] == 0
-        assert first.json()["jobs_skipped"] == 0
-        assert second.json()["jobs_created"] == 0
-        assert second.json()["jobs_updated"] == 3
+        first_status = client.get(f"/sources/scrape-runs/{first.json()['run_id']}")
+        second_status = client.get(f"/sources/scrape-runs/{second.json()['run_id']}")
+        assert first.json()["status"] == "running"
+        assert first_status.json()["found"] == 3
+        assert first_status.json()["created"] == 3
+        assert first_status.json()["updated"] == 0
+        assert first_status.json()["skipped"] == 0
+        assert second_status.json()["created"] == 0
+        assert second_status.json()["updated"] == 3
         with TestingSession() as db:
             jobs = db.scalars(select(Job)).all()
             assert len(jobs) == 3

@@ -13,11 +13,13 @@ from app.schemas.database import (
     JobSourceRead,
     JobSourceUpdate,
     JobServeSearchScrapeRequest,
-    JobServeSearchScrapeResult,
     ScrapeNowRequest,
     ScrapeStartResult,
+    SourceDeleteResult,
     SourceFromUrlCreate,
     SourcePermissionValidation,
+    SourceScrapeRunStart,
+    SourceScrapeRunStatus,
     SourceTestResult,
 )
 from app.scrapers.demo import DemoScraper
@@ -66,9 +68,23 @@ def run_demo_scrape(db: Session = Depends(get_db)):
     return result
 
 
-@router.post("/jobserve/search-scrape", response_model=JobServeSearchScrapeResult)
-def run_jobserve_search_scrape(payload: JobServeSearchScrapeRequest, db: Session = Depends(get_db)):
-    return source_scraping.search_scrape_jobserve(db, payload)
+@router.post("/jobserve/search-scrape", response_model=SourceScrapeRunStart)
+def run_jobserve_search_scrape(
+    payload: JobServeSearchScrapeRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    started = source_scraping.start_jobserve_search_scrape(db, payload)
+    background_tasks.add_task(source_scraping.run_jobserve_search_scrape_background, started.run_id, payload.model_dump())
+    return started
+
+
+@router.get("/scrape-runs/{run_id}", response_model=SourceScrapeRunStatus)
+def source_scrape_run_status(run_id: int, db: Session = Depends(get_db)):
+    result = source_scraping.get_source_scrape_run_status(db, run_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scrape run not found")
+    return result
 
 
 @router.post("/from-url", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED)
@@ -83,6 +99,12 @@ def create_source_from_url(payload: SourceFromUrlCreate, db: Session = Depends(g
 @router.get("/{source_id}", response_model=JobSourceRead)
 def get_source(source_id: int, db: Session = Depends(get_db)):
     return _get_source_or_404(db, source_id)
+
+
+@router.delete("/{source_id}", response_model=SourceDeleteResult)
+def delete_source(source_id: int, delete_jobs: bool = False, db: Session = Depends(get_db)):
+    source = _get_source_or_404(db, source_id)
+    return source_service.delete_or_disable_source(db, source, delete_jobs=delete_jobs)
 
 
 @router.post("", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED)

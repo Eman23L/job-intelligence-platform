@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import JobSource
-from app.schemas.database import JobSourceCreate, JobSourceUpdate, SourcePermissionValidation
+from app.schemas.database import JobSourceCreate, JobSourceUpdate, SourceDeleteResult, SourcePermissionValidation
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,17 @@ def set_source_enabled(db: Session, source: JobSource, enabled: bool) -> JobSour
     db.commit()
     db.refresh(source)
     return source
+
+
+def delete_or_disable_source(db: Session, source: JobSource, *, delete_jobs: bool = False) -> SourceDeleteResult:
+    source_id = source.id
+    if delete_jobs:
+        db.delete(source)
+        db.commit()
+        return SourceDeleteResult(source_id=source_id, action="deleted", deleted_jobs=True)
+    source.enabled = False
+    db.commit()
+    return SourceDeleteResult(source_id=source_id, action="disabled", deleted_jobs=False)
 
 
 def validate_source_permission(source: JobSource) -> SourcePermissionValidation:

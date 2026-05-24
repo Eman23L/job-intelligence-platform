@@ -187,6 +187,27 @@ class JobServeSearchScrapeResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class SourceScrapeRunStart(BaseModel):
+    run_id: int
+    status: str
+
+
+class SourceScrapeRunStatus(BaseModel):
+    run_id: int
+    status: str
+    found: int = 0
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    error: str | None = None
+
+
+class SourceDeleteResult(BaseModel):
+    source_id: int
+    action: str
+    deleted_jobs: bool = False
+
+
 class ParsedJobSummary(BaseModel):
     source_job_id: str | None = None
     title: str | None = None

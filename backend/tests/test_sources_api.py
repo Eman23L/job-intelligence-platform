@@ -153,3 +153,73 @@ def test_demo_scrape_endpoint_uses_fixture_only() -> None:
             assert len(db.scalars(select(Job)).all()) == 2
     finally:
         app.dependency_overrides.clear()
+
+
+def test_delete_source_defaults_to_disable_only() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        source = JobSource(name="Delete Me", base_url="https://example.invalid", source_type="fixture", enabled=True)
+        db.add(source)
+        db.commit()
+        source_id = source.id
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).delete(f"/sources/{source_id}")
+        assert response.status_code == 200
+        assert response.json()["action"] == "disabled"
+        with TestingSession() as db:
+            source = db.get(JobSource, source_id)
+            assert source is not None
+            assert source.enabled is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_source_with_jobs_removes_source() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        source = JobSource(name="Delete Jobs", base_url="https://example.invalid", source_type="fixture", enabled=True)
+        db.add(source)
+        db.flush()
+        db.add(
+            Job(
+                source_id=source.id,
+                source_job_id="job-1",
+                canonical_url="https://example.invalid/jobs/1",
+                title="Fixture Job",
+            )
+        )
+        db.commit()
+        source_id = source.id
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).delete(f"/sources/{source_id}?delete_jobs=true")
+        assert response.status_code == 200
+        assert response.json()["action"] == "deleted"
+        with TestingSession() as db:
+            assert db.get(JobSource, source_id) is None
+            assert db.scalars(select(Job)).all() == []
+    finally:
+        app.dependency_overrides.clear()

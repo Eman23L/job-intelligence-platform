@@ -6,7 +6,7 @@ import { LoadingState } from "@/components/LoadingState";
 import { SkillBadge } from "@/components/SkillBadge";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { JobServeSearchResult, ScrapeRunStatus, Source, SourceHealthAnalytics, SourceTestResult } from "@/types/api";
+import type { ScrapeRunStatus, Source, SourceHealthAnalytics, SourceScrapeRunStatus, SourceTestResult } from "@/types/api";
 
 const initialForm = {
   name: "",
@@ -38,11 +38,16 @@ export default function SourcesPage() {
   const [testResult, setTestResult] = useState<SourceTestResult | null>(null);
   const [scrapeResult, setScrapeResult] = useState<ScrapeRunStatus | null>(null);
   const [jobServeSearch, setJobServeSearch] = useState(initialJobServeSearch);
-  const [jobServeResult, setJobServeResult] = useState<JobServeSearchResult | null>(null);
+  const [jobServeResult, setJobServeResult] = useState<SourceScrapeRunStatus | null>(null);
   const [activeScrapeRunId, setActiveScrapeRunId] = useState<number | null>(null);
+  const [activeJobServeRunId, setActiveJobServeRunId] = useState<number | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<Source | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sourceListError, setSourceListError] = useState<string | null>(null);
+  const [scrapeRunError, setScrapeRunError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ type: "success" | "warning" | "error"; message: string } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -60,7 +65,7 @@ export default function SourcesPage() {
         } else {
           errors.push(`Sources: ${sourceResult.reason instanceof Error ? sourceResult.reason.message : "request failed"}`);
         }
-        setError(errors.length ? errors.join(" | ") : null);
+        setSourceListError(errors.length ? errors.join(" | ") : null);
       })
       .finally(() => setLoading(false));
   };
@@ -99,6 +104,42 @@ export default function SourcesPage() {
       globalThis.clearInterval(intervalId);
     };
   }, [activeScrapeRunId]);
+
+  useEffect(() => {
+    if (!activeJobServeRunId) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await api.sourceScrapeRun(activeJobServeRunId);
+        if (cancelled) {
+          return;
+        }
+        setJobServeResult(result);
+        if (result.status === "completed" || result.status === "failed") {
+          setActiveJobServeRunId(null);
+          setActionLoading(null);
+          if (result.status === "failed") {
+            setScrapeRunError(result.error ?? "JobServe scrape failed");
+          }
+          load();
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setActiveJobServeRunId(null);
+          setActionLoading(null);
+          setScrapeRunError(err instanceof Error ? err.message : "Unable to poll JobServe scrape run");
+        }
+      }
+    };
+    poll();
+    const intervalId = globalThis.setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(intervalId);
+    };
+  }, [activeJobServeRunId]);
 
   const createSource = async (event: FormEvent) => {
     event.preventDefault();
@@ -178,18 +219,37 @@ export default function SourcesPage() {
     setActionLoading("jobserve-search");
     setJobServeResult(null);
     setError(null);
+    setScrapeRunError(null);
     try {
-      const result = await api.searchScrapeJobServe({
+      const started = await api.searchScrapeJobServe({
         keywords: jobServeSearch.keywords,
         location: jobServeSearch.location || null,
         posted_within_days: Number(jobServeSearch.posted_within_days || 7),
         remote_only: jobServeSearch.remote_only,
         max_pages: Number(jobServeSearch.max_pages || 3)
       });
-      setJobServeResult(result);
-      load();
+      setActiveJobServeRunId(started.run_id);
+      setJobServeResult({ run_id: started.run_id, status: started.status, found: 0, created: 0, updated: 0, skipped: 0, error: null });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to run JobServe search scrape");
+      setActionLoading(null);
+    }
+  };
+
+  const deleteSource = async (source: Source, deleteJobs: boolean) => {
+    setActionLoading(`delete-${source.id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.deleteSource(source.id, deleteJobs);
+      setDeleteCandidate(null);
+      setNotice({
+        type: "success",
+        message: result.deleted_jobs ? "Source and jobs deleted." : "Source disabled."
+      });
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to delete source");
     } finally {
       setActionLoading(null);
     }
@@ -198,10 +258,6 @@ export default function SourcesPage() {
   if (loading) {
     return <LoadingState label="Loading sources" />;
   }
-  if (error && !sources.length) {
-    return <ErrorState message={error} />;
-  }
-
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const healthBySourceId = new Map((health?.items ?? []).map((item) => [item.source_id, item]));
   const rows = [
@@ -274,28 +330,30 @@ export default function SourcesPage() {
           </button>
         </form>
         {actionLoading === "jobserve-search" ? <LoadingState label="Running JobServe search scrape" /> : null}
+        {activeJobServeRunId ? <div className="notice-banner info">Scrape running...</div> : null}
+        {scrapeRunError ? <div className="notice-banner error">{scrapeRunError}</div> : null}
         {jobServeResult ? (
           <div className="state-card">
             <h3>JobServe result</h3>
             <div className="metric-list">
               <div className="metric-row">
                 <span>Found</span>
-                <strong>{jobServeResult.jobs_found}</strong>
+                <strong>{jobServeResult.found}</strong>
               </div>
               <div className="metric-row">
                 <span>Created</span>
-                <strong>{jobServeResult.jobs_created}</strong>
+                <strong>{jobServeResult.created}</strong>
               </div>
               <div className="metric-row">
                 <span>Updated</span>
-                <strong>{jobServeResult.jobs_updated}</strong>
+                <strong>{jobServeResult.updated}</strong>
               </div>
               <div className="metric-row">
                 <span>Skipped</span>
-                <strong>{jobServeResult.jobs_skipped}</strong>
+                <strong>{jobServeResult.skipped}</strong>
               </div>
             </div>
-            <a className="table-link" href={`/jobs?source_id=${jobServeResult.source_id}`}>
+            <a className="table-link" href="/jobs">
               View jobs from this source
             </a>
           </div>
@@ -364,6 +422,9 @@ export default function SourcesPage() {
         </form>
       </section>
 
+      {sourceListError ? <div className="notice-banner warning">{sourceListError}</div> : null}
+      {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
+
       <section className="panel">
         <div className="panel-header">
           <h2>Test and scrape</h2>
@@ -414,6 +475,7 @@ export default function SourcesPage() {
                 <th>Status</th>
                 <th>Created / updated</th>
                 <th>Errors</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -433,12 +495,42 @@ export default function SourcesPage() {
                     {healthItem?.jobs_created ?? 0} / {healthItem?.jobs_updated ?? 0}
                   </td>
                   <td>{healthItem?.error_message ?? ""}</td>
+                  <td>
+                    {source ? (
+                      <button type="button" className="danger-button compact-button" onClick={() => setDeleteCandidate(source)}>
+                        Delete
+                      </button>
+                    ) : null}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
+      {deleteCandidate ? (
+        <div className="modal-backdrop">
+          <div className="modal-panel">
+            <div className="modal-header">
+              <div>
+                <h2>Delete source</h2>
+                <p className="muted-text">{deleteCandidate.name}</p>
+              </div>
+              <button type="button" className="secondary-button compact-button" onClick={() => setDeleteCandidate(null)}>
+                Close
+              </button>
+            </div>
+            <div className="row-actions">
+              <button type="button" className="secondary-button" disabled={actionLoading !== null} onClick={() => void deleteSource(deleteCandidate, false)}>
+                Disable source only
+              </button>
+              <button type="button" className="danger-button" disabled={actionLoading !== null} onClick={() => void deleteSource(deleteCandidate, true)}>
+                Delete source and jobs
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
