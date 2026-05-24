@@ -32,7 +32,7 @@ from app.services.job_cleanup import delete_job, delete_jobs, exclude_jobs
 from app.services.job_discovery import JobFilters, job_detail, list_jobs
 from app.services.job_availability import check_job_availability, check_jobs_availability
 from app.services.job_scoring import scorecard_for_job
-from app.services.rescore_runs import get_rescore_run_status, run_rescore_background, start_rescore_run
+from app.services.rescore_runs import get_rescore_run_status, retry_rescore_run, run_rescore_background, start_rescore_run
 from app.services.saved_jobs import set_saved_job_status
 from app.services.scoring import score_all_jobs, score_job
 
@@ -164,6 +164,17 @@ def get_rescore_run(run_id: int, db: Session = Depends(get_db)):
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rescore run not found")
     return result
+
+
+@router.post("/rescore-runs/{run_id}/retry", response_model=JobRescoreRunStart)
+def retry_rescore(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    user = _default_user(db)
+    started, created = retry_rescore_run(db, run_id, user)
+    if started is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rescore run not found")
+    if created:
+        background_tasks.add_task(run_rescore_background, started.run_id, user.id)
+    return started
 
 
 @router.get("/{job_id}", response_model=JobDetail)

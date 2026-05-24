@@ -296,14 +296,28 @@ class JobRescoreRun(Base):
     __tablename__ = "job_rescore_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    status: Mapped[str] = mapped_column(String(40), default="running", server_default="running", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), default="queued", server_default="queued", nullable=False, index=True)
     total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     scored: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     skipped: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    total_jobs: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    completed_jobs: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    failed_jobs: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class JobRescoreRunFailure(Base):
+    __tablename__ = "job_rescore_run_failures"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("job_rescore_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    error: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class MissingSkill(Base):

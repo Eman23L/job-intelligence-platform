@@ -377,14 +377,14 @@ def test_rescore_endpoint_returns_run_id_and_status_progress() -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["run_id"]
-        assert body["status"] == "running"
+        assert body["status"] in {"queued", "running"}
 
         status_response = client.get(f"/jobs/rescore-runs/{body['run_id']}")
         assert status_response.status_code == 200
         status_body = status_response.json()
         assert status_body["run_id"] == body["run_id"]
-        assert status_body["status"] in {"running", "completed"}
-        assert status_body["total"] >= status_body["scored"]
+        assert status_body["status"] in {"queued", "running", "completed"}
+        assert status_body["total_jobs"] >= status_body["completed_jobs"]
 
 
 def test_application_status_endpoints_and_excluded_protection() -> None:

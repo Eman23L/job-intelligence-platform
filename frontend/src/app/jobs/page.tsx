@@ -92,7 +92,7 @@ export default function JobsPage() {
         }
         setRescoreRun(result);
         setRescorePollFailures(0);
-        if (result.status === "completed" || result.status === "failed") {
+        if (isTerminalRescoreStatus(result.status)) {
           setRescoreRunId(null);
           setRescoring(false);
           await refresh();
@@ -100,7 +100,7 @@ export default function JobsPage() {
             type: result.status === "completed" ? "success" : "error",
             message:
               result.status === "completed"
-                ? `Rescoring complete: ${result.scored} scored, ${result.skipped} skipped, ${result.failed} failed.`
+                ? `Rescoring complete: ${result.completed_jobs} completed, ${result.skipped} skipped, ${result.failed_jobs} failed.`
                 : result.error ?? "Rescoring failed"
           });
         }
@@ -167,7 +167,7 @@ export default function JobsPage() {
     try {
       const started = await api.rescoreJobs();
       setRescoreRunId(started.run_id);
-      setRescoreRun({ run_id: started.run_id, status: started.status, total: 0, scored: 0, skipped: 0, failed: 0, error: null });
+      setRescoreRun(emptyRescoreRun(started.run_id, started.status));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Rescoring jobs failed";
       if (err instanceof ApiError && err.status === 400 && message.toLowerCase().includes("profile")) {
@@ -175,6 +175,23 @@ export default function JobsPage() {
       } else {
         setNotice({ type: "error", message });
       }
+      setRescoring(false);
+    }
+  };
+
+  const retryRescore = async () => {
+    if (!rescoreRun || rescoring) {
+      return;
+    }
+    setRescoring(true);
+    setNotice({ type: "info", message: "Retrying rescore run..." });
+    setError(null);
+    try {
+      const started = await api.retryRescoreRun(rescoreRun.run_id);
+      setRescoreRunId(started.run_id);
+      setRescoreRun(emptyRescoreRun(started.run_id, started.status));
+    } catch (err) {
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Unable to retry rescore run" });
       setRescoring(false);
     }
   };
@@ -242,7 +259,15 @@ export default function JobsPage() {
       {rescoring ? (
         <div className="notice-banner info">
           Rescoring jobs...
-          {rescoreRun ? ` ${rescoreRun.scored}/${rescoreRun.total} scored, ${rescoreRun.skipped} skipped, ${rescoreRun.failed} failed.` : ""}
+          {rescoreRun ? ` ${rescoreRun.completed_jobs} / ${rescoreRun.total_jobs} completed, ${rescoreRun.failed_jobs} failed.` : ""}
+        </div>
+      ) : null}
+      {rescoreRun && rescoreRun.status === "stalled" ? (
+        <div className="notice-banner error">
+          Rescoring stalled. {rescoreRun.completed_jobs} / {rescoreRun.total_jobs} completed, {rescoreRun.failed_jobs} failed.
+          <button type="button" className="secondary-button compact-button" onClick={() => void retryRescore()}>
+            Retry failed run
+          </button>
         </div>
       ) : null}
       {error ? <ErrorState message={error} /> : null}
@@ -383,4 +408,26 @@ function ScorecardList({ title, items }: { title: string; items: string[] }) {
       )}
     </section>
   );
+}
+
+function isTerminalRescoreStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "stalled";
+}
+
+function emptyRescoreRun(runId: number, status: string): JobRescoreRunStatus {
+  return {
+    run_id: runId,
+    status,
+    total: 0,
+    scored: 0,
+    skipped: 0,
+    failed: 0,
+    total_jobs: 0,
+    completed_jobs: 0,
+    failed_jobs: 0,
+    started_at: null,
+    finished_at: null,
+    last_heartbeat_at: null,
+    error: null
+  };
 }

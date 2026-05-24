@@ -119,16 +119,22 @@ export interface JobScorecard {
 
 export interface JobRescoreRunStart {
   run_id: number;
-  status: "running" | "completed" | "failed" | string;
+  status: "queued" | "running" | "completed" | "failed" | "stalled" | string;
 }
 
 export interface JobRescoreRunStatus {
   run_id: number;
-  status: "running" | "completed" | "failed" | string;
+  status: "queued" | "running" | "completed" | "failed" | "stalled" | string;
   total: number;
   scored: number;
   skipped: number;
   failed: number;
+  total_jobs: number;
+  completed_jobs: number;
+  failed_jobs: number;
+  started_at: string | null;
+  finished_at: string | null;
+  last_heartbeat_at: string | null;
   error: string | null;
 }
 

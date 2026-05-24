@@ -417,6 +417,12 @@ class JobRescoreRunStatus(BaseModel):
     scored: int = 0
     skipped: int = 0
     failed: int = 0
+    total_jobs: int = 0
+    completed_jobs: int = 0
+    failed_jobs: int = 0
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
     error: str | None = None
 
 
