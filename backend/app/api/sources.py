@@ -4,7 +4,7 @@ from time import perf_counter
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -104,7 +104,12 @@ def get_source(source_id: int, db: Session = Depends(get_db)):
 @router.delete("/{source_id}", response_model=SourceDeleteResult)
 def delete_source(source_id: int, delete_jobs: bool = False, db: Session = Depends(get_db)):
     source = _get_source_or_404(db, source_id)
-    return source_service.delete_or_disable_source(db, source, delete_jobs=delete_jobs)
+    try:
+        return source_service.delete_or_disable_source(db, source, delete_jobs=delete_jobs)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("sources.delete failed source_id=%s delete_jobs=%s", source_id, delete_jobs)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to delete source. Please retry.") from exc
 
 
 @router.post("", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED)

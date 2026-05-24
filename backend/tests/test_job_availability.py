@@ -139,6 +139,25 @@ def test_unavailable_jobs_not_queued(db_session, monkeypatch) -> None:
     assert job.application_status == "not_started"
 
 
+def test_unknown_availability_jobs_can_be_queued(db_session, monkeypatch) -> None:
+    job = _seed_scored_job(db_session, "Unknown Availability Data Engineer")
+
+    def mark_unknown(db, candidate):
+        candidate.availability_status = "unknown"
+        candidate.last_checked_at = datetime.now(tz=timezone.utc)
+        candidate.availability_reason = "Could not verify apply button"
+        db.commit()
+
+    monkeypatch.setattr(applications, "check_job_availability", mark_unknown)
+
+    queued, job_ids = prepare_applications(db_session, db_session.scalar(select(User)))
+
+    assert queued == 1
+    assert job_ids == [job.id]
+    db_session.refresh(job)
+    assert job.application_status == "ready_to_apply"
+
+
 def _seed_scored_job(db_session, title: str, *, company: str = "Example Ltd", canonical_url: str | None = None) -> Job:
     user = User(email=f"{title.lower().replace(' ', '-')}@example.com")
     source = JobSource(name=f"{title} Source", base_url="https://example.com", source_type="fixture")

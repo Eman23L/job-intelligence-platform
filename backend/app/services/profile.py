@@ -365,6 +365,7 @@ def _preferences(sections: dict[str, list[str]]) -> dict[str, str]:
         "location": _location_preference(sections.get("preamble", [])) or "",
         "salary": salary,
         "work_authorization": _work_authorization(searchable_text) or "",
+        "target_seniority": _target_seniority_preference(searchable_text),
     }
 
 
@@ -403,6 +404,21 @@ def _work_authorization(text: str) -> str | None:
     if re.search(r"\bBPSS\s+Cleared\b|\bBPSS\b", text, flags=re.IGNORECASE):
         values.append("BPSS Cleared")
     return "; ".join(_dedupe(values)) if values else None
+
+
+def _target_seniority_preference(text: str) -> str:
+    lowered = text.lower()
+    if re.search(r"\b(any seniority|open to all levels)\b", lowered):
+        return "any"
+    if re.search(r"\b(senior leadership|leadership roles|head of|director|principal|senior roles?)\b", lowered):
+        return "senior"
+    if re.search(r"\b(mid[-\s]?senior|experienced mid)\b", lowered):
+        return "mid_senior"
+    if re.search(r"\b(junior|entry[-\s]?level|graduate)\b", lowered):
+        return "junior"
+    if re.search(r"\b(mid[-\s]?level|intermediate)\b", lowered):
+        return "mid"
+    return "mid_senior"
 
 
 def _salary_range(text: str) -> tuple[Decimal | None, Decimal | None]:

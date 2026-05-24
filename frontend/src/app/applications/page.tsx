@@ -165,7 +165,7 @@ export default function ApplicationsPage() {
                     <td>
                       <div className="row-actions">
                         <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void openApplyLink(item)}>
-                          Open apply link
+                          Open apply page
                         </button>
                         <button
                           type="button"

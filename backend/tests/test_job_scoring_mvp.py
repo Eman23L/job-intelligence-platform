@@ -47,6 +47,57 @@ def test_high_skill_overlap_scores_higher_than_low_overlap(db_session: Session) 
     assert "Python" in high.matched_skills
 
 
+def test_senior_leadership_role_is_penalised_by_default(db_session: Session) -> None:
+    _, profile, jobs = _seed_scoring_rows(db_session)
+    source_id = jobs["high"].source_id
+    senior = _job(
+        db_session,
+        source_id,
+        "senior-manager",
+        "Senior Data Engineering Manager",
+        "Remote UK",
+        "remote",
+        "Lead Python SQL data platform delivery and manage engineering teams.",
+        ["Python", "SQL", "Power BI"],
+    )
+
+    result = build_scorecard(db_session, senior, profile)
+
+    assert result.total_score < build_scorecard(db_session, jobs["high"], profile).total_score
+    assert "Penalised because role appears too senior." in result.risks
+    assert result.recommendation in {"maybe", "skip"}
+
+
+def test_senior_preference_allows_senior_technical_role(db_session: Session) -> None:
+    _, profile, jobs = _seed_scoring_rows(db_session)
+    profile.preferences["target_seniority"] = "senior"
+    source_id = jobs["high"].source_id
+    senior = _job(
+        db_session,
+        source_id,
+        "senior-engineer",
+        "Senior Data Engineer",
+        "Remote UK",
+        "remote",
+        "Build Python SQL data pipelines and Power BI dashboards.",
+        ["Python", "SQL", "Power BI"],
+    )
+
+    result = build_scorecard(db_session, senior, profile)
+
+    assert "Penalised because role appears too senior." not in result.risks
+    assert result.total_score >= 70
+
+
+def test_mid_level_technical_growth_role_gets_growth_evidence(db_session: Session) -> None:
+    _, profile, jobs = _seed_scoring_rows(db_session)
+
+    result = build_scorecard(db_session, jobs["high"], profile)
+
+    assert "Good growth role." in result.evidence
+    assert "Suitable mid-level technical role." in result.evidence
+
+
 def test_missing_required_skills_lowers_score_and_records_missing(db_session: Session) -> None:
     user, profile, jobs = _seed_scoring_rows(db_session)
 
@@ -144,6 +195,7 @@ def _seed_scoring_rows(
             "location": "Remote UK",
             "salary": "50000-70000",
             "work_authorization": work_authorization,
+            "target_seniority": "mid_senior",
         },
         remote_preference="remote",
         location_preference="Remote UK",

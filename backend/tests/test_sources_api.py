@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import Base, Job, JobSource
+from app.db.models import Base, Job, JobScore, JobSource, SavedJob, User
 from app.db.session import get_db
 from app.main import app
 
@@ -221,5 +221,47 @@ def test_delete_source_with_jobs_removes_source() -> None:
         with TestingSession() as db:
             assert db.get(JobSource, source_id) is None
             assert db.scalars(select(Job)).all() == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_source_with_jobs_cleans_related_scores_and_saved_records() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        user = User(email="delete-related@example.invalid")
+        source = JobSource(name="Delete Related", base_url="https://example.invalid", source_type="fixture", enabled=True)
+        db.add_all([user, source])
+        db.flush()
+        job = Job(
+            source_id=source.id,
+            source_job_id="job-related",
+            canonical_url="https://example.invalid/jobs/related",
+            title="Related Job",
+            application_status="ready_to_apply",
+        )
+        db.add(job)
+        db.flush()
+        db.add_all([JobScore(job_id=job.id, user_id=user.id, total_score=80), SavedJob(job_id=job.id, user_id=user.id, status="saved")])
+        db.commit()
+        source_id = source.id
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).delete(f"/sources/{source_id}?delete_jobs=true")
+        assert response.status_code == 200
+        with TestingSession() as db:
+            assert db.scalars(select(Job)).all() == []
+            assert db.scalars(select(JobScore)).all() == []
+            assert db.scalars(select(SavedJob)).all() == []
     finally:
         app.dependency_overrides.clear()

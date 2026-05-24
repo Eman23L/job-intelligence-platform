@@ -249,7 +249,8 @@ export default function SourcesPage() {
       });
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to delete source");
+      console.error("Source delete failed", err);
+      setError(deleteJobs ? "Unable to delete source and jobs. Please retry." : "Unable to disable source. Please retry.");
     } finally {
       setActionLoading(null);
     }

@@ -227,6 +227,7 @@ export interface UserProfile {
     location: string;
     salary: string;
     work_authorization?: string;
+    target_seniority?: "junior" | "mid" | "mid_senior" | "senior" | "any" | string;
   };
   location_preference: string | null;
   remote_preference: string | null;

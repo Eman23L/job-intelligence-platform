@@ -21,6 +21,17 @@ WEIGHTS = {
     "confidence": 0.05,
 }
 
+SENIOR_TITLE_PATTERN = re.compile(r"\b(senior|sr\.?|lead|principal|director|manager|architect)\b|\bhead\s+of\b", re.IGNORECASE)
+LEADERSHIP_TITLE_PATTERN = re.compile(r"\b(lead|principal|director|manager)\b|\bhead\s+of\b", re.IGNORECASE)
+GROWTH_TECH_TITLE_PATTERN = re.compile(
+    r"\b(engineer|developer|analyst|consultant|automation engineer|data engineer|ai engineer)\b",
+    re.IGNORECASE,
+)
+TECH_RELEVANCE_PATTERN = re.compile(
+    r"\b(engineer|developer|data|analytics|automation|ai|machine learning|software|python|sql|power bi|platform)\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ScoreResult:
@@ -95,6 +106,8 @@ def build_scorecard(db: Session, job: Job, profile: UserProfile) -> ScoreResult:
     location_score = _location_remote_fit(profile, job)
     salary_score, salary_risks = _salary_fit(profile, job)
     confidence = _confidence(job, analysis, job_skills)
+    career_adjustment, career_evidence, career_risks = _career_level_adjustment(job, profile, text)
+    clearance_adjustment, clearance_evidence = _clearance_adjustment(profile, text)
 
     breakdown = {
         "skill_match": round(skill_score * WEIGHTS["skill_match"], 2),
@@ -104,13 +117,13 @@ def build_scorecard(db: Session, job: Job, profile: UserProfile) -> ScoreResult:
         "salary_fit": round(salary_score * WEIGHTS["salary_fit"], 2),
         "confidence": round(confidence * WEIGHTS["confidence"], 2),
     }
-    total = round(sum(breakdown.values()), 2)
-    risks = gate_risks + salary_risks
+    total = round(max(0.0, min(100.0, sum(breakdown.values()) + career_adjustment + clearance_adjustment)), 2)
+    risks = gate_risks + salary_risks + career_risks
     if gates:
         total = min(total, 49.0)
     tier = score_tier(total)
     recommendation = _recommendation(total, gates)
-    evidence = _evidence(job, analysis, matched, profile)
+    evidence = _evidence(job, analysis, matched, profile) + career_evidence + clearance_evidence
     return ScoreResult(
         total_score=total,
         tier=tier,
@@ -181,6 +194,52 @@ def _deterministic_gates(job: Job, profile: UserProfile, text: str) -> tuple[lis
         gates.append("location_remote")
         risks.append("Location/remote arrangement does not match saved profile preferences.")
     return gates, risks
+
+
+def _career_level_adjustment(job: Job, profile: UserProfile, text: str) -> tuple[float, list[str], list[str]]:
+    title = job.title or ""
+    target = _target_seniority(profile)
+    senior_ok = target in {"senior", "any"}
+    leadership = bool(LEADERSHIP_TITLE_PATTERN.search(title))
+    senior_title = bool(SENIOR_TITLE_PATTERN.search(title))
+    technical_growth = bool(GROWTH_TECH_TITLE_PATTERN.search(title)) and bool(TECH_RELEVANCE_PATTERN.search(text))
+    evidence: list[str] = []
+    risks: list[str] = []
+    adjustment = 0.0
+
+    if senior_title and not senior_ok:
+        penalty = 22.0 if leadership else 12.0
+        if target == "junior":
+            penalty += 8.0
+        adjustment -= penalty
+        risks.append("Penalised because role appears too senior.")
+    elif technical_growth:
+        adjustment += 6.0
+
+    if technical_growth and not senior_title:
+        evidence.append("Good growth role.")
+        evidence.append("Suitable mid-level technical role.")
+    elif technical_growth and target == "mid_senior" and not leadership:
+        evidence.append("Suitable mid-level technical role.")
+
+    return adjustment, evidence, risks
+
+
+def _clearance_adjustment(profile: UserProfile, text: str) -> tuple[float, list[str]]:
+    auth = " ".join(str(value) for value in (profile.preferences or {}).values()).lower()
+    if "sc cleared" not in auth or not re.search(r"\bsc\s+clear", text):
+        return 0.0, []
+    if not TECH_RELEVANCE_PATTERN.search(text):
+        return 0.0, []
+    return 4.0, ["SC clearance is relevant to this technical role."]
+
+
+def _target_seniority(profile: UserProfile) -> str:
+    raw = (profile.preferences or {}).get("target_seniority") or "mid_senior"
+    normalized = str(raw).strip().lower().replace("-", "_")
+    if normalized in {"junior", "mid", "mid_senior", "senior", "any"}:
+        return normalized
+    return "mid_senior"
 
 
 def _job_skills(db: Session, job: Job, analysis: JobAnalysis | None) -> list[str]:
@@ -288,6 +347,10 @@ def _scorecard_payload(job: Job, result: ScoreResult) -> dict[str, Any]:
 def _why(result: ScoreResult) -> str:
     if result.gates:
         return "Recommendation is skip because deterministic gates found blocking risks before weighted scoring."
+    if any("too senior" in risk.lower() for risk in result.risks):
+        return "Penalised because role appears too senior; recommendation reflects the remaining weighted fit."
+    if any("Good growth role." == item for item in result.evidence):
+        return "Good growth role. Suitable mid-level technical role based on title, skills, and profile preferences."
     if result.recommendation == "apply":
         return "Recommendation is apply because weighted score and evidence indicate a strong fit."
     if result.recommendation == "maybe":

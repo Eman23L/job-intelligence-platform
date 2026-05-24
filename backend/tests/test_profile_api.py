@@ -122,6 +122,7 @@ def test_extract_profile_fields_from_cv_text() -> None:
         "location": "",
         "salary": "65000-85000",
         "work_authorization": "",
+        "target_seniority": "mid_senior",
     }
     assert set(fields) == {"skills", "projects", "experience", "education", "preferred_roles", "summary", "preferences"}
 
@@ -141,6 +142,7 @@ def test_post_cv_stores_profile_and_get_returns_it() -> None:
             "location": "",
             "salary": "65000-85000",
             "work_authorization": "",
+            "target_seniority": "mid_senior",
         }
         assert body["location_preference"] is None
         assert body["remote_preference"] == "hybrid"

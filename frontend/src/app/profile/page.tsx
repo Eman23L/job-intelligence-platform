@@ -103,6 +103,7 @@ export default function ProfilePage() {
                   value={formatSalary(profile.salary_min_preference, profile.salary_max_preference)}
                 />
                 <Metric label="Authorization" value={profile.preferences.work_authorization || "Not listed"} />
+                <Metric label="Target seniority" value={formatSeniority(profile.preferences.target_seniority)} />
               </div>
             </SummaryBlock>
             <SummaryBlock title="Experience">
@@ -169,4 +170,11 @@ function Metric({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function formatSeniority(value: string | undefined): string {
+  if (!value) {
+    return "Mid-senior";
+  }
+  return value.replaceAll("_", "-").replace(/^\w/, (letter) => letter.toUpperCase());
 }
