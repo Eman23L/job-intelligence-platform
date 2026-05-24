@@ -42,10 +42,10 @@ def test_failed_job_is_persisted_and_run_continues(monkeypatch) -> None:
     monkeypatch.setattr(rescore_runs, "SessionLocal", TestingSession)
     original_score = rescore_runs.score_job_against_profile
 
-    def fail_one(db: Session, job: Job, user: User, profile: UserProfile):
+    def fail_one(db: Session, job: Job, user: User, profile: UserProfile, *args, **kwargs):
         if job.source_job_id == "bad":
             raise ValueError("bad fixture job")
-        return original_score(db, job, user, profile)
+        return original_score(db, job, user, profile, *args, **kwargs)
 
     monkeypatch.setattr(rescore_runs, "score_job_against_profile", fail_one)
 
@@ -74,6 +74,37 @@ def test_retry_stalled_run_creates_new_queued_run() -> None:
         assert started is not None
         assert started.run_id != ids["run"]
         assert started.status == "queued"
+
+
+def test_cancel_active_run_marks_canceled() -> None:
+    TestingSession = _session_factory()
+    ids = _seed_rows(TestingSession, status="running")
+    with TestingSession() as db:
+        result = rescore_runs.cancel_rescore_run(db, ids["run"])
+        run = db.get(JobRescoreRun, ids["run"])
+        assert result is not None
+        assert result.status == "canceled"
+        assert run is not None
+        assert run.status == "canceled"
+        assert run.finished_at is not None
+
+
+def test_run_status_includes_eta_while_running() -> None:
+    TestingSession = _session_factory()
+    ids = _seed_rows(TestingSession, status="running")
+    with TestingSession() as db:
+        run = db.get(JobRescoreRun, ids["run"])
+        assert run is not None
+        run.total_jobs = 10
+        run.completed_jobs = 2
+        run.started_at = datetime.now(tz=timezone.utc) - timedelta(seconds=20)
+        db.commit()
+
+        status = rescore_runs.get_rescore_run_status(db, ids["run"])
+        assert status is not None
+        assert status.completed_jobs == 2
+        assert status.estimated_seconds_remaining is not None
+        assert status.estimated_seconds_remaining > 0
 
 
 def test_whole_run_timeout_marks_stalled(monkeypatch) -> None:

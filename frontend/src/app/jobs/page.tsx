@@ -196,6 +196,21 @@ export default function JobsPage() {
     }
   };
 
+  const cancelRescore = async () => {
+    if (!rescoreRun || !rescoring) {
+      return;
+    }
+    try {
+      const canceled = await api.cancelRescoreRun(rescoreRun.run_id);
+      setRescoreRun({ ...rescoreRun, status: canceled.status });
+      setRescoreRunId(null);
+      setRescoring(false);
+      setNotice({ type: "warning", message: "Rescoring canceled." });
+    } catch (err) {
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Unable to cancel rescore run" });
+    }
+  };
+
   const checkAvailability = async () => {
     if (checkingAvailability) {
       return;
@@ -259,7 +274,12 @@ export default function JobsPage() {
       {rescoring ? (
         <div className="notice-banner info">
           Rescoring jobs...
-          {rescoreRun ? ` ${rescoreRun.completed_jobs} / ${rescoreRun.total_jobs} completed, ${rescoreRun.failed_jobs} failed.` : ""}
+          {rescoreRun ? ` ${rescoreRun.completed_jobs} / ${rescoreRun.total_jobs} completed, ${rescoreRun.failed_jobs} failed${formatEta(rescoreRun.estimated_seconds_remaining)}.` : ""}
+          {rescoreRun ? (
+            <button type="button" className="secondary-button compact-button" onClick={() => void cancelRescore()}>
+              Cancel
+            </button>
+          ) : null}
         </div>
       ) : null}
       {rescoreRun && rescoreRun.status === "stalled" ? (
@@ -411,7 +431,7 @@ function ScorecardList({ title, items }: { title: string; items: string[] }) {
 }
 
 function isTerminalRescoreStatus(status: string): boolean {
-  return status === "completed" || status === "failed" || status === "stalled";
+  return status === "completed" || status === "failed" || status === "stalled" || status === "canceled";
 }
 
 function emptyRescoreRun(runId: number, status: string): JobRescoreRunStatus {
@@ -425,9 +445,20 @@ function emptyRescoreRun(runId: number, status: string): JobRescoreRunStatus {
     total_jobs: 0,
     completed_jobs: 0,
     failed_jobs: 0,
+    estimated_seconds_remaining: null,
     started_at: null,
     finished_at: null,
     last_heartbeat_at: null,
     error: null
   };
+}
+
+function formatEta(seconds: number | null): string {
+  if (seconds === null) {
+    return "";
+  }
+  if (seconds < 60) {
+    return `, about ${Math.max(1, Math.round(seconds))}s remaining`;
+  }
+  return `, about ${Math.round(seconds / 60)}m remaining`;
 }

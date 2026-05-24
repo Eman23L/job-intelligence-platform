@@ -47,6 +47,15 @@ class ScoreResult:
     gates: list[str]
 
 
+@dataclass
+class ScoringContext:
+    analyses: dict[int, JobAnalysis]
+    skills: dict[int, list[str]]
+    scores: dict[int, JobScore]
+    profile_skills: set[str]
+    experience_tokens: set[str]
+
+
 def rescore_jobs(db: Session, user: User | None = None) -> dict[str, int]:
     user = user or _default_user(db)
     profile = get_profile(db, user)
@@ -63,16 +72,53 @@ def rescore_jobs(db: Session, user: User | None = None) -> dict[str, int]:
     return {"jobs_scored": scored, "jobs_skipped": skipped}
 
 
-def score_job_against_profile(db: Session, job: Job, user: User, profile: UserProfile) -> JobScore:
+def preload_scoring_context(db: Session, jobs: list[Job], user: User, profile: UserProfile) -> ScoringContext:
+    job_ids = [job.id for job in jobs]
+    analyses = {analysis.job_id: analysis for analysis in db.scalars(select(JobAnalysis).where(JobAnalysis.job_id.in_(job_ids))).all()}
+    skills: dict[int, list[str]] = {job_id: [] for job_id in job_ids}
+    for row in db.scalars(select(JobSkill).where(JobSkill.job_id.in_(job_ids))).all():
+        skills.setdefault(row.job_id, []).append(row.skill_name)
+    scores = {
+        score.job_id: score
+        for score in db.scalars(select(JobScore).where(JobScore.user_id == user.id, JobScore.job_id.in_(job_ids))).all()
+    }
+    profile_skills = {_norm(skill) for skill in profile.skills or []}
+    experience_tokens = _profile_experience_tokens(profile)
+    return ScoringContext(analyses=analyses, skills=skills, scores=scores, profile_skills=profile_skills, experience_tokens=experience_tokens)
+
+
+def score_job_against_profile(
+    db: Session,
+    job: Job,
+    user: User,
+    profile: UserProfile,
+    context: ScoringContext | None = None,
+    *,
+    refresh_missing: bool = True,
+) -> JobScore:
     if job.status == "excluded":
         raise ValueError("Excluded jobs are not scored.")
 
-    result = build_scorecard(db, job, profile)
-    score = db.scalar(select(JobScore).where(JobScore.job_id == job.id, JobScore.user_id == user.id))
+    result = build_scorecard(db, job, profile, context=context)
+    score = context.scores.get(job.id) if context is not None else db.scalar(select(JobScore).where(JobScore.job_id == job.id, JobScore.user_id == user.id))
     if score is None:
         score = JobScore(job_id=job.id, user_id=user.id, total_score=Decimal("0"))
         db.add(score)
+        if context is not None:
+            context.scores[job.id] = score
 
+    apply_score_result(score, job, result)
+
+    if refresh_missing:
+        _refresh_missing_skills(db, job, user, result.missing_skills)
+    else:
+        for skill in result.missing_skills:
+            db.add(MissingSkill(job_id=job.id, user_id=user.id, skill_name=skill, learning_priority="medium"))
+    db.flush()
+    return score
+
+
+def apply_score_result(score: JobScore, job: Job, result: ScoreResult) -> None:
     score.total_score = _decimal(result.total_score)
     score.role_match_score = _decimal(result.breakdown["role_family_fit"])
     score.skill_match_score = _decimal(result.breakdown["skill_match"])
@@ -86,22 +132,18 @@ def score_job_against_profile(db: Session, job: Job, user: User, profile: UserPr
     score.explanation = json.dumps(_scorecard_payload(job, result), sort_keys=True)
     score.scored_at = datetime.now(tz=timezone.utc)
 
-    _refresh_missing_skills(db, job, user, result.missing_skills)
-    db.flush()
-    return score
 
-
-def build_scorecard(db: Session, job: Job, profile: UserProfile) -> ScoreResult:
-    analysis = db.scalar(select(JobAnalysis).where(JobAnalysis.job_id == job.id))
-    job_skills = _job_skills(db, job, analysis)
-    profile_skills = {_norm(skill) for skill in profile.skills or []}
+def build_scorecard(db: Session, job: Job, profile: UserProfile, context: ScoringContext | None = None) -> ScoreResult:
+    analysis = context.analyses.get(job.id) if context is not None else db.scalar(select(JobAnalysis).where(JobAnalysis.job_id == job.id))
+    job_skills = _job_skills_from_context(job, analysis, context) if context is not None else _job_skills(db, job, analysis)
+    profile_skills = context.profile_skills if context is not None else {_norm(skill) for skill in profile.skills or []}
     matched = sorted({skill for skill in job_skills if _norm(skill) in profile_skills})
     missing = sorted({skill for skill in job_skills if _norm(skill) not in profile_skills})
     text = _job_text(job, analysis)
 
     gates, gate_risks = _deterministic_gates(job, profile, text)
     skill_score = 100.0 if not job_skills else 100.0 * (len(matched) / len(set(job_skills)))
-    experience_score = _experience_relevance(profile, text)
+    experience_score = _experience_relevance(profile, text, context.experience_tokens if context is not None else None)
     role_score = _role_family_fit(profile, job, analysis)
     location_score = _location_remote_fit(profile, job)
     salary_score, salary_risks = _salary_fit(profile, job)
@@ -250,15 +292,26 @@ def _job_skills(db: Session, job: Job, analysis: JobAnalysis | None) -> list[str
     return sorted({skill for skill in skills if skill})
 
 
-def _experience_relevance(profile: UserProfile, text: str) -> float:
-    sources = (profile.experience or []) + (profile.projects or []) + (profile.preferred_roles or [])
-    if not sources:
-        return 35.0
-    tokens = _keyword_set(" ".join(sources))
+def _job_skills_from_context(job: Job, analysis: JobAnalysis | None, context: ScoringContext) -> list[str]:
+    skills = list(context.skills.get(job.id, []))
+    if analysis and analysis.tools_detected:
+        skills.extend(analysis.tools_detected)
+    return sorted({skill for skill in skills if skill})
+
+
+def _experience_relevance(profile: UserProfile, text: str, tokens: set[str] | None = None) -> float:
+    tokens = tokens if tokens is not None else _profile_experience_tokens(profile)
     if not tokens:
         return 35.0
     overlap = sum(1 for token in tokens if token in text)
     return min(100.0, 25.0 + (75.0 * overlap / max(1, len(tokens))))
+
+
+def _profile_experience_tokens(profile: UserProfile) -> set[str]:
+    sources = (profile.experience or []) + (profile.projects or []) + (profile.preferred_roles or [])
+    if not sources:
+        return set()
+    return _keyword_set(" ".join(sources))
 
 
 def _role_family_fit(profile: UserProfile, job: Job, analysis: JobAnalysis | None) -> float:

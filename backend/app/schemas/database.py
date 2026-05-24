@@ -420,6 +420,7 @@ class JobRescoreRunStatus(BaseModel):
     total_jobs: int = 0
     completed_jobs: int = 0
     failed_jobs: int = 0
+    estimated_seconds_remaining: float | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     last_heartbeat_at: datetime | None = None

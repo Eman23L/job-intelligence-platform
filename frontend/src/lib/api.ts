@@ -119,6 +119,7 @@ export const api = {
   rescoreJobs: () => request<JobRescoreRunStart>("/jobs/rescore", { method: "POST" }),
   rescoreRun: (id: number) => request<JobRescoreRunStatus>(`/jobs/rescore-runs/${id}`),
   retryRescoreRun: (id: number) => request<JobRescoreRunStart>(`/jobs/rescore-runs/${id}/retry`, { method: "POST" }),
+  cancelRescoreRun: (id: number) => request<JobRescoreRunStart>(`/jobs/rescore-runs/${id}/cancel`, { method: "POST" }),
   jobScorecard: (id: string | number) => request<JobScorecard>(`/jobs/${id}/scorecard`),
   deleteJob: (id: string | number) => request<{ affected: number; job_ids: number[] }>(`/jobs/${id}`, { method: "DELETE" }),
   bulkDeleteJobs: (jobIds: number[]) =>
