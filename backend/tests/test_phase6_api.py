@@ -108,6 +108,7 @@ def test_jobs_list_uses_bounded_queries() -> None:
     assert response.status_code == 200
     assert response.json()["total_count"] == 4
     assert len(statements) <= 3
+    assert all("explanation" not in statement.lower() for statement in statements)
 
 
 def test_job_detail_response() -> None:
@@ -505,6 +506,7 @@ def _analysis_score(db, user_id, job, role_family, tier, total_score, skills, mi
             total_score=Decimal(str(total_score)),
             role_match_score=Decimal("25"),
             skill_match_score=Decimal("20"),
+            recommendation="apply" if total_score >= 70 else "skip",
             recommendation_tier=tier,
             explanation=f"{tier} fixture.",
         )

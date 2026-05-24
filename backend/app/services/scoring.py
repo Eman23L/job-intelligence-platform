@@ -83,6 +83,7 @@ def score_job(db: Session, job: Job, user: User | None = None) -> JobScore:
     score.freshness_score = _decimal(breakdown.freshness_score)
     score.missing_skill_penalty = _decimal(breakdown.penalty)
     score.explanation = explanation
+    score.recommendation = _recommendation_action(total, tier)
     score.recommendation_tier = tier
     score.scored_at = datetime.now(tz=timezone.utc)
 
@@ -277,6 +278,14 @@ def recommendation_tier(total_score: float) -> str:
     if total_score >= 40:
         return "Stretch role"
     return "Poor fit"
+
+
+def _recommendation_action(total_score: float, tier: str) -> str:
+    if tier == "excluded" or total_score < 50:
+        return "skip"
+    if total_score >= 70:
+        return "apply"
+    return "maybe"
 
 
 def generate_explanation(job: Job, analysis: JobAnalysis, breakdown: ScoreBreakdown, tier: str) -> str:

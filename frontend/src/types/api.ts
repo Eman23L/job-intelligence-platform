@@ -45,6 +45,7 @@ export interface PaginatedJobs {
   page_size: number;
   total_count: number;
   total_pages: number;
+  warning?: string | null;
 }
 
 export interface JobRecord extends JobListItem {
@@ -88,6 +89,7 @@ export interface JobScore {
   freshness_score: string | null;
   missing_skill_penalty: string | null;
   explanation: string | null;
+  recommendation: string | null;
   recommendation_tier: string | null;
   scored_at: string;
 }

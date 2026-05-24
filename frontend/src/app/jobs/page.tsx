@@ -62,6 +62,7 @@ export default function JobsPage() {
       .then((result) => {
         setData(result);
         setError(null);
+        setNotice(result.warning ? { type: "warning", message: result.warning } : null);
         setSelectedIds(new Set());
       })
       .catch((err: Error) => setError(err.message))
@@ -71,6 +72,7 @@ export default function JobsPage() {
   const refresh = async () => {
     const result = await api.jobs(params);
     setData(result);
+    setNotice(result.warning ? { type: "warning", message: result.warning } : null);
     setSelectedIds(new Set());
   };
 

@@ -320,6 +320,7 @@ class PaginatedJobs(BaseModel):
     page_size: int
     total_count: int
     total_pages: int
+    warning: str | None = None
 
 
 class JobIdsRequest(BaseModel):
@@ -385,6 +386,7 @@ class JobScoreBase(BaseModel):
     freshness_score: Decimal | None = None
     missing_skill_penalty: Decimal | None = None
     explanation: str | None = None
+    recommendation: str | None = None
     recommendation_tier: str | None = None
 
 

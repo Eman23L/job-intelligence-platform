@@ -5,7 +5,8 @@ import logging
 from math import ceil
 from time import perf_counter
 
-from sqlalchemy import Select, asc, desc, func, select
+from sqlalchemy import Select, asc, case, desc, func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobAnalysis, JobScore, JobSkill, MissingSkill, SavedJob, User
@@ -13,6 +14,7 @@ from app.schemas.database import JobDetail, JobListItem, PaginatedJobs
 from app.services.job_scoring import recommendation_from_score
 
 logger = logging.getLogger(__name__)
+JOBS_STATEMENT_TIMEOUT_MS = 1800
 
 
 @dataclass(frozen=True)
@@ -45,39 +47,26 @@ def list_jobs(
     started = perf_counter()
     page = max(page, 1)
     page_size = max(1, min(page_size, 100))
-    query = _job_list_query(filters, sort, user)
-    count_query = select(func.count()).select_from(query.order_by(None).subquery())
-    total_count = db.scalar(count_query) or 0
-    total_pages = ceil(total_count / page_size) if total_count else 0
-    offset = (page - 1) * page_size
-    rows = db.execute(query.offset(offset).limit(page_size)).all()
-    items = [
-        JobListItem(
-            id=row.id,
-            title=row.title,
-            company_name=row.company_name,
-            location=row.location,
-            remote_type=row.remote_type,
-            salary_min=row.salary_min,
-            salary_max=row.salary_max,
-            salary_currency=row.salary_currency,
-            salary_min_raw=row.salary_min_raw,
-            salary_max_raw=row.salary_max_raw,
-            salary_period=row.salary_period,
-            normalized_annual_min=row.normalized_annual_min,
-            normalized_annual_max=row.normalized_annual_max,
-            posted_at=row.posted_at,
-            role_family=row.role_family,
-            recommendation_tier=row.recommendation_tier,
-            total_score=row.total_score,
-            recommendation=_recommendation_from_explanation(row.explanation),
-            matched_skills_count=max(0, int(row.skills_count or 0) - int(row.missing_skills_count or 0)),
-            missing_skills_count=int(row.missing_skills_count or 0),
-            status=row.status,
-            application_status=row.application_status,
+    try:
+        _set_statement_timeout(db)
+        query = _job_list_query(filters, sort, user)
+        count_query = select(func.count()).select_from(query.order_by(None).subquery())
+        total_count = db.scalar(count_query) or 0
+        total_pages = ceil(total_count / page_size) if total_count else 0
+        offset = (page - 1) * page_size
+        rows = db.execute(query.offset(offset).limit(page_size)).all()
+        items = [_job_list_item(row) for row in rows]
+    except SQLAlchemyError:
+        logger.exception("jobs.list query failed; returning empty fallback")
+        db.rollback()
+        return PaginatedJobs(
+            items=[],
+            page=page,
+            page_size=page_size,
+            total_count=0,
+            total_pages=0,
+            warning="Jobs query timed out or failed. Try again shortly or narrow the filters.",
         )
-        for row in rows
-    ]
     elapsed_ms = int((perf_counter() - started) * 1000)
     logger.info(
         "jobs.list completed total=%s returned=%s page=%s page_size=%s sort=%s elapsed_ms=%s",
@@ -94,6 +83,33 @@ def list_jobs(
         page_size=page_size,
         total_count=total_count,
         total_pages=total_pages,
+    )
+
+
+def _job_list_item(row) -> JobListItem:
+    return JobListItem(
+        id=row.id,
+        title=row.title,
+        company_name=row.company_name,
+        location=row.location,
+        remote_type=row.remote_type,
+        salary_min=row.salary_min,
+        salary_max=row.salary_max,
+        salary_currency=row.salary_currency,
+        salary_min_raw=row.salary_min_raw,
+        salary_max_raw=row.salary_max_raw,
+        salary_period=row.salary_period,
+        normalized_annual_min=row.normalized_annual_min,
+        normalized_annual_max=row.normalized_annual_max,
+        posted_at=row.posted_at,
+        role_family=row.role_family,
+        recommendation_tier=row.recommendation_tier,
+        total_score=row.total_score,
+        recommendation=row.recommendation,
+        matched_skills_count=max(0, int(row.skills_count or 0) - int(row.missing_skills_count or 0)),
+        missing_skills_count=int(row.missing_skills_count or 0),
+        status=row.status,
+        application_status=row.application_status,
     )
 
 
@@ -114,9 +130,17 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select
     score_query = select(
         JobScore.job_id.label("job_id"),
         JobScore.total_score.label("total_score"),
+        func.coalesce(
+            JobScore.recommendation,
+            case(
+                (JobScore.recommendation_tier == "excluded", "skip"),
+                (JobScore.total_score >= 70, "apply"),
+                (JobScore.total_score >= 50, "maybe"),
+                else_="skip",
+            ),
+        ).label("recommendation"),
         JobScore.recommendation_tier.label("recommendation_tier"),
         JobScore.scored_at.label("scored_at"),
-        JobScore.explanation.label("explanation"),
     )
     if user is not None:
         score_query = score_query.where(JobScore.user_id == user.id)
@@ -143,7 +167,7 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select
             JobAnalysis.role_family,
             score_subquery.c.recommendation_tier,
             score_subquery.c.total_score,
-            score_subquery.c.explanation,
+            score_subquery.c.recommendation,
             func.coalesce(skills_count.c.skills_count, 0).label("skills_count"),
             func.coalesce(missing_count.c.missing_skills_count, 0).label("missing_skills_count"),
         )
@@ -303,6 +327,12 @@ def _sort_reverse(sort: str) -> bool:
     return sort not in {"company_name_asc", "title_asc"}
 
 
+def _set_statement_timeout(db: Session) -> None:
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return
+    db.execute(text(f"SET LOCAL statement_timeout = {JOBS_STATEMENT_TIMEOUT_MS}"))
+
+
 def _score_for_job(db: Session, job_id: int, user: User | None) -> JobScore | None:
     query = select(JobScore).where(JobScore.job_id == job_id).order_by(JobScore.scored_at.desc())
     if user is not None:
@@ -322,16 +352,3 @@ def _saved_for_job(db: Session, job_id: int, user: User | None) -> SavedJob | No
     if user is not None:
         query = query.where(SavedJob.user_id == user.id)
     return db.scalar(query)
-
-
-def _recommendation_from_explanation(value: str | None) -> str | None:
-    if not value:
-        return None
-    import json
-
-    try:
-        payload = json.loads(value)
-    except json.JSONDecodeError:
-        return None
-    recommendation = payload.get("recommendation")
-    return recommendation if isinstance(recommendation, str) else None

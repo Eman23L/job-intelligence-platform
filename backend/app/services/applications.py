@@ -1,4 +1,3 @@
-import json
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -6,7 +5,6 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobScore, User
 from app.schemas.database import ApplicationItem
-from app.services.job_scoring import recommendation_from_score
 
 APPLICATION_STATUSES = {"not_started", "ready_to_apply", "opened", "applied", "skipped", "failed"}
 QUEUEABLE_RECOMMENDATIONS = {"apply", "maybe"}
@@ -57,8 +55,8 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
     score_query = select(
         JobScore.job_id.label("job_id"),
         JobScore.total_score.label("total_score"),
+        JobScore.recommendation.label("recommendation"),
         JobScore.recommendation_tier.label("recommendation_tier"),
-        JobScore.explanation.label("explanation"),
     )
     if user is not None:
         score_query = score_query.where(JobScore.user_id == user.id)
@@ -73,8 +71,8 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
             Job.canonical_url,
             Job.application_status,
             score_subquery.c.total_score,
+            score_subquery.c.recommendation,
             score_subquery.c.recommendation_tier,
-            score_subquery.c.explanation,
         )
         .outerjoin(score_subquery, score_subquery.c.job_id == Job.id)
         .where(Job.status != "excluded", Job.application_status.in_(("ready_to_apply", "opened", "failed")))
@@ -90,14 +88,14 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
             application_status=row.application_status,
             total_score=row.total_score,
             recommendation_tier=row.recommendation_tier,
-            recommendation=_recommendation_from_explanation(row.explanation, row.total_score),
+            recommendation=row.recommendation or _recommendation_from_total(row.total_score),
         )
         for row in rows
     ]
 
 
 def _is_queueable(score: JobScore) -> bool:
-    recommendation = recommendation_from_score(score) or _recommendation_from_total(score.total_score)
+    recommendation = score.recommendation or _recommendation_from_total(score.total_score)
     return recommendation in QUEUEABLE_RECOMMENDATIONS
 
 
@@ -110,18 +108,6 @@ def _score_for_job(db: Session, job_id: int, user: User | None) -> JobScore | No
     if user is not None:
         query = query.where(JobScore.user_id == user.id)
     return db.scalar(query)
-
-
-def _recommendation_from_explanation(value: str | None, total_score: Decimal | None) -> str | None:
-    if value:
-        try:
-            payload = json.loads(value)
-        except json.JSONDecodeError:
-            payload = {}
-        recommendation = payload.get("recommendation")
-        if isinstance(recommendation, str):
-            return recommendation
-    return _recommendation_from_total(total_score)
 
 
 def _recommendation_from_total(total_score: Decimal | None) -> str | None:

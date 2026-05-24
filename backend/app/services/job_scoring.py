@@ -70,6 +70,7 @@ def score_job_against_profile(db: Session, job: Job, user: User, profile: UserPr
     score.location_score = _decimal(result.breakdown["location_remote_fit"])
     score.freshness_score = _decimal(result.breakdown["confidence"])
     score.missing_skill_penalty = _decimal(max(0, 35 - result.breakdown["skill_match"]))
+    score.recommendation = result.recommendation
     score.recommendation_tier = result.tier
     score.explanation = json.dumps(_scorecard_payload(job, result), sort_keys=True)
     score.scored_at = datetime.now(tz=timezone.utc)
@@ -150,7 +151,11 @@ def scorecard_for_job(db: Session, job: Job) -> dict[str, Any]:
 
 
 def recommendation_from_score(score: JobScore | None) -> str | None:
-    if score is None or not score.explanation:
+    if score is None:
+        return None
+    if score.recommendation:
+        return score.recommendation
+    if not score.explanation:
         return None
     try:
         payload = json.loads(score.explanation)

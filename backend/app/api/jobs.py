@@ -4,7 +4,8 @@ import logging
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobAnalysis, JobScore, JobSkill, User
@@ -84,14 +85,35 @@ def get_jobs(
         status=status,
     )
     started = perf_counter()
+    query_count = 0
+
+    def count_query(*args):
+        nonlocal query_count
+        query_count += 1
+
+    bind = db.get_bind()
+    if isinstance(bind, Engine):
+        event.listen(bind, "before_cursor_execute", count_query)
     try:
-        return list_jobs(db, filters, sort=sort, page=page, page_size=page_size)
+        result = list_jobs(db, filters, sort=sort, page=page, page_size=page_size)
+        return result
     except Exception:
         logger.exception("jobs.list failed page=%s page_size=%s sort=%s", page, page_size, sort)
         raise
     finally:
+        if isinstance(bind, Engine):
+            event.remove(bind, "before_cursor_execute", count_query)
         elapsed_ms = int((perf_counter() - started) * 1000)
-        logger.info("jobs.list request finished page=%s page_size=%s sort=%s elapsed_ms=%s", page, page_size, sort, elapsed_ms)
+        rows_returned = len(result.items) if "result" in locals() else 0
+        logger.info(
+            "jobs.list request finished page=%s page_size=%s sort=%s elapsed_ms=%s rows_returned=%s query_count=%s",
+            page,
+            page_size,
+            sort,
+            elapsed_ms,
+            rows_returned,
+            query_count,
+        )
 
 
 @router.post("/bulk-delete", response_model=BulkJobActionResult)
