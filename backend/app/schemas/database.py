@@ -275,6 +275,7 @@ class JobBase(BaseModel):
     posted_at: datetime | None = None
     expires_at: datetime | None = None
     status: str = "active"
+    application_status: str = "not_started"
     content_hash: str | None = None
 
 
@@ -310,6 +311,7 @@ class JobListItem(BaseModel):
     matched_skills_count: int
     missing_skills_count: int
     status: str
+    application_status: str
 
 
 class PaginatedJobs(BaseModel):
@@ -460,6 +462,27 @@ class JobDetail(BaseModel):
     missing_skills: list[MissingSkillRead]
     red_flags: list[str]
     saved_status: str | None = None
+
+
+class ApplicationItem(BaseModel):
+    job_id: int
+    title: str
+    company_name: str | None = None
+    location: str | None = None
+    apply_url: str
+    application_status: str
+    total_score: Decimal | None = None
+    recommendation_tier: str | None = None
+    recommendation: str | None = None
+
+
+class ApplicationsList(BaseModel):
+    items: list[ApplicationItem]
+
+
+class ApplicationsPrepareResult(BaseModel):
+    queued: int
+    job_ids: list[int]
 
 
 class AnalyticsOverview(BaseModel):

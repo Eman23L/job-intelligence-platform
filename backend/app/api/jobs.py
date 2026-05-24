@@ -21,6 +21,7 @@ from app.schemas.database import (
     SavedJobRead,
 )
 from app.services.analysis import analyse_all_jobs, analyse_job
+from app.services.applications import set_application_status
 from app.services.job_cleanup import delete_job, delete_jobs, exclude_jobs
 from app.services.job_discovery import JobFilters, job_detail, list_jobs
 from app.services.job_scoring import rescore_jobs, scorecard_for_job
@@ -198,4 +199,39 @@ def reject_job(job_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{job_id}/mark-applied", response_model=SavedJobRead)
 def mark_job_applied(job_id: int, db: Session = Depends(get_db)):
-    return set_saved_job_status(db, _get_job_or_404(db, job_id), _default_user(db), "applied")
+    job = _get_job_or_404(db, job_id)
+    try:
+        set_application_status(db, job, "applied")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return set_saved_job_status(db, job, _default_user(db), "applied")
+
+
+@router.post("/{job_id}/mark-ready-to-apply", response_model=JobDetail)
+def mark_job_ready_to_apply(job_id: int, db: Session = Depends(get_db)):
+    job = _get_job_or_404(db, job_id)
+    try:
+        set_application_status(db, job, "ready_to_apply")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return job_detail(db, job, _default_user(db))
+
+
+@router.post("/{job_id}/mark-opened", response_model=JobDetail)
+def mark_job_opened(job_id: int, db: Session = Depends(get_db)):
+    job = _get_job_or_404(db, job_id)
+    try:
+        set_application_status(db, job, "opened")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return job_detail(db, job, _default_user(db))
+
+
+@router.post("/{job_id}/mark-skipped", response_model=JobDetail)
+def mark_job_skipped(job_id: int, db: Session = Depends(get_db)):
+    job = _get_job_or_404(db, job_id)
+    try:
+        set_application_status(db, job, "skipped")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return job_detail(db, job, _default_user(db))

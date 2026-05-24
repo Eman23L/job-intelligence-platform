@@ -1,6 +1,8 @@
 import type {
   AIChatResponse,
   AIHistoryMessage,
+  ApplicationsList,
+  ApplicationsPrepareResult,
   AnalyticsOverview,
   JobDetail,
   JobScorecard,
@@ -101,6 +103,8 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
 
 export const api = {
   overview: () => request<AnalyticsOverview>("/analytics/overview", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
+  applications: () => request<ApplicationsList>("/applications"),
+  prepareApplications: () => request<ApplicationsPrepareResult>("/applications/prepare", { method: "POST" }),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
   rescoreJobs: () => request<JobsRescoreResult>("/jobs/rescore", { method: "POST" }),
@@ -118,7 +122,10 @@ export const api = {
     }),
   saveJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/save`, { method: "POST" }),
   rejectJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/reject`, { method: "POST" }),
+  markReadyToApply: (id: string | number) => request<JobDetail>(`/jobs/${id}/mark-ready-to-apply`, { method: "POST" }),
+  markOpened: (id: string | number) => request<JobDetail>(`/jobs/${id}/mark-opened`, { method: "POST" }),
   markApplied: (id: string | number) => request<SavedJob>(`/jobs/${id}/mark-applied`, { method: "POST" }),
+  markSkipped: (id: string | number) => request<JobDetail>(`/jobs/${id}/mark-skipped`, { method: "POST" }),
   savedJobs: () => request<SavedJob[]>("/saved-jobs"),
   updateSavedJob: (id: number, body: { status?: string; notes?: string | null }) =>
     request<SavedJob>(`/saved-jobs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

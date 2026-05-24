@@ -36,6 +36,7 @@ export interface JobListItem {
   matched_skills_count: number;
   missing_skills_count: number;
   status: string;
+  application_status: ApplicationStatus;
 }
 
 export interface PaginatedJobs {
@@ -54,6 +55,7 @@ export interface JobRecord extends JobListItem {
   description_text: string | null;
   expires_at: string | null;
   status: string;
+  application_status: ApplicationStatus;
   content_hash: string | null;
   first_seen_at: string;
   last_seen_at: string;
@@ -108,6 +110,29 @@ export interface JobScorecard {
 export interface JobsRescoreResult {
   jobs_scored: number;
   jobs_skipped: number;
+}
+
+export type ApplicationStatus = "not_started" | "ready_to_apply" | "opened" | "applied" | "skipped" | "failed";
+
+export interface ApplicationItem {
+  job_id: number;
+  title: string;
+  company_name: string | null;
+  location: string | null;
+  apply_url: string;
+  application_status: ApplicationStatus;
+  total_score: string | null;
+  recommendation_tier: string | null;
+  recommendation: "apply" | "maybe" | "skip" | string | null;
+}
+
+export interface ApplicationsList {
+  items: ApplicationItem[];
+}
+
+export interface ApplicationsPrepareResult {
+  queued: number;
+  job_ids: number[];
 }
 
 export interface JobSkill {

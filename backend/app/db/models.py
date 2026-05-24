@@ -199,6 +199,9 @@ class Job(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(40), default="active", server_default="active", nullable=False, index=True)
+    application_status: Mapped[str] = mapped_column(
+        String(40), default="not_started", server_default="not_started", nullable=False, index=True
+    )
     content_hash: Mapped[str | None] = mapped_column(String(128), index=True)
 
     source: Mapped[JobSource] = relationship(back_populates="jobs")

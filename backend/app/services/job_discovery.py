@@ -74,6 +74,7 @@ def list_jobs(
             matched_skills_count=max(0, int(row.skills_count or 0) - int(row.missing_skills_count or 0)),
             missing_skills_count=int(row.missing_skills_count or 0),
             status=row.status,
+            application_status=row.application_status,
         )
         for row in rows
     ]
@@ -138,6 +139,7 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select
             Job.normalized_annual_max,
             Job.posted_at,
             Job.status,
+            Job.application_status,
             JobAnalysis.role_family,
             score_subquery.c.recommendation_tier,
             score_subquery.c.total_score,
@@ -249,6 +251,7 @@ def _job_row(db: Session, job: Job, user: User | None) -> dict:
         matched_skills_count=max(0, skills_count - missing_count),
         missing_skills_count=missing_count,
         status=job.status,
+        application_status=job.application_status,
     )
     return {"job": job, "analysis": analysis, "score": score, "item": item}
 

@@ -297,6 +297,48 @@ def test_analytics_overview_empty_database() -> None:
     }
 
 
+def test_prepare_applications_queues_high_scoring_non_excluded_jobs_once() -> None:
+    with phase6_client() as (client, ids):
+        first = client.post("/applications/prepare")
+        listed = client.get("/applications")
+        second = client.post("/applications/prepare")
+
+        assert first.status_code == 200
+        assert set(first.json()["job_ids"]) == {ids["excellent"], ids["strong"]}
+        assert first.json()["queued"] == 2
+        assert second.status_code == 200
+        assert second.json() == {"queued": 0, "job_ids": []}
+        assert listed.status_code == 200
+        items = listed.json()["items"]
+        assert {item["job_id"] for item in items} == {ids["excellent"], ids["strong"]}
+        assert {item["application_status"] for item in items} == {"ready_to_apply"}
+        assert all(item["apply_url"].startswith("https://example.invalid/jobs/") for item in items)
+
+
+def test_application_status_endpoints_and_excluded_protection() -> None:
+    with phase6_client() as (client, ids):
+        ready = client.post(f"/jobs/{ids['excellent']}/mark-ready-to-apply")
+        opened = client.post(f"/jobs/{ids['excellent']}/mark-opened")
+        applied = client.post(f"/jobs/{ids['excellent']}/mark-applied")
+        skipped = client.post(f"/jobs/{ids['strong']}/mark-skipped")
+        excluded_ready = client.post(f"/jobs/{ids['excluded']}/mark-ready-to-apply")
+        excluded_applied = client.post(f"/jobs/{ids['excluded']}/mark-applied")
+        listed = client.get("/applications")
+
+        assert ready.status_code == 200
+        assert ready.json()["job"]["application_status"] == "ready_to_apply"
+        assert opened.status_code == 200
+        assert opened.json()["job"]["application_status"] == "opened"
+        assert applied.status_code == 200
+        assert applied.json()["status"] == "applied"
+        assert skipped.status_code == 200
+        assert skipped.json()["job"]["application_status"] == "skipped"
+        assert excluded_ready.status_code == 400
+        assert excluded_applied.status_code == 400
+        assert listed.status_code == 200
+        assert listed.json()["items"] == []
+
+
 def test_role_fit_analytics() -> None:
     with phase6_client() as (client, _):
         response = client.get("/analytics/role-fit")
