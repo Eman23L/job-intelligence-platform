@@ -11,11 +11,18 @@ import type { AnalyticsOverview } from "@/types/api";
 export default function DashboardPage() {
   const [data, setData] = useState<AnalyticsOverview | null>(null);
   const [loading, setLoading] = useState(true);
+  const [slowLoading, setSlowLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    const slowTimer = window.setTimeout(() => {
+      if (active) {
+        setSlowLoading(true);
+      }
+    }, 2500);
     setLoading(true);
+    setSlowLoading(false);
     setError(null);
     api
       .overview()
@@ -34,16 +41,18 @@ export default function DashboardPage() {
       .finally(() => {
         if (active) {
           setLoading(false);
+          setSlowLoading(false);
         }
       });
 
     return () => {
       active = false;
+      window.clearTimeout(slowTimer);
     };
   }, []);
 
   if (loading) {
-    return <LoadingState label="Loading overview" />;
+    return <LoadingState label={slowLoading ? "Warming up analytics" : "Loading overview"} />;
   }
   if (error) {
     return <ErrorState message={error} />;

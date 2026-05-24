@@ -227,6 +227,41 @@ def test_analytics_overview() -> None:
         assert body["newest_job_date"] is not None
 
 
+def test_analytics_overview_uses_lightweight_queries() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        _seed_phase6_data(db)
+
+    statements = []
+
+    def count_statement(*args):
+        statements.append(args[2])
+
+    event.listen(engine, "before_cursor_execute", count_statement)
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/analytics/overview")
+    finally:
+        app.dependency_overrides.clear()
+        event.remove(engine, "before_cursor_execute", count_statement)
+
+    assert response.status_code == 200
+    assert response.json()["total_jobs"] == 4
+    assert len(statements) <= 5
+    assert all("explanation" not in statement.lower() for statement in statements)
+
+
 def test_analytics_overview_empty_database() -> None:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",

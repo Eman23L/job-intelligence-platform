@@ -1,7 +1,8 @@
 from collections import Counter, defaultdict
 from decimal import Decimal
+import logging
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -18,28 +19,54 @@ from app.schemas.database import (
     SourceHealthItem,
 )
 
+logger = logging.getLogger(__name__)
+
+ANALYTICS_STATEMENT_TIMEOUT_MS = 1800
+
 
 def overview(db: Session) -> AnalyticsOverview:
     try:
-        scores = db.scalars(select(JobScore).join(Job).where(_included_job_filter())).all()
-        score_values = [score.total_score for score in scores if score.total_score is not None]
+        _set_statement_timeout(db)
+        job_summary = db.execute(
+            select(
+                func.count(Job.id).label("total_jobs"),
+                func.max(Job.posted_at).label("newest_job_date"),
+            ).where(_included_job_filter())
+        ).one()
+        score_summary = db.execute(
+            select(
+                func.count(JobScore.id).label("scored_jobs"),
+                func.coalesce(func.avg(JobScore.total_score), 0).label("average_score"),
+                func.sum(case((JobScore.recommendation_tier == "Excellent match", 1), else_=0)).label(
+                    "excellent_matches"
+                ),
+                func.sum(case((JobScore.recommendation_tier == "Strong match", 1), else_=0)).label("strong_matches"),
+                func.sum(case((JobScore.recommendation_tier == "Stretch role", 1), else_=0)).label("stretch_roles"),
+            )
+            .select_from(JobScore)
+            .join(Job)
+            .where(_included_job_filter())
+        ).one()
+        saved_summary = db.execute(
+            select(
+                func.sum(case((SavedJob.status == "saved", 1), else_=0)).label("saved_jobs"),
+                func.sum(case((SavedJob.status == "applied", 1), else_=0)).label("applied_jobs"),
+            )
+            .select_from(SavedJob)
+            .join(Job)
+            .where(_included_job_filter(), SavedJob.status.in_(("saved", "applied")))
+        ).one()
         return AnalyticsOverview(
-            total_jobs=db.scalar(select(func.count(Job.id)).where(Job.status != "excluded")) or 0,
+            total_jobs=job_summary.total_jobs or 0,
             analysed_jobs=(
                 db.scalar(select(func.count(JobAnalysis.id)).join(Job).where(_included_job_filter())) or 0
             ),
-            scored_jobs=len(scores),
-            saved_jobs=(
-                db.scalar(select(func.count(SavedJob.id)).join(Job).where(Job.status != "excluded", SavedJob.status == "saved"))
-                or 0
-            ),
-            applied_jobs=(
-                db.scalar(select(func.count(SavedJob.id)).join(Job).where(Job.status != "excluded", SavedJob.status == "applied"))
-                or 0
-            ),
-            excellent_matches=sum(1 for score in scores if score.recommendation_tier == "Excellent match"),
-            strong_matches=sum(1 for score in scores if score.recommendation_tier == "Strong match"),
-            stretch_roles=sum(1 for score in scores if score.recommendation_tier == "Stretch role"),
+            scored_jobs=score_summary.scored_jobs or 0,
+            saved_jobs=saved_summary.saved_jobs or 0,
+            applied_jobs=saved_summary.applied_jobs or 0,
+            excellent_matches=score_summary.excellent_matches or 0,
+            strong_matches=score_summary.strong_matches or 0,
+            stretch_roles=score_summary.stretch_roles or 0,
             excluded_jobs=(
                 db.scalar(
                     select(func.count(func.distinct(Job.id)))
@@ -48,10 +75,11 @@ def overview(db: Session) -> AnalyticsOverview:
                 )
                 or 0
             ),
-            average_score=_avg(score_values) or Decimal("0"),
-            newest_job_date=db.scalar(select(func.max(Job.posted_at)).where(Job.status != "excluded")),
+            average_score=_rounded_decimal(score_summary.average_score) or Decimal("0"),
+            newest_job_date=job_summary.newest_job_date,
         )
     except SQLAlchemyError:
+        logger.exception("analytics.overview failed; returning empty fallback")
         return _empty_overview()
 
 
@@ -215,6 +243,18 @@ def _avg(values: list[Decimal | None]) -> Decimal | None:
     if not clean:
         return None
     return Decimal(str(round(sum(clean) / len(clean), 2)))
+
+
+def _rounded_decimal(value: Decimal | float | None) -> Decimal | None:
+    if value is None:
+        return None
+    return Decimal(str(round(value, 2)))
+
+
+def _set_statement_timeout(db: Session) -> None:
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return
+    db.execute(text(f"SET LOCAL statement_timeout = {ANALYTICS_STATEMENT_TIMEOUT_MS}"))
 
 
 def _included_job_filter():

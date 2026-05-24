@@ -25,6 +25,7 @@ const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
 const API_BASE_URL =
   configuredApiBaseUrl ?? (process.env.NODE_ENV === "production" ? PRODUCTION_API_BASE_URL : "http://127.0.0.1:8000");
 const REQUEST_TIMEOUT_MS = 10000;
+const DASHBOARD_REQUEST_TIMEOUT_MS = 20000;
 
 export const apiConfig = {
   baseUrl: API_BASE_URL,
@@ -46,21 +47,23 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   if (!API_BASE_URL) {
     throw new ApiError("NEXT_PUBLIC_API_BASE_URL is required in production", 0);
   }
+  const { timeoutMs: configuredTimeoutMs, ...fetchInit } = init ?? {};
+  const timeoutMs = configuredTimeoutMs ?? REQUEST_TIMEOUT_MS;
   const url = `${API_BASE_URL}${path}`;
-  const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("Content-Type")) {
+  const headers = new Headers(fetchInit.headers);
+  if (fetchInit.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   const controller = new AbortController();
-  const timeoutId = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(url, {
-      ...init,
+      ...fetchInit,
       headers,
       cache: "no-store",
       signal: controller.signal
@@ -85,8 +88,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       throw error;
     }
     if (error instanceof DOMException && error.name === "AbortError") {
-      const timeoutError = new ApiError(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s: ${url}`, 0);
-      console.error("API request timed out", { url, timeoutMs: REQUEST_TIMEOUT_MS });
+      const timeoutError = new ApiError(`Request timed out after ${timeoutMs / 1000}s`, 0);
+      console.error("API request timed out", { url, timeoutMs });
       throw timeoutError;
     }
     console.error("API request failed", { url, error });
@@ -97,7 +100,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  overview: () => request<AnalyticsOverview>("/analytics/overview"),
+  overview: () => request<AnalyticsOverview>("/analytics/overview", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
   rescoreJobs: () => request<JobsRescoreResult>("/jobs/rescore", { method: "POST" }),

@@ -1,4 +1,5 @@
 import logging
+from time import perf_counter
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -19,7 +20,16 @@ logger = logging.getLogger(__name__)
 
 @router.get("/overview", response_model=AnalyticsOverview)
 def get_overview(db: Session = Depends(get_db)):
-    return analytics_service.overview(db)
+    started_at = perf_counter()
+    result = analytics_service.overview(db)
+    duration_ms = (perf_counter() - started_at) * 1000
+    logger.info(
+        "analytics.overview completed duration_ms=%.2f total_jobs=%s scored_jobs=%s",
+        duration_ms,
+        result.total_jobs,
+        result.scored_jobs,
+    )
+    return result
 
 
 @router.get("/role-fit", response_model=RoleFitAnalytics)
