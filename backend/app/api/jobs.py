@@ -3,7 +3,7 @@ from decimal import Decimal
 import logging
 from time import perf_counter
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -18,6 +18,8 @@ from app.schemas.database import (
     JobAnalysisRead,
     JobDetail,
     JobIdsRequest,
+    JobRescoreRunStart,
+    JobRescoreRunStatus,
     JobScoreRead,
     JobScorecard,
     JobSkillRead,
@@ -29,7 +31,8 @@ from app.services.applications import set_application_status
 from app.services.job_cleanup import delete_job, delete_jobs, exclude_jobs
 from app.services.job_discovery import JobFilters, job_detail, list_jobs
 from app.services.job_availability import check_job_availability, check_jobs_availability
-from app.services.job_scoring import rescore_jobs, scorecard_for_job
+from app.services.job_scoring import scorecard_for_job
+from app.services.rescore_runs import get_rescore_run_status, run_rescore_background, start_rescore_run
 from app.services.saved_jobs import set_saved_job_status
 from app.services.scoring import score_all_jobs, score_job
 
@@ -143,12 +146,24 @@ def bulk_check_availability(payload: JobAvailabilityCheckRequest | None = None, 
     return BulkJobAvailabilityResult(checked=len(results), results=results)
 
 
-@router.post("/rescore")
-def rescore_all_jobs(db: Session = Depends(get_db)):
+@router.post("/rescore", response_model=JobRescoreRunStart)
+def rescore_all_jobs(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
-        return rescore_jobs(db, _default_user(db))
+        user = _default_user(db)
+        started, created = start_rescore_run(db, user)
+        if created:
+            background_tasks.add_task(run_rescore_background, started.run_id, user.id)
+        return started
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/rescore-runs/{run_id}", response_model=JobRescoreRunStatus)
+def get_rescore_run(run_id: int, db: Session = Depends(get_db)):
+    result = get_rescore_run_status(db, run_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rescore run not found")
+    return result
 
 
 @router.get("/{job_id}", response_model=JobDetail)

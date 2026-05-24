@@ -173,6 +173,7 @@ class JobServeSearchScrapeRequest(BaseModel):
     posted_within_days: int | None = Field(default=7, ge=1, le=30)
     remote_only: bool = False
     max_pages: int = Field(default=3, ge=1, le=10)
+    check_availability_after: bool = False
 
 
 class JobServeSearchScrapeResult(BaseModel):
@@ -402,6 +403,21 @@ class JobAvailabilityResult(BaseModel):
 class BulkJobAvailabilityResult(BaseModel):
     checked: int
     results: list[JobAvailabilityResult]
+
+
+class JobRescoreRunStart(BaseModel):
+    run_id: int
+    status: str
+
+
+class JobRescoreRunStatus(BaseModel):
+    run_id: int
+    status: str
+    total: int = 0
+    scored: int = 0
+    skipped: int = 0
+    failed: int = 0
+    error: str | None = None
 
 
 class JobCompanyRead(ORMModel):

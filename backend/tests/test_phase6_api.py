@@ -22,6 +22,7 @@ from app.db.models import (
 from app.db.session import get_db
 from app.main import app
 from app.services import applications
+from app.services import rescore_runs
 from scripts.seed_data import seed_database
 
 
@@ -42,9 +43,12 @@ def phase6_client() -> Generator[tuple[TestClient, dict[str, int]], None, None]:
             yield db
 
     app.dependency_overrides[get_db] = override_get_db
+    original_rescore_session_local = rescore_runs.SessionLocal
+    rescore_runs.SessionLocal = TestingSession
     try:
         yield TestClient(app), ids
     finally:
+        rescore_runs.SessionLocal = original_rescore_session_local
         app.dependency_overrides.clear()
 
 
@@ -75,6 +79,40 @@ def test_jobs_sorting() -> None:
 
         assert response.status_code == 200
         assert response.json()["items"][0]["title"] == "Excellent Data Engineer"
+
+
+def test_jobs_score_sort_places_highest_scored_first_and_unscored_last() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        ids = _seed_phase6_data(db)
+        source = db.scalar(select(JobSource).where(JobSource.name == "Phase 6 Source"))
+        assert source is not None
+        unscored = _job(db, source.id, "Fresh Unscored Job", "remote", "Remote UK", None, None, datetime.now(tz=timezone.utc))
+        db.commit()
+        unscored_id = unscored.id
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/jobs?page_size=100&sort=total_score_desc")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items[0]["id"] == ids["excellent"]
+    assert items[0]["total_score"] == "92.00"
+    assert items[-1]["id"] == unscored_id
+    assert items[-1]["total_score"] is None
 
 
 def test_jobs_list_uses_bounded_queries() -> None:
@@ -321,6 +359,32 @@ def test_prepare_applications_queues_high_scoring_non_excluded_jobs_once(monkeyp
         assert {item["job_id"] for item in items} == {ids["excellent"], ids["strong"]}
         assert {item["application_status"] for item in items} == {"ready_to_apply"}
         assert all(item["apply_url"].startswith("https://example.invalid/jobs/") for item in items)
+
+
+def test_rescore_endpoint_returns_run_id_and_status_progress() -> None:
+    with phase6_client() as (client, _):
+        client.post(
+            "/profile/cv",
+            json={
+                "cv_text": (
+                    "Python SQL data engineering analytics automation. "
+                    "Experience building BI dashboards, data pipelines and AI workflow tools."
+                )
+            },
+        )
+        response = client.post("/jobs/rescore")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["run_id"]
+        assert body["status"] == "running"
+
+        status_response = client.get(f"/jobs/rescore-runs/{body['run_id']}")
+        assert status_response.status_code == 200
+        status_body = status_response.json()
+        assert status_body["run_id"] == body["run_id"]
+        assert status_body["status"] in {"running", "completed"}
+        assert status_body["total"] >= status_body["scored"]
 
 
 def test_application_status_endpoints_and_excluded_protection() -> None:

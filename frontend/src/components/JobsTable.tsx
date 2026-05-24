@@ -4,6 +4,7 @@ import type { JobListItem } from "@/types/api";
 import { RecommendationActionBadge } from "@/components/RecommendationActionBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
+import { PendingScoringBadge } from "@/components/PendingScoringBadge";
 import { formatDate, formatSalary, formatSalaryPeriod } from "@/lib/format";
 
 export function JobsTable({
@@ -71,6 +72,7 @@ export function JobsTable({
                   {job.title}
                 </Link>
                 {job.status === "excluded" ? <span className="status-note">Excluded</span> : null}
+                {job.total_score === null ? <div className="status-note"><PendingScoringBadge /></div> : null}
               </td>
               <td>{job.company_name ?? "Unknown"}</td>
               <td>{job.location ?? "Not listed"}</td>
@@ -90,13 +92,13 @@ export function JobsTable({
               </td>
               <td>{job.role_family ?? "Unanalysed"}</td>
               <td>
-                <RecommendationBadge tier={job.recommendation_tier} />
+                {job.total_score === null ? <PendingScoringBadge /> : <RecommendationBadge tier={job.recommendation_tier} />}
               </td>
               <td>
-                <RecommendationActionBadge recommendation={job.recommendation} />
+                {job.total_score === null ? <PendingScoringBadge /> : <RecommendationActionBadge recommendation={job.recommendation} />}
               </td>
               <td>
-                <ScoreBadge score={job.total_score} />
+                {job.total_score === null ? <PendingScoringBadge /> : <ScoreBadge score={job.total_score} />}
               </td>
               <td>
                 <span className="compact-counts">

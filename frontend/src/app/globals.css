@@ -367,6 +367,11 @@ button:disabled {
   color: #ffd58a;
 }
 
+.badge.pending-scoring {
+  background: rgba(246, 185, 75, 0.16);
+  color: #ffd58a;
+}
+
 .badge.neutral,
 .skill-badge.neutral {
   background: var(--panel-muted);

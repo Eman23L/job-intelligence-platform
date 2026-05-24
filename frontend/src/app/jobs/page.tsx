@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { FiltersBar, type JobFiltersState } from "@/components/FiltersBar";
@@ -8,7 +8,7 @@ import { JobsTable } from "@/components/JobsTable";
 import { LoadingState } from "@/components/LoadingState";
 import { PaginationControls } from "@/components/PaginationControls";
 import { ApiError, api } from "@/lib/api";
-import type { JobScorecard, PaginatedJobs } from "@/types/api";
+import type { JobRescoreRunStatus, JobScorecard, PaginatedJobs } from "@/types/api";
 
 const initialFilters: JobFiltersState = {
   role_family: "",
@@ -34,6 +34,9 @@ export default function JobsPage() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [rescoring, setRescoring] = useState(false);
+  const [rescoreRunId, setRescoreRunId] = useState<number | null>(null);
+  const [rescoreRun, setRescoreRun] = useState<JobRescoreRunStatus | null>(null);
+  const [rescorePollFailures, setRescorePollFailures] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ type: "info" | "success" | "warning" | "error"; message: string } | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -61,26 +64,65 @@ export default function JobsPage() {
     return next;
   }, [filters, page]);
 
-  useEffect(() => {
-    setLoading(true);
-    api
-      .jobs(params)
-      .then((result) => {
-        setData(result);
-        setError(null);
-        setNotice(result.warning ? { type: "warning", message: result.warning } : null);
-        setSelectedIds(new Set());
-      })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [params]);
-
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     const result = await api.jobs(params);
     setData(result);
     setNotice(result.warning ? { type: "warning", message: result.warning } : null);
     setSelectedIds(new Set());
-  };
+  }, [params]);
+
+  useEffect(() => {
+    setLoading(true);
+    refresh()
+      .then(() => setError(null))
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!rescoreRunId) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await api.rescoreRun(rescoreRunId);
+        if (cancelled) {
+          return;
+        }
+        setRescoreRun(result);
+        setRescorePollFailures(0);
+        if (result.status === "completed" || result.status === "failed") {
+          setRescoreRunId(null);
+          setRescoring(false);
+          await refresh();
+          setNotice({
+            type: result.status === "completed" ? "success" : "error",
+            message:
+              result.status === "completed"
+                ? `Rescoring complete: ${result.scored} scored, ${result.skipped} skipped, ${result.failed} failed.`
+                : result.error ?? "Rescoring failed"
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setRescorePollFailures((current) => {
+            const next = current + 1;
+            if (next >= 3) {
+              setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary rescore status polling failure" });
+            }
+            return next;
+          });
+        }
+      }
+    };
+    poll();
+    const intervalId = globalThis.setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(intervalId);
+    };
+  }, [refresh, rescoreRunId]);
 
   const runAction = async (action: () => Promise<unknown>) => {
     setActionLoading(true);
@@ -119,11 +161,13 @@ export default function JobsPage() {
     }
     setRescoring(true);
     setNotice({ type: "info", message: "Rescoring jobs..." });
+    setRescoreRun(null);
+    setRescorePollFailures(0);
     setError(null);
     try {
-      await api.rescoreJobs();
-      await refresh();
-      setNotice({ type: "success", message: "Jobs rescored successfully" });
+      const started = await api.rescoreJobs();
+      setRescoreRunId(started.run_id);
+      setRescoreRun({ run_id: started.run_id, status: started.status, total: 0, scored: 0, skipped: 0, failed: 0, error: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Rescoring jobs failed";
       if (err instanceof ApiError && err.status === 400 && message.toLowerCase().includes("profile")) {
@@ -131,7 +175,6 @@ export default function JobsPage() {
       } else {
         setNotice({ type: "error", message });
       }
-    } finally {
       setRescoring(false);
     }
   };
@@ -196,6 +239,12 @@ export default function JobsPage() {
         </button>
       </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
+      {rescoring ? (
+        <div className="notice-banner info">
+          Rescoring jobs...
+          {rescoreRun ? ` ${rescoreRun.scored}/${rescoreRun.total} scored, ${rescoreRun.skipped} skipped, ${rescoreRun.failed} failed.` : ""}
+        </div>
+      ) : null}
       {error ? <ErrorState message={error} /> : null}
       {loading ? <LoadingState label="Loading jobs" /> : null}
       {!loading && !error && data?.items.length === 0 ? (

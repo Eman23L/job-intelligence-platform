@@ -117,9 +117,19 @@ export interface JobScorecard {
   why: string;
 }
 
-export interface JobsRescoreResult {
-  jobs_scored: number;
-  jobs_skipped: number;
+export interface JobRescoreRunStart {
+  run_id: number;
+  status: "running" | "completed" | "failed" | string;
+}
+
+export interface JobRescoreRunStatus {
+  run_id: number;
+  status: "running" | "completed" | "failed" | string;
+  total: number;
+  scored: number;
+  skipped: number;
+  failed: number;
+  error: string | null;
 }
 
 export type ApplicationStatus = "not_started" | "ready_to_apply" | "opened" | "applied" | "skipped" | "failed";

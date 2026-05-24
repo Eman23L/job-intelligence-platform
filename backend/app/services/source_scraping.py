@@ -35,6 +35,7 @@ from app.scrapers.jobserve import extract_jobserve_job_ids
 from app.scrapers.utils.hashing import content_hash
 from app.services.analysis import analyse_job
 from app.services.job_validation import validate_normalised_job
+from app.services.job_availability import check_jobs_availability
 from app.services.link_discovery import discover_links
 from app.services.normalisation import normalise_job_fields
 from app.services.scoring import score_job
@@ -315,6 +316,13 @@ def run_jobserve_search_scrape_background(scrape_run_id: int, payload_data: dict
                 result.jobs_found,
                 len(result.errors),
             )
+            if payload.check_availability_after and run.status == "completed":
+                try:
+                    job_ids = list(db.scalars(select(Job.id).where(Job.source_id == result.source_id)).all())
+                    check_jobs_availability(db, job_ids)
+                    LOGGER.info("JobServe post-scrape availability check completed run_id=%s", scrape_run_id)
+                except Exception:
+                    LOGGER.exception("JobServe post-scrape availability check failed run_id=%s", scrape_run_id)
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             run = db.get(ScrapeRun, scrape_run_id)

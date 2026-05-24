@@ -5,7 +5,7 @@ import logging
 from math import ceil
 from time import perf_counter
 
-from sqlalchemy import Select, asc, case, desc, func, select, text
+from sqlalchemy import Select, asc, case, desc, func, nulls_last, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -261,7 +261,7 @@ def _sort_expressions(sort: str, score_subquery) -> tuple:
         return (asc(Job.company_name), asc(Job.id))
     if sort == "title_asc":
         return (asc(Job.title), asc(Job.id))
-    return (desc(score_subquery.c.total_score), desc(Job.id))
+    return (nulls_last(desc(score_subquery.c.total_score)), desc(Job.id))
 
 
 def job_detail(db: Session, job: Job, user: User | None = None) -> JobDetail:
