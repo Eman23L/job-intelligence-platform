@@ -34,6 +34,7 @@ class JobFilters:
     exclude_excluded: bool = False
     status: str | None = None
     availability_status: str | None = None
+    source_id: int | None = None
 
 
 def list_jobs(
@@ -237,6 +238,8 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
         query = query.where(Job.status == filters.status)
     if filters.availability_status is not None:
         query = query.where(Job.availability_status == filters.availability_status)
+    if filters.source_id is not None:
+        query = query.where(Job.source_id == filters.source_id)
     if timings is not None:
         timings["filtering_ms"] = int((perf_counter() - filter_started) * 1000)
 
@@ -336,6 +339,7 @@ def _matches_filters(row: dict, filters: JobFilters) -> bool:
         not filters.exclude_excluded or (job.status != "excluded" and not (score and score.recommendation_tier == "excluded")),
         filters.status is None or job.status == filters.status,
         filters.availability_status is None or job.availability_status == filters.availability_status,
+        filters.source_id is None or job.source_id == filters.source_id,
     ]
     return all(checks)
 

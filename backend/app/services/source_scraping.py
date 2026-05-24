@@ -4,16 +4,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobSource, RawJobSnapshot, ScrapeRun, User
 from app.db.session import SessionLocal
-from app.schemas.database import ScrapeNowRequest, ScrapeNowResult, ScrapeRunStatus, ScrapeStartResult, SourceTestResult
+from app.schemas.database import (
+    JobServeSearchScrapeRequest,
+    JobServeSearchScrapeResult,
+    ScrapeNowRequest,
+    ScrapeNowResult,
+    ScrapeRunStatus,
+    ScrapeStartResult,
+    SourceTestResult,
+)
 from app.scrapers.parsers.html import extract_text
 from app.scrapers.parsers.json_ld import extract_job_postings
 from app.scrapers.parsers.job_detail import extract_page_title
@@ -35,6 +43,7 @@ BROWSER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 DEFAULT_DELAY_SECONDS = 8.0
+JOBSERVE_SEARCH_SOURCE_NAME = "JobServe Search"
 
 
 @dataclass(frozen=True)
@@ -125,6 +134,103 @@ def test_source_url(db: Session, source: JobSource, target_url: str | None = Non
 
 def scrape_source_now(db: Session, source: JobSource, payload: ScrapeNowRequest) -> ScrapeNowResult:
     return execute_scrape_source_now(db, source, payload)
+
+
+def search_scrape_jobserve(db: Session, payload: JobServeSearchScrapeRequest) -> JobServeSearchScrapeResult:
+    source = _get_or_create_jobserve_search_source(db)
+    search_url = build_jobserve_search_url(payload)
+    adapter = JobServeAdapter(min_delay_seconds=DEFAULT_DELAY_SECONDS)
+    adapter.detail_referer = search_url
+    warnings: list[str] = []
+    errors: list[str] = []
+    created = updated = skipped = 0
+    parsed_jobs: list[dict[str, str | None]] = []
+
+    try:
+        pages = adapter.discover_search_pages(search_url, max_pages=payload.max_pages)
+    except Exception as exc:  # noqa: BLE001
+        return JobServeSearchScrapeResult(
+            source_id=source.id,
+            search_url=search_url,
+            jobs_found=0,
+            jobs_created=0,
+            jobs_updated=0,
+            jobs_skipped=0,
+            parsed_jobs=[],
+            errors=[str(exc)],
+            warnings=warnings,
+        )
+
+    job_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for _, html in pages:
+        for job_id in adapter.extract_job_ids(html):
+            if job_id in seen_ids:
+                continue
+            seen_ids.add(job_id)
+            job_ids.append(job_id)
+
+    records, detail_errors = _fetch_jobserve_detail_records(
+        job_ids,
+        referer=search_url,
+        delay_seconds=DEFAULT_DELAY_SECONDS,
+        max_workers=min(8, len(job_ids) or 1),
+    )
+    errors.extend(detail_errors)
+    parsed_jobs = [_job_record_summary(record) for record in records]
+
+    for record in records:
+        try:
+            normalised = _normalise_jobserve_record(source, record)
+            validation = validate_normalised_job(normalised, source_name=source.name)
+            if not validation.is_valid:
+                skipped += 1
+                warnings.append(_rejection_message("JobServe search", normalised, validation.reasons))
+                continue
+            db.add(
+                RawJobSnapshot(
+                    source_id=source.id,
+                    source_job_id=normalised["source_job_id"],
+                    url=normalised["canonical_url"],
+                    raw_html=None,
+                    raw_text=record.description,
+                    raw_json=(record.json_ld or [None])[0],
+                    content_hash=normalised["content_hash"],
+                )
+            )
+            was_created = _upsert_job(db, source, normalised)
+            if was_created:
+                created += 1
+            else:
+                updated += 1
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            skipped += 1
+            errors.append(f"JobServe search {record.source_job_id}: {exc}")
+            continue
+    db.commit()
+    return JobServeSearchScrapeResult(
+        source_id=source.id,
+        search_url=search_url,
+        jobs_found=len(job_ids),
+        jobs_created=created,
+        jobs_updated=updated,
+        jobs_skipped=skipped,
+        parsed_jobs=parsed_jobs,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
+def build_jobserve_search_url(payload: JobServeSearchScrapeRequest) -> str:
+    params: dict[str, str] = {"q": payload.keywords.strip()}
+    if payload.location and payload.location.strip():
+        params["l"] = payload.location.strip()
+    if payload.posted_within_days:
+        params["postedwithin"] = str(payload.posted_within_days)
+    if payload.remote_only:
+        params["remote"] = "true"
+    return f"https://www.jobserve.com/gb/en/JobSearch.aspx?{urlencode(params)}"
 
 
 def start_scrape_source_now(db: Session, source: JobSource, payload: ScrapeNowRequest) -> ScrapeStartResult:
@@ -622,7 +728,14 @@ def _rejection_message(source_kind: str, item: dict[str, Any], reasons: list[str
 
 def _upsert_job(db: Session, source: JobSource, item: dict) -> bool:
     _ensure_fingerprint_fields(item)
-    existing = db.scalar(select(Job).where(Job.source_id == source.id, Job.source_job_id == item["source_job_id"]))
+    existing = db.scalar(
+        select(Job).where(
+            or_(
+                (Job.source_id == source.id) & (Job.source_job_id == item["source_job_id"]),
+                Job.canonical_url == item["canonical_url"],
+            )
+        )
+    )
     if existing is None:
         db.add(Job(**item))
         db.flush()
@@ -673,3 +786,26 @@ def _adapter_for_source_url(source: JobSource, url: str):
     if is_jobserve_search_page(url):
         return JobServeSourceAdapter(source)
     return adapter_registry.get(source.source_type)(source)
+
+
+def _get_or_create_jobserve_search_source(db: Session) -> JobSource:
+    source = db.scalar(select(JobSource).where(JobSource.name == JOBSERVE_SEARCH_SOURCE_NAME))
+    if source is not None:
+        return source
+    source = JobSource(
+        name=JOBSERVE_SEARCH_SOURCE_NAME,
+        base_url="https://www.jobserve.com/gb/en/JobSearch.aspx",
+        source_type="jobserve",
+        robots_url="https://www.jobserve.com/robots.txt",
+        terms_url="https://www.jobserve.com/gb/en/terms",
+        scraping_allowed=True,
+        permission_notes="Search-driven JobServe scraping requested by the local operator.",
+        rate_limit_per_minute=8,
+        allowed_path_patterns=["/gb/en/JobSearch.aspx", "/job/", "/apply/"],
+        job_link_patterns=["/job/", "/apply/", "/g"],
+        enabled=True,
+        last_reviewed_at=datetime.now(tz=timezone.utc),
+    )
+    db.add(source)
+    db.flush()
+    return source

@@ -68,6 +68,7 @@ def get_jobs(
     exclude_excluded: bool = False,
     status: str | None = None,
     availability_status: str | None = None,
+    source_id: int | None = None,
     sort: str = Query(default="total_score_desc"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -89,6 +90,7 @@ def get_jobs(
         exclude_excluded=exclude_excluded,
         status=status,
         availability_status=availability_status,
+        source_id=source_id,
     )
     started = perf_counter()
     query_count = 0

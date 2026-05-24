@@ -368,3 +368,29 @@ export interface ScrapeRunStatus {
 }
 
 export type ScrapeNowResult = ScrapeRunStatus;
+
+export interface JobServeSearchPayload {
+  keywords: string;
+  location?: string | null;
+  posted_within_days?: number | null;
+  remote_only?: boolean;
+  max_pages?: number;
+}
+
+export interface JobServeSearchResult {
+  source_id: number;
+  search_url: string;
+  jobs_found: number;
+  jobs_created: number;
+  jobs_updated: number;
+  jobs_skipped: number;
+  parsed_jobs: Array<{
+    source_job_id: string | null;
+    title: string | null;
+    company_name: string | null;
+    location: string | null;
+    canonical_url: string | null;
+  }>;
+  errors: string[];
+  warnings: string[];
+}

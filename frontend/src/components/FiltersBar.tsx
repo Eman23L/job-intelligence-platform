@@ -8,6 +8,7 @@ export interface JobFiltersState {
   max_score: string;
   exclude_excluded: boolean;
   availability_status: string;
+  source_id: string;
   sort: string;
 }
 

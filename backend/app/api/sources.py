@@ -12,6 +12,8 @@ from app.schemas.database import (
     JobSourceCreate,
     JobSourceRead,
     JobSourceUpdate,
+    JobServeSearchScrapeRequest,
+    JobServeSearchScrapeResult,
     ScrapeNowRequest,
     ScrapeStartResult,
     SourceFromUrlCreate,
@@ -62,6 +64,11 @@ def list_sources(db: Session = Depends(get_db)):
 def run_demo_scrape(db: Session = Depends(get_db)):
     result = DemoScraper(db).run()
     return result
+
+
+@router.post("/jobserve/search-scrape", response_model=JobServeSearchScrapeResult)
+def run_jobserve_search_scrape(payload: JobServeSearchScrapeRequest, db: Session = Depends(get_db)):
+    return source_scraping.search_scrape_jobserve(db, payload)
 
 
 @router.post("/from-url", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED)

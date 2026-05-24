@@ -7,6 +7,8 @@ import type {
   BulkJobAvailabilityResult,
   JobDetail,
   JobAvailabilityResult,
+  JobServeSearchPayload,
+  JobServeSearchResult,
   JobScorecard,
   JobsRescoreResult,
   PaginatedJobs,
@@ -155,6 +157,12 @@ export const api = {
     }),
   scrapeSourceNow: (id: number, body: ScrapeNowPayload) =>
     request<ScrapeStartResult>(`/sources/${id}/scrape-now`, { method: "POST", body: JSON.stringify(body) }),
+  searchScrapeJobServe: (body: JobServeSearchPayload) =>
+    request<JobServeSearchResult>("/sources/jobserve/search-scrape", {
+      method: "POST",
+      timeoutMs: SOURCES_REQUEST_TIMEOUT_MS,
+      body: JSON.stringify(body)
+    }),
   scrapeRun: (id: number) => request<ScrapeRunStatus>(`/scrape-runs/${id}`),
   profile: () => request<UserProfile | null>("/profile"),
   saveProfileCv: (cvText: string) =>

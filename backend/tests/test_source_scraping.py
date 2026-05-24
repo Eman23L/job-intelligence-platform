@@ -314,6 +314,77 @@ def test_jobserve_scrape_now_rejects_non_job_detail_records(monkeypatch) -> None
             assert [job.source_job_id for job in jobs] == ["A12345"]
 
 
+def test_jobserve_search_scrape_validates_request() -> None:
+    with scraping_client() as (client, _):
+        response = client.post(
+            "/sources/jobserve/search-scrape",
+            json={"keywords": "", "location": "London", "posted_within_days": 7, "remote_only": False, "max_pages": 3},
+        )
+
+        assert response.status_code == 422
+
+
+def test_jobserve_search_scrape_summary_dedupe_and_fingerprints(monkeypatch) -> None:
+    jobserve_html = (FIXTURES / "jobserve_search.html").read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        source_scraping.JobServeAdapter,
+        "discover_search_pages",
+        lambda self, search_url, *, max_pages: [(search_url, jobserve_html)],
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_detail_records",
+        lambda job_ids, **kwargs: (
+            [
+                JobRecord(
+                    source_job_id=job_id,
+                    title=f"AI Engineer {job_id}",
+                    recruiter="Search Recruiter",
+                    location="London",
+                    salary="GBP 600 per day",
+                    employment_type="contract",
+                    description="Build AI automation services with Python.",
+                    skills=["Python", "AI"],
+                    url=f"https://www.jobserve.com/job/{job_id}",
+                    apply_link=f"https://www.jobserve.com/apply/{job_id}",
+                    posted_date="2026-05-24",
+                )
+                for job_id in job_ids
+            ],
+            [],
+        ),
+    )
+
+    with scraping_client() as (client, TestingSession):
+        first = client.post(
+            "/sources/jobserve/search-scrape",
+            json={"keywords": "AI", "location": "London", "posted_within_days": 7, "remote_only": False, "max_pages": 3},
+        )
+        second = client.post(
+            "/sources/jobserve/search-scrape",
+            json={"keywords": "AI", "location": "London", "posted_within_days": 7, "remote_only": False, "max_pages": 3},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["jobs_found"] == 3
+        assert first.json()["jobs_created"] == 3
+        assert first.json()["jobs_updated"] == 0
+        assert first.json()["jobs_skipped"] == 0
+        assert second.json()["jobs_created"] == 0
+        assert second.json()["jobs_updated"] == 3
+        with TestingSession() as db:
+            jobs = db.scalars(select(Job)).all()
+            assert len(jobs) == 3
+            assert all(job.original_title == job.title for job in jobs)
+            assert all(job.original_company == "Search Recruiter" for job in jobs)
+            assert all(job.original_location == "London" for job in jobs)
+            assert all(job.original_salary == "GBP 600 per day" for job in jobs)
+            assert all(job.original_external_id in {"D8DF", "A12345", "B67890"} for job in jobs)
+            assert all(job.content_hash for job in jobs)
+
+
 def test_scrape_now_creates_snapshot_job_analysis_and_score(monkeypatch) -> None:
     directory_html = (FIXTURES / "generic_directory.html").read_text(encoding="utf-8")
     job_html = (FIXTURES / "generic_job_jsonld.html").read_text(encoding="utf-8")

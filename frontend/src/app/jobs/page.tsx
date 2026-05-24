@@ -20,11 +20,15 @@ const initialFilters: JobFiltersState = {
   max_score: "",
   exclude_excluded: false,
   availability_status: "",
+  source_id: "",
   sort: "total_score_desc"
 };
 
 export default function JobsPage() {
-  const [filters, setFilters] = useState<JobFiltersState>(initialFilters);
+  const [filters, setFilters] = useState<JobFiltersState>({
+    ...initialFilters,
+    source_id: typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("source_id") ?? ""
+  });
   const [page, setPage] = useState(1);
   const [data, setData] = useState<PaginatedJobs | null>(null);
   const [loading, setLoading] = useState(true);

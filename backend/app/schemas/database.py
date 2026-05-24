@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -163,6 +165,26 @@ class ScrapeNowRequest(BaseModel):
     max_jobs: int = 20
     delay_seconds: float = 8
     dry_run: bool = False
+
+
+class JobServeSearchScrapeRequest(BaseModel):
+    keywords: str = Field(min_length=1, max_length=120)
+    location: str | None = Field(default=None, max_length=120)
+    posted_within_days: int | None = Field(default=7, ge=1, le=30)
+    remote_only: bool = False
+    max_pages: int = Field(default=3, ge=1, le=10)
+
+
+class JobServeSearchScrapeResult(BaseModel):
+    source_id: int
+    search_url: str
+    jobs_found: int
+    jobs_created: int
+    jobs_updated: int
+    jobs_skipped: int
+    parsed_jobs: list[ParsedJobSummary] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ParsedJobSummary(BaseModel):

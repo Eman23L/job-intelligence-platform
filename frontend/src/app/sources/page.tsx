@@ -6,7 +6,7 @@ import { LoadingState } from "@/components/LoadingState";
 import { SkillBadge } from "@/components/SkillBadge";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { ScrapeRunStatus, Source, SourceHealthAnalytics, SourceTestResult } from "@/types/api";
+import type { JobServeSearchResult, ScrapeRunStatus, Source, SourceHealthAnalytics, SourceTestResult } from "@/types/api";
 
 const initialForm = {
   name: "",
@@ -20,6 +20,16 @@ const initialForm = {
   start_url: ""
 };
 
+const initialJobServeSearch = {
+  keywords: "AI",
+  location: "London",
+  posted_within_days: "7",
+  remote_only: false,
+  max_pages: "3"
+};
+
+const quickSearches = ["AI", "AI Engineer", "Data Analyst", "Power BI", "Automation Engineer"];
+
 export default function SourcesPage() {
   const [health, setHealth] = useState<SourceHealthAnalytics | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
@@ -27,6 +37,8 @@ export default function SourcesPage() {
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const [testResult, setTestResult] = useState<SourceTestResult | null>(null);
   const [scrapeResult, setScrapeResult] = useState<ScrapeRunStatus | null>(null);
+  const [jobServeSearch, setJobServeSearch] = useState(initialJobServeSearch);
+  const [jobServeResult, setJobServeResult] = useState<JobServeSearchResult | null>(null);
   const [activeScrapeRunId, setActiveScrapeRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -161,6 +173,28 @@ export default function SourcesPage() {
     }
   };
 
+  const searchScrapeJobServe = async (event: FormEvent) => {
+    event.preventDefault();
+    setActionLoading("jobserve-search");
+    setJobServeResult(null);
+    setError(null);
+    try {
+      const result = await api.searchScrapeJobServe({
+        keywords: jobServeSearch.keywords,
+        location: jobServeSearch.location || null,
+        posted_within_days: Number(jobServeSearch.posted_within_days || 7),
+        remote_only: jobServeSearch.remote_only,
+        max_pages: Number(jobServeSearch.max_pages || 3)
+      });
+      setJobServeResult(result);
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to run JobServe search scrape");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   if (loading) {
     return <LoadingState label="Loading sources" />;
   }
@@ -179,6 +213,95 @@ export default function SourcesPage() {
 
   return (
     <div className="page-stack">
+      <section className="panel">
+        <div className="panel-header">
+          <h2>JobServe search scrape</h2>
+          <div className="action-row">
+            {quickSearches.map((keyword) => (
+              <button
+                key={keyword}
+                type="button"
+                className="secondary-button compact-button"
+                onClick={() => setJobServeSearch((current) => ({ ...current, keywords: keyword }))}
+              >
+                {keyword}
+              </button>
+            ))}
+          </div>
+        </div>
+        <form className="filters-bar" onSubmit={searchScrapeJobServe}>
+          <label>
+            Keywords
+            <input value={jobServeSearch.keywords} onChange={(event) => setJobServeSearch({ ...jobServeSearch, keywords: event.target.value })} required />
+          </label>
+          <label>
+            Location
+            <input value={jobServeSearch.location} onChange={(event) => setJobServeSearch({ ...jobServeSearch, location: event.target.value })} />
+          </label>
+          <label>
+            Posted within
+            <select
+              value={jobServeSearch.posted_within_days}
+              onChange={(event) => setJobServeSearch({ ...jobServeSearch, posted_within_days: event.target.value })}
+            >
+              <option value="1">1 day</option>
+              <option value="3">3 days</option>
+              <option value="7">7 days</option>
+              <option value="14">14 days</option>
+              <option value="30">30 days</option>
+            </select>
+          </label>
+          <label>
+            Max pages
+            <input
+              type="number"
+              min="1"
+              max="10"
+              value={jobServeSearch.max_pages}
+              onChange={(event) => setJobServeSearch({ ...jobServeSearch, max_pages: event.target.value })}
+            />
+          </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={jobServeSearch.remote_only}
+              onChange={(event) => setJobServeSearch({ ...jobServeSearch, remote_only: event.target.checked })}
+            />
+            Remote only
+          </label>
+          <button type="submit" disabled={actionLoading !== null}>
+            Search and scrape
+          </button>
+        </form>
+        {actionLoading === "jobserve-search" ? <LoadingState label="Running JobServe search scrape" /> : null}
+        {jobServeResult ? (
+          <div className="state-card">
+            <h3>JobServe result</h3>
+            <div className="metric-list">
+              <div className="metric-row">
+                <span>Found</span>
+                <strong>{jobServeResult.jobs_found}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Created</span>
+                <strong>{jobServeResult.jobs_created}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Updated</span>
+                <strong>{jobServeResult.jobs_updated}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Skipped</span>
+                <strong>{jobServeResult.jobs_skipped}</strong>
+              </div>
+            </div>
+            <a className="table-link" href={`/jobs?source_id=${jobServeResult.source_id}`}>
+              View jobs from this source
+            </a>
+          </div>
+        ) : null}
+      </section>
+
       <section className="panel">
         <h2>Add permitted source</h2>
         <form className="filters-bar" onSubmit={createSource}>
