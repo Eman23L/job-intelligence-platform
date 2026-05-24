@@ -577,6 +577,11 @@ def _normalise_jobserve_record(source: JobSource, record: JobRecord) -> dict[str
         "source_id": source.id,
         "source_job_id": source_job_id,
         "canonical_url": normalised.canonical_url,
+        "original_title": normalised.title,
+        "original_company": normalised.company_name,
+        "original_location": normalised.location,
+        "original_salary": record.salary,
+        "original_external_id": source_job_id,
         "title": normalised.title,
         "company_name": normalised.company_name,
         "location": normalised.location,
@@ -594,7 +599,7 @@ def _normalise_jobserve_record(source: JobSource, record: JobRecord) -> dict[str
         "posted_at": normalised.posted_at,
         "expires_at": None,
         "status": "active",
-        "content_hash": normalised.content_hash,
+        "content_hash": content_hash(description),
     }
 
 
@@ -616,16 +621,39 @@ def _rejection_message(source_kind: str, item: dict[str, Any], reasons: list[str
 
 
 def _upsert_job(db: Session, source: JobSource, item: dict) -> bool:
+    _ensure_fingerprint_fields(item)
     existing = db.scalar(select(Job).where(Job.source_id == source.id, Job.source_job_id == item["source_job_id"]))
     if existing is None:
         db.add(Job(**item))
         db.flush()
         return True
     for field, value in item.items():
+        if field.startswith("original_") and getattr(existing, field, None):
+            continue
         setattr(existing, field, value)
     existing.last_seen_at = datetime.now(tz=timezone.utc)
     db.flush()
     return False
+
+
+def _ensure_fingerprint_fields(item: dict) -> None:
+    item.setdefault("original_title", item.get("title"))
+    item.setdefault("original_company", item.get("company_name"))
+    item.setdefault("original_location", item.get("location"))
+    item.setdefault("original_salary", _salary_fingerprint(item))
+    item.setdefault("original_external_id", item.get("source_job_id"))
+
+
+def _salary_fingerprint(item: dict) -> str | None:
+    currency = item.get("salary_currency")
+    minimum = item.get("salary_min_raw") or item.get("salary_min")
+    maximum = item.get("salary_max_raw") or item.get("salary_max")
+    if minimum is None and maximum is None:
+        return None
+    if minimum is not None and maximum is not None and minimum != maximum:
+        return " ".join(str(part) for part in [currency, f"{minimum}-{maximum}"] if part)
+    value = minimum if minimum is not None else maximum
+    return " ".join(str(part) for part in [currency, value] if part)
 
 
 def _score_if_possible(db: Session, job: Job, warnings: list[str]) -> None:

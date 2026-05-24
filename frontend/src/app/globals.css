@@ -350,6 +350,11 @@ button:disabled {
   color: #89ecb2;
 }
 
+.badge.availability-replaced {
+  background: rgba(255, 142, 82, 0.18);
+  color: #ffb38a;
+}
+
 .badge.availability-expired,
 .badge.availability-unavailable {
   background: rgba(255, 107, 95, 0.16);

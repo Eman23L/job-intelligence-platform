@@ -62,6 +62,11 @@ class GenericSourceAdapter:
             "source_id": self.source.id,
             "source_job_id": _source_job_id(parsed.canonical_url or url),
             "canonical_url": normalised.canonical_url,
+            "original_title": normalised.title,
+            "original_company": normalised.company_name,
+            "original_location": normalised.location,
+            "original_salary": _salary_fingerprint(parsed),
+            "original_external_id": _source_job_id(parsed.canonical_url or url),
             "title": normalised.title,
             "company_name": normalised.company_name,
             "location": normalised.location,
@@ -79,8 +84,18 @@ class GenericSourceAdapter:
             "posted_at": normalised.posted_at,
             "expires_at": parsed.expires_at,
             "status": "active",
-            "content_hash": normalised.content_hash,
+            "content_hash": content_hash(description),
         }
+
+
+def _salary_fingerprint(parsed: ParsedJobDetail) -> str | None:
+    if parsed.salary_min is None and parsed.salary_max is None:
+        return None
+    if parsed.salary_min is not None and parsed.salary_max is not None and parsed.salary_min != parsed.salary_max:
+        value = f"{parsed.salary_min}-{parsed.salary_max}"
+    else:
+        value = str(parsed.salary_min if parsed.salary_min is not None else parsed.salary_max)
+    return " ".join(str(part) for part in [parsed.salary_currency, value] if part)
 
 
 def _source_job_id(url: str) -> str:

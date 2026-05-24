@@ -105,6 +105,11 @@ class DemoScraper(BaseScraper):
                     "source_id": self.source.id,
                     "source_job_id": item["source_job_id"],
                     "canonical_url": item["canonical_url"],
+                    "original_title": item["title"],
+                    "original_company": item.get("company_name"),
+                    "original_location": item.get("location"),
+                    "original_salary": item.get("salary"),
+                    "original_external_id": item["source_job_id"],
                     "title": item["title"],
                     "company_name": item.get("company_name"),
                     "location": item.get("location"),
@@ -122,7 +127,7 @@ class DemoScraper(BaseScraper):
                     "posted_at": parse_posted_date(item.get("posted", "")),
                     "expires_at": None,
                     "status": "active",
-                    "content_hash": content_hash(f"{item.get('title')}|{item.get('description_text')}"),
+                    "content_hash": content_hash(item.get("description_text") or ""),
                 }
             )
         return {"jobs": normalised_jobs, "raw_text": parsed["raw_text"]}
@@ -159,6 +164,8 @@ class DemoScraper(BaseScraper):
                 created += 1
             else:
                 for field, value in item.items():
+                    if field.startswith("original_") and getattr(existing, field, None):
+                        continue
                     setattr(existing, field, value)
                 existing.last_seen_at = datetime.now(tz=timezone.utc)
                 updated += 1

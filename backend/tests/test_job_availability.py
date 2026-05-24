@@ -64,22 +64,60 @@ def test_availability_404_page(db_session) -> None:
     assert "404" in (result.availability_reason or "")
 
 
-def test_availability_redirected_page(db_session) -> None:
-    job = _seed_scored_job(db_session, "Senior Data Engineer")
+def test_availability_replaced_when_title_company_change(db_session) -> None:
+    job = _seed_scored_job(db_session, "AI Delivery Manager", company="Original Co")
 
     result = check_job_availability(
         db_session,
         job,
         fetcher=lambda _: FetchResult(
-            final_url="https://example.com/jobs/archive",
+            final_url=job.canonical_url,
             status_code=200,
-            text="<html><body><a href='/apply'>Apply now</a></body></html>",
-            redirected=True,
+            text="""
+            <html><body>
+              <h1>Audit Policy Leader</h1>
+              <p class="company">Different Co</p>
+              <a href="/apply">Apply now</a>
+            </body></html>
+            """,
+            redirected=False,
         ),
     )
 
-    assert result.availability_status == "redirected"
-    assert "redirected" in (result.availability_reason or "")
+    assert result.availability_status == "replaced"
+    assert "title changed from AI Delivery Manager to Audit Policy Leader" in (result.availability_reason or "")
+
+
+def test_jobserve_search_page_with_different_selected_job_is_replaced(db_session) -> None:
+    job = _seed_scored_job(
+        db_session,
+        "AI Delivery Manager",
+        company="Original Co",
+        canonical_url="https://www.jobserve.com/gb/en/JobSearch.aspx?shid=abc",
+    )
+
+    result = check_job_availability(
+        db_session,
+        job,
+        fetcher=lambda _: FetchResult(
+            final_url=job.canonical_url,
+            status_code=200,
+            text="""
+            <html><body>
+              <input type="hidden" id="jobIDs" value="A123#B456" />
+              <section class="selected">
+                <h1 class="job-title">Audit Policy Leader</h1>
+                <span class="company">Different Co</span>
+                <a href="/apply/B456">Apply now</a>
+              </section>
+            </body></html>
+            """,
+            redirected=False,
+        ),
+    )
+
+    assert result.availability_status == "replaced"
+    assert "JobServe page loaded but selected job title changed" in (result.availability_reason or "")
 
 
 def test_unavailable_jobs_not_queued(db_session, monkeypatch) -> None:
@@ -101,7 +139,7 @@ def test_unavailable_jobs_not_queued(db_session, monkeypatch) -> None:
     assert job.application_status == "not_started"
 
 
-def _seed_scored_job(db_session, title: str) -> Job:
+def _seed_scored_job(db_session, title: str, *, company: str = "Example Ltd", canonical_url: str | None = None) -> Job:
     user = User(email=f"{title.lower().replace(' ', '-')}@example.com")
     source = JobSource(name=f"{title} Source", base_url="https://example.com", source_type="fixture")
     db_session.add_all([user, source])
@@ -109,9 +147,14 @@ def _seed_scored_job(db_session, title: str) -> Job:
     job = Job(
         source_id=source.id,
         source_job_id=title.lower().replace(" ", "-"),
-        canonical_url=f"https://example.com/jobs/{title.lower().replace(' ', '-')}",
+        canonical_url=canonical_url or f"https://example.com/jobs/{title.lower().replace(' ', '-')}",
+        original_title=title,
+        original_company=company,
+        original_location=None,
+        original_salary=None,
+        original_external_id=title.lower().replace(" ", "-"),
         title=title,
-        company_name="Example Ltd",
+        company_name=company,
         status="active",
         application_status="not_started",
         description_text="A fixture job description.",

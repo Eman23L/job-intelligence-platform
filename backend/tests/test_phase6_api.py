@@ -21,6 +21,7 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.main import app
+from app.services import applications
 from scripts.seed_data import seed_database
 
 
@@ -298,7 +299,13 @@ def test_analytics_overview_empty_database() -> None:
     }
 
 
-def test_prepare_applications_queues_high_scoring_non_excluded_jobs_once() -> None:
+def test_prepare_applications_queues_high_scoring_non_excluded_jobs_once(monkeypatch) -> None:
+    def mark_active(db, job):
+        job.availability_status = "active"
+        job.availability_reason = "Fixture availability check"
+        db.commit()
+
+    monkeypatch.setattr(applications, "check_job_availability", mark_active)
     with phase6_client() as (client, ids):
         first = client.post("/applications/prepare")
         listed = client.get("/applications")
@@ -534,6 +541,7 @@ def _job(db, source_id, title, remote_type, location, salary_min, salary_max, po
         normalized_annual_max=Decimal(str(salary_max)) if salary_max is not None else None,
         posted_at=posted_at,
         status="active",
+        availability_status="active",
         description_text="A detailed fixture job description with requirements and responsibilities.",
     )
     db.add(job)

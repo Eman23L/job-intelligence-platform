@@ -86,6 +86,7 @@ export function JobsTable({
               <td>
                 <AvailabilityBadge status={job.availability_status} />
                 <div className="muted-text">{job.last_checked_at ? `Checked ${formatDate(job.last_checked_at)}` : "Not checked"}</div>
+                {job.availability_reason ? <div className="muted-text">{job.availability_reason}</div> : null}
               </td>
               <td>{job.role_family ?? "Unanalysed"}</td>
               <td>

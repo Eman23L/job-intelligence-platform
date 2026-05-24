@@ -19,7 +19,7 @@ def set_application_status(db: Session, job: Job, status: str) -> Job:
         if _is_excluded(job, _score_for_job(db, job.id, None)):
             raise ValueError("Excluded jobs cannot be queued or applied to")
         if job.availability_status not in QUEUEABLE_AVAILABILITY_STATUSES:
-            raise ValueError("Expired, unavailable, or redirected jobs cannot be queued or applied to")
+            raise ValueError("Only jobs confirmed active can be queued or applied to")
     job.application_status = status
     db.commit()
     db.refresh(job)

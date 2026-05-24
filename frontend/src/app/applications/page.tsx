@@ -70,7 +70,7 @@ export default function ApplicationsPage() {
     try {
       const checked = await api.checkJobAvailability(item.job_id);
       await refresh();
-      if (!["active", "unknown"].includes(checked.availability_status)) {
+      if (checked.availability_status !== "active") {
         setNotice({
           type: "warning",
           message: `Application blocked because the job is ${checked.availability_status}. ${checked.availability_reason ?? ""}`.trim()
@@ -160,6 +160,7 @@ export default function ApplicationsPage() {
                     <td>
                       <AvailabilityBadge status={item.availability_status} />
                       <div className="muted-text">{item.last_checked_at ? `Checked ${formatShortDate(item.last_checked_at)}` : "Not checked"}</div>
+                      {item.availability_reason ? <div className="muted-text">{item.availability_reason}</div> : null}
                     </td>
                     <td>
                       <div className="row-actions">

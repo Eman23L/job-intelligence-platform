@@ -55,6 +55,11 @@ export interface JobRecord extends JobListItem {
   source_id: number;
   source_job_id: string;
   canonical_url: string;
+  original_title: string | null;
+  original_company: string | null;
+  original_location: string | null;
+  original_salary: string | null;
+  original_external_id: string | null;
   employment_type: string | null;
   description_text: string | null;
   expires_at: string | null;
@@ -118,7 +123,7 @@ export interface JobsRescoreResult {
 }
 
 export type ApplicationStatus = "not_started" | "ready_to_apply" | "opened" | "applied" | "skipped" | "failed";
-export type AvailabilityStatus = "active" | "expired" | "unavailable" | "redirected" | "unknown";
+export type AvailabilityStatus = "active" | "expired" | "unavailable" | "redirected" | "replaced" | "unknown";
 
 export interface JobAvailabilityResult {
   job_id: number;

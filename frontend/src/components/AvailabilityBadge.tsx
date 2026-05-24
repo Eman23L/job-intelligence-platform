@@ -5,6 +5,7 @@ const labels: Record<AvailabilityStatus, string> = {
   expired: "Expired",
   unavailable: "Unavailable",
   redirected: "Redirected",
+  replaced: "Replaced",
   unknown: "Unknown"
 };
 

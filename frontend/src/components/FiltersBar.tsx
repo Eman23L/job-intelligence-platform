@@ -73,6 +73,7 @@ export function FiltersBar({
           <option value="">Any</option>
           <option value="active">Active</option>
           <option value="unknown">Unknown</option>
+          <option value="replaced">Replaced</option>
           <option value="expired">Expired</option>
           <option value="unavailable">Unavailable</option>
           <option value="redirected">Redirected</option>

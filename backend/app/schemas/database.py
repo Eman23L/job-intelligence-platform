@@ -258,6 +258,11 @@ class JobBase(BaseModel):
     source_id: int
     source_job_id: str
     canonical_url: str
+    original_title: str | None = None
+    original_company: str | None = None
+    original_location: str | None = None
+    original_salary: str | None = None
+    original_external_id: str | None = None
     title: str
     company_name: str | None = None
     location: str | None = None
