@@ -385,6 +385,75 @@ def test_source_health_analytics() -> None:
         assert item["jobs_found"] == 4
 
 
+def test_source_health_uses_bounded_lightweight_queries() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        _seed_phase6_data(db)
+
+    statements = []
+
+    def count_statement(*args):
+        statements.append(args[2])
+
+    event.listen(engine, "before_cursor_execute", count_statement)
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/analytics/source-health")
+    finally:
+        app.dependency_overrides.clear()
+        event.remove(engine, "before_cursor_execute", count_statement)
+
+    assert response.status_code == 200
+    assert len(statements) <= 3
+    selected_sql = "\n".join(statements).lower()
+    assert "parsed_jobs" not in selected_sql
+    assert "scrape_runs.errors" not in selected_sql
+
+
+def test_sources_list_uses_single_query() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    with TestingSession() as db:
+        _seed_phase6_data(db)
+
+    statements = []
+
+    def count_statement(*args):
+        statements.append(args[2])
+
+    event.listen(engine, "before_cursor_execute", count_statement)
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/sources")
+    finally:
+        app.dependency_overrides.clear()
+        event.remove(engine, "before_cursor_execute", count_statement)
+
+    assert response.status_code == 200
+    assert len(statements) == 1
+
+
 def _seed_phase6_data(db) -> dict[str, int]:
     user = seed_database(db)
     source = JobSource(name="Phase 6 Source", base_url="https://example.invalid", source_type="fixture")

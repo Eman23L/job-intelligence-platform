@@ -1,6 +1,9 @@
 import logging
+from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -32,13 +35,27 @@ def _get_source_or_404(db: Session, source_id: int):
 
 @router.get("", response_model=list[JobSourceRead])
 def list_sources(db: Session = Depends(get_db)):
+    started_at = perf_counter()
+    query_count = 0
+
+    def count_query(*args):
+        nonlocal query_count
+        query_count += 1
+
+    bind = db.get_bind()
+    if isinstance(bind, Engine):
+        event.listen(bind, "before_cursor_execute", count_query)
     try:
         sources = source_service.list_sources(db)
-        logger.info("sources.list completed count=%s", len(sources))
+        duration_ms = (perf_counter() - started_at) * 1000
+        logger.info("sources.list completed count=%s duration_ms=%.2f query_count=%s", len(sources), duration_ms, query_count)
         return sources
     except Exception:
         logger.exception("sources.list failed")
         raise
+    finally:
+        if isinstance(bind, Engine):
+            event.remove(bind, "before_cursor_execute", count_query)
 
 
 @router.post("/demo-scrape")

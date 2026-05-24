@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 from decimal import Decimal
 import logging
+from time import perf_counter
 
 from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -161,18 +162,56 @@ def salary(db: Session) -> SalaryAnalytics:
 
 
 def source_health(db: Session) -> SourceHealthAnalytics:
+    started = perf_counter()
+    timings: dict[str, int] = {}
+    sources_started = perf_counter()
+    sources = list(db.execute(select(JobSource.id, JobSource.name).order_by(JobSource.name)).all())
+    timings["sources_query_ms"] = int((perf_counter() - sources_started) * 1000)
+
+    job_counts_started = perf_counter()
+    job_counts = dict(
+        db.execute(
+            select(Job.source_id, func.count(Job.id))
+            .where(_included_job_filter())
+            .group_by(Job.source_id)
+        ).all()
+    )
+    timings["job_counts_query_ms"] = int((perf_counter() - job_counts_started) * 1000)
+
+    latest_runs_started = perf_counter()
+    latest_run_ids = (
+        select(ScrapeRun.source_id.label("source_id"), func.max(ScrapeRun.id).label("run_id"))
+        .group_by(ScrapeRun.source_id)
+        .subquery()
+    )
+    latest_runs = {
+        row.source_id: row
+        for row in db.execute(
+            select(
+                ScrapeRun.source_id,
+                ScrapeRun.id,
+                ScrapeRun.started_at,
+                ScrapeRun.finished_at,
+                ScrapeRun.status,
+                ScrapeRun.jobs_found,
+                ScrapeRun.jobs_created,
+                ScrapeRun.jobs_updated,
+                ScrapeRun.error_message,
+            )
+            .join(latest_run_ids, latest_run_ids.c.run_id == ScrapeRun.id)
+        ).all()
+    }
+    timings["latest_runs_query_ms"] = int((perf_counter() - latest_runs_started) * 1000)
+
     items = []
-    for source in db.scalars(select(JobSource).order_by(JobSource.name)).all():
-        run = db.scalar(
-            select(ScrapeRun).where(ScrapeRun.source_id == source.id).order_by(ScrapeRun.started_at.desc())
-        )
+    serialization_started = perf_counter()
+    for source in sources:
+        run = latest_runs.get(source.id)
         items.append(
             SourceHealthItem(
                 source_id=source.id,
                 source_name=source.name,
-                jobs_count=(
-                    db.scalar(select(func.count(Job.id)).where(Job.source_id == source.id, Job.status != "excluded")) or 0
-                ),
+                jobs_count=job_counts.get(source.id, 0),
                 last_scrape_run_id=run.id if run else None,
                 last_scrape_started_at=run.started_at if run else None,
                 last_scrape_finished_at=run.finished_at if run else None,
@@ -183,6 +222,13 @@ def source_health(db: Session) -> SourceHealthAnalytics:
                 error_message=run.error_message if run else None,
             )
         )
+    timings["serialization_ms"] = int((perf_counter() - serialization_started) * 1000)
+    logger.info(
+        "analytics.source_health service completed count=%s elapsed_ms=%s timings=%s",
+        len(items),
+        int((perf_counter() - started) * 1000),
+        timings,
+    )
     return SourceHealthAnalytics(items=items)
 
 

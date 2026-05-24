@@ -1,4 +1,6 @@
 from collections.abc import Sequence
+import logging
+from time import perf_counter
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -6,9 +8,14 @@ from sqlalchemy.orm import Session
 from app.db.models import JobSource
 from app.schemas.database import JobSourceCreate, JobSourceUpdate, SourcePermissionValidation
 
+logger = logging.getLogger(__name__)
+
 
 def list_sources(db: Session) -> Sequence[JobSource]:
-    return db.scalars(select(JobSource).order_by(JobSource.name)).all()
+    started = perf_counter()
+    sources = db.scalars(select(JobSource).order_by(JobSource.name)).all()
+    logger.info("sources.list service completed count=%s elapsed_ms=%s", len(sources), int((perf_counter() - started) * 1000))
+    return sources
 
 
 def get_source(db: Session, source_id: int) -> JobSource | None:

@@ -29,6 +29,7 @@ const API_BASE_URL =
 const REQUEST_TIMEOUT_MS = 10000;
 const DASHBOARD_REQUEST_TIMEOUT_MS = 20000;
 const JOBS_REQUEST_TIMEOUT_MS = 20000;
+const SOURCES_REQUEST_TIMEOUT_MS = 20000;
 
 export const apiConfig = {
   baseUrl: API_BASE_URL,
@@ -133,8 +134,8 @@ export const api = {
   skillGaps: () => request<SkillGapAnalytics>("/analytics/skill-gaps"),
   roleFit: () => request<RoleFitAnalytics>("/analytics/role-fit"),
   salary: () => request<SalaryAnalytics>("/analytics/salary"),
-  sourceHealth: () => request<SourceHealthAnalytics>("/analytics/source-health"),
-  sources: () => request<Source[]>("/sources"),
+  sourceHealth: () => request<SourceHealthAnalytics>("/analytics/source-health", { timeoutMs: SOURCES_REQUEST_TIMEOUT_MS }),
+  sources: () => request<Source[]>("/sources", { timeoutMs: SOURCES_REQUEST_TIMEOUT_MS }),
   createSourceFromUrl: (body: SourceFromUrlPayload) =>
     request<Source>("/sources/from-url", { method: "POST", body: JSON.stringify(body) }),
   testSourceUrl: (id: number, targetUrl?: string) =>

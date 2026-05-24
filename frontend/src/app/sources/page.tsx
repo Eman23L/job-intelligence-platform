@@ -34,14 +34,22 @@ export default function SourcesPage() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.sourceHealth(), api.sources()])
+    Promise.allSettled([api.sourceHealth(), api.sources()])
       .then(([healthResult, sourceResult]) => {
-        setHealth(healthResult);
-        setSources(sourceResult);
-        setSelectedSourceId((current) => current ?? sourceResult[0]?.id ?? null);
-        setError(null);
+        const errors: string[] = [];
+        if (healthResult.status === "fulfilled") {
+          setHealth(healthResult.value);
+        } else {
+          errors.push(`Source health: ${healthResult.reason instanceof Error ? healthResult.reason.message : "request failed"}`);
+        }
+        if (sourceResult.status === "fulfilled") {
+          setSources(sourceResult.value);
+          setSelectedSourceId((current) => current ?? sourceResult.value[0]?.id ?? null);
+        } else {
+          errors.push(`Sources: ${sourceResult.reason instanceof Error ? sourceResult.reason.message : "request failed"}`);
+        }
+        setError(errors.length ? errors.join(" | ") : null);
       })
-      .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   };
 
