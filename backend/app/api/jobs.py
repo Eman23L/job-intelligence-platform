@@ -12,6 +12,9 @@ from app.db.models import Job, JobAnalysis, JobScore, JobSkill, User
 from app.db.session import get_db
 from app.schemas.database import (
     BulkJobActionResult,
+    BulkJobAvailabilityResult,
+    JobAvailabilityCheckRequest,
+    JobAvailabilityResult,
     JobAnalysisRead,
     JobDetail,
     JobIdsRequest,
@@ -25,6 +28,7 @@ from app.services.analysis import analyse_all_jobs, analyse_job
 from app.services.applications import set_application_status
 from app.services.job_cleanup import delete_job, delete_jobs, exclude_jobs
 from app.services.job_discovery import JobFilters, job_detail, list_jobs
+from app.services.job_availability import check_job_availability, check_jobs_availability
 from app.services.job_scoring import rescore_jobs, scorecard_for_job
 from app.services.saved_jobs import set_saved_job_status
 from app.services.scoring import score_all_jobs, score_job
@@ -63,6 +67,7 @@ def get_jobs(
     has_missing_skills: bool | None = None,
     exclude_excluded: bool = False,
     status: str | None = None,
+    availability_status: str | None = None,
     sort: str = Query(default="total_score_desc"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -83,6 +88,7 @@ def get_jobs(
         has_missing_skills=has_missing_skills,
         exclude_excluded=exclude_excluded,
         status=status,
+        availability_status=availability_status,
     )
     started = perf_counter()
     query_count = 0
@@ -128,6 +134,13 @@ def bulk_exclude_jobs(payload: JobIdsRequest, db: Session = Depends(get_db)):
     return BulkJobActionResult(affected=len(excluded_ids), job_ids=excluded_ids)
 
 
+@router.post("/check-availability", response_model=BulkJobAvailabilityResult)
+def bulk_check_availability(payload: JobAvailabilityCheckRequest | None = None, db: Session = Depends(get_db)):
+    job_ids = payload.job_ids if payload else None
+    results = check_jobs_availability(db, job_ids)
+    return BulkJobAvailabilityResult(checked=len(results), results=results)
+
+
 @router.post("/rescore")
 def rescore_all_jobs(db: Session = Depends(get_db)):
     try:
@@ -139,6 +152,11 @@ def rescore_all_jobs(db: Session = Depends(get_db)):
 @router.get("/{job_id}", response_model=JobDetail)
 def get_job_detail(job_id: int, db: Session = Depends(get_db)):
     return job_detail(db, _get_job_or_404(db, job_id))
+
+
+@router.post("/{job_id}/check-availability", response_model=JobAvailabilityResult)
+def check_single_availability(job_id: int, db: Session = Depends(get_db)):
+    return check_job_availability(db, _get_job_or_404(db, job_id))
 
 
 @router.delete("/{job_id}", response_model=BulkJobActionResult)

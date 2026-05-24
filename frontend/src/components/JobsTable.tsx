@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AvailabilityBadge } from "@/components/AvailabilityBadge";
 import type { JobListItem } from "@/types/api";
 import { RecommendationActionBadge } from "@/components/RecommendationActionBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
@@ -12,7 +13,8 @@ export function JobsTable({
   onToggleAll,
   onDelete,
   onExclude,
-  onScorecard
+  onScorecard,
+  onCheckAvailability
 }: {
   jobs: JobListItem[];
   selectedIds: Set<number>;
@@ -21,6 +23,7 @@ export function JobsTable({
   onDelete: (jobId: number) => void;
   onExclude: (jobId: number) => void;
   onScorecard: (jobId: number) => void;
+  onCheckAvailability: (jobId: number) => Promise<void>;
 }) {
   const allSelected = jobs.length > 0 && jobs.every((job) => selectedIds.has(job.id));
 
@@ -43,6 +46,7 @@ export function JobsTable({
             <th>Remote</th>
             <th>Salary</th>
             <th>Posted</th>
+            <th>Availability</th>
             <th>Role family</th>
             <th>Tier</th>
             <th>Recommendation</th>
@@ -79,6 +83,10 @@ export function JobsTable({
                 </span>
               </td>
               <td>{formatDate(job.posted_at)}</td>
+              <td>
+                <AvailabilityBadge status={job.availability_status} />
+                <div className="muted-text">{job.last_checked_at ? `Checked ${formatDate(job.last_checked_at)}` : "Not checked"}</div>
+              </td>
               <td>{job.role_family ?? "Unanalysed"}</td>
               <td>
                 <RecommendationBadge tier={job.recommendation_tier} />
@@ -98,6 +106,9 @@ export function JobsTable({
                 <div className="row-actions">
                   <button type="button" className="secondary-button compact-button" onClick={() => onScorecard(job.id)}>
                     Scorecard
+                  </button>
+                  <button type="button" className="secondary-button compact-button" onClick={() => void onCheckAvailability(job.id)}>
+                    Check availability
                   </button>
                   <button type="button" className="secondary-button compact-button" onClick={() => onExclude(job.id)}>
                     Exclude

@@ -7,6 +7,7 @@ export interface JobFiltersState {
   min_score: string;
   max_score: string;
   exclude_excluded: boolean;
+  availability_status: string;
   sort: string;
 }
 
@@ -65,6 +66,17 @@ export function FiltersBar({
       <label>
         Max score
         <input type="number" value={filters.max_score} onChange={(event) => update("max_score", event.target.value)} />
+      </label>
+      <label>
+        Availability
+        <select value={filters.availability_status} onChange={(event) => update("availability_status", event.target.value)}>
+          <option value="">Any</option>
+          <option value="active">Active</option>
+          <option value="unknown">Unknown</option>
+          <option value="expired">Expired</option>
+          <option value="unavailable">Unavailable</option>
+          <option value="redirected">Redirected</option>
+        </select>
       </label>
       <label>
         Sort

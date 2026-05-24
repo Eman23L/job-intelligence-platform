@@ -4,11 +4,14 @@ import { useEffect, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
+import { AvailabilityBadge } from "@/components/AvailabilityBadge";
 import { RecommendationActionBadge } from "@/components/RecommendationActionBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { api } from "@/lib/api";
 import type { ApplicationItem, ApplicationsList, JobScorecard } from "@/types/api";
+
+const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
 
 export default function ApplicationsPage() {
   const [data, setData] = useState<ApplicationsList | null>(null);
@@ -61,9 +64,28 @@ export default function ApplicationsPage() {
     }
   };
 
-  const openApplyLink = (item: ApplicationItem) => {
-    window.open(item.apply_url, "_blank", "noopener,noreferrer");
-    void runJobAction(item.job_id, () => api.markOpened(item.job_id), "Application link opened.");
+  const openApplyLink = async (item: ApplicationItem) => {
+    setActionLoading(item.job_id);
+    setError(null);
+    try {
+      const checked = await api.checkJobAvailability(item.job_id);
+      await refresh();
+      if (!["active", "unknown"].includes(checked.availability_status)) {
+        setNotice({
+          type: "warning",
+          message: `Application blocked because the job is ${checked.availability_status}. ${checked.availability_reason ?? ""}`.trim()
+        });
+        return;
+      }
+      window.open(item.apply_url, "_blank", "noopener,noreferrer");
+      await api.markOpened(item.job_id);
+      await refresh();
+      setNotice({ type: "success", message: "Application link opened." });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to open apply link");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const viewScorecard = async (jobId: number) => {
@@ -110,7 +132,7 @@ export default function ApplicationsPage() {
                   <th>Tier</th>
                   <th>Recommendation</th>
                   <th>Status</th>
-                  <th>Apply link</th>
+                  <th>Availability</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -131,15 +153,17 @@ export default function ApplicationsPage() {
                     <td>
                       <RecommendationActionBadge recommendation={item.recommendation} />
                     </td>
-                    <td>{item.application_status.replaceAll("_", " ")}</td>
                     <td>
-                      <a className="table-link" href={item.apply_url} target="_blank" rel="noreferrer">
-                        Apply
-                      </a>
+                      {item.application_status.replaceAll("_", " ")}
+                      {isAvailabilityCheckStale(item.last_checked_at) ? <div className="status-note">Availability check needed</div> : null}
+                    </td>
+                    <td>
+                      <AvailabilityBadge status={item.availability_status} />
+                      <div className="muted-text">{item.last_checked_at ? `Checked ${formatShortDate(item.last_checked_at)}` : "Not checked"}</div>
                     </td>
                     <td>
                       <div className="row-actions">
-                        <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => openApplyLink(item)}>
+                        <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void openApplyLink(item)}>
                           Open apply link
                         </button>
                         <button
@@ -204,5 +228,18 @@ function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClo
         </div>
       </div>
     </div>
+  );
+}
+
+function isAvailabilityCheckStale(value: string | null): boolean {
+  if (!value) {
+    return true;
+  }
+  return Date.now() - new Date(value).getTime() > RECENT_CHECK_MS;
+}
+
+function formatShortDate(value: string): string {
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(
+    new Date(value)
   );
 }

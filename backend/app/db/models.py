@@ -202,6 +202,11 @@ class Job(Base):
     application_status: Mapped[str] = mapped_column(
         String(40), default="not_started", server_default="not_started", nullable=False, index=True
     )
+    availability_status: Mapped[str] = mapped_column(
+        String(40), default="unknown", server_default="unknown", nullable=False, index=True
+    )
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    availability_reason: Mapped[str | None] = mapped_column(Text)
     content_hash: Mapped[str | None] = mapped_column(String(128), index=True)
 
     source: Mapped[JobSource] = relationship(back_populates="jobs")

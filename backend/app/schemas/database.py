@@ -276,6 +276,9 @@ class JobBase(BaseModel):
     expires_at: datetime | None = None
     status: str = "active"
     application_status: str = "not_started"
+    availability_status: str = "unknown"
+    last_checked_at: datetime | None = None
+    availability_reason: str | None = None
     content_hash: str | None = None
 
 
@@ -312,6 +315,9 @@ class JobListItem(BaseModel):
     missing_skills_count: int
     status: str
     application_status: str
+    availability_status: str
+    last_checked_at: datetime | None = None
+    availability_reason: str | None = None
 
 
 class PaginatedJobs(BaseModel):
@@ -330,6 +336,24 @@ class JobIdsRequest(BaseModel):
 class BulkJobActionResult(BaseModel):
     affected: int
     job_ids: list[int]
+
+
+class JobAvailabilityCheckRequest(BaseModel):
+    job_ids: list[int] | None = None
+
+
+class JobAvailabilityResult(BaseModel):
+    job_id: int
+    availability_status: str
+    last_checked_at: datetime
+    availability_reason: str | None = None
+    final_url: str | None = None
+    status_code: int | None = None
+
+
+class BulkJobAvailabilityResult(BaseModel):
+    checked: int
+    results: list[JobAvailabilityResult]
 
 
 class JobCompanyRead(ORMModel):
@@ -473,6 +497,9 @@ class ApplicationItem(BaseModel):
     location: str | None = None
     apply_url: str
     application_status: str
+    availability_status: str
+    last_checked_at: datetime | None = None
+    availability_reason: str | None = None
     total_score: Decimal | None = None
     recommendation_tier: str | None = None
     recommendation: str | None = None

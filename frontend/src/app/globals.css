@@ -345,6 +345,23 @@ button:disabled {
   color: #ffaea8;
 }
 
+.badge.availability-active {
+  background: rgba(87, 209, 141, 0.16);
+  color: #89ecb2;
+}
+
+.badge.availability-expired,
+.badge.availability-unavailable {
+  background: rgba(255, 107, 95, 0.16);
+  color: #ffaea8;
+}
+
+.badge.availability-redirected,
+.badge.availability-unknown {
+  background: rgba(246, 185, 75, 0.16);
+  color: #ffd58a;
+}
+
 .badge.neutral,
 .skill-badge.neutral {
   background: var(--panel-muted);

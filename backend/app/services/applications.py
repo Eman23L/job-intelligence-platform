@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobScore, User
 from app.schemas.database import ApplicationItem
+from app.services.job_availability import QUEUEABLE_AVAILABILITY_STATUSES, check_job_availability
 
 APPLICATION_STATUSES = {"not_started", "ready_to_apply", "opened", "applied", "skipped", "failed"}
 QUEUEABLE_RECOMMENDATIONS = {"apply", "maybe"}
@@ -14,8 +15,11 @@ TERMINAL_APPLICATION_STATUSES = {"applied", "skipped"}
 def set_application_status(db: Session, job: Job, status: str) -> Job:
     if status not in APPLICATION_STATUSES:
         raise ValueError("Invalid application status")
-    if status in {"ready_to_apply", "opened", "applied"} and _is_excluded(job, _score_for_job(db, job.id, None)):
-        raise ValueError("Excluded jobs cannot be queued or applied to")
+    if status in {"ready_to_apply", "opened", "applied"}:
+        if _is_excluded(job, _score_for_job(db, job.id, None)):
+            raise ValueError("Excluded jobs cannot be queued or applied to")
+        if job.availability_status not in QUEUEABLE_AVAILABILITY_STATUSES:
+            raise ValueError("Expired, unavailable, or redirected jobs cannot be queued or applied to")
     job.application_status = status
     db.commit()
     db.refresh(job)
@@ -44,6 +48,9 @@ def prepare_applications(db: Session, user: User | None = None) -> tuple[int, li
         seen.add(job.id)
         if not _is_queueable(score):
             continue
+        check_job_availability(db, job)
+        if job.availability_status not in QUEUEABLE_AVAILABILITY_STATUSES:
+            continue
         if job.application_status != "ready_to_apply":
             job.application_status = "ready_to_apply"
             queued_ids.append(job.id)
@@ -70,6 +77,9 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
             Job.location,
             Job.canonical_url,
             Job.application_status,
+            Job.availability_status,
+            Job.last_checked_at,
+            Job.availability_reason,
             score_subquery.c.total_score,
             score_subquery.c.recommendation,
             score_subquery.c.recommendation_tier,
@@ -86,6 +96,9 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
             location=row.location,
             apply_url=row.canonical_url,
             application_status=row.application_status,
+            availability_status=row.availability_status,
+            last_checked_at=row.last_checked_at,
+            availability_reason=row.availability_reason,
             total_score=row.total_score,
             recommendation_tier=row.recommendation_tier,
             recommendation=row.recommendation or _recommendation_from_total(row.total_score),

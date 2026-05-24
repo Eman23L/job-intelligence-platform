@@ -4,7 +4,9 @@ import type {
   ApplicationsList,
   ApplicationsPrepareResult,
   AnalyticsOverview,
+  BulkJobAvailabilityResult,
   JobDetail,
+  JobAvailabilityResult,
   JobScorecard,
   JobsRescoreResult,
   PaginatedJobs,
@@ -121,6 +123,14 @@ export const api = {
     request<{ affected: number; job_ids: number[] }>("/jobs/bulk-exclude", {
       method: "POST",
       body: JSON.stringify({ job_ids: jobIds })
+    }),
+  checkJobAvailability: (id: string | number) =>
+    request<JobAvailabilityResult>(`/jobs/${id}/check-availability`, { method: "POST", timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
+  checkJobsAvailability: (jobIds?: number[]) =>
+    request<BulkJobAvailabilityResult>("/jobs/check-availability", {
+      method: "POST",
+      timeoutMs: JOBS_REQUEST_TIMEOUT_MS,
+      body: JSON.stringify({ job_ids: jobIds ?? null })
     }),
   saveJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/save`, { method: "POST" }),
   rejectJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/reject`, { method: "POST" }),

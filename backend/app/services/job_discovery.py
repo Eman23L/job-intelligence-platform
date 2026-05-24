@@ -33,6 +33,7 @@ class JobFilters:
     has_missing_skills: bool | None = None
     exclude_excluded: bool = False
     status: str | None = None
+    availability_status: str | None = None
 
 
 def list_jobs(
@@ -120,6 +121,9 @@ def _job_list_item(row) -> JobListItem:
         missing_skills_count=int(row.missing_skills_count or 0),
         status=row.status,
         application_status=row.application_status,
+        availability_status=row.availability_status,
+        last_checked_at=row.last_checked_at,
+        availability_reason=row.availability_reason,
     )
 
 
@@ -178,6 +182,9 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
             Job.posted_at,
             Job.status,
             Job.application_status,
+            Job.availability_status,
+            Job.last_checked_at,
+            Job.availability_reason,
             JobAnalysis.role_family,
             score_subquery.c.recommendation_tier,
             score_subquery.c.total_score,
@@ -228,6 +235,8 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
         )
     if filters.status is not None:
         query = query.where(Job.status == filters.status)
+    if filters.availability_status is not None:
+        query = query.where(Job.availability_status == filters.availability_status)
     if timings is not None:
         timings["filtering_ms"] = int((perf_counter() - filter_started) * 1000)
 
@@ -299,6 +308,9 @@ def _job_row(db: Session, job: Job, user: User | None) -> dict:
         missing_skills_count=missing_count,
         status=job.status,
         application_status=job.application_status,
+        availability_status=job.availability_status,
+        last_checked_at=job.last_checked_at,
+        availability_reason=job.availability_reason,
     )
     return {"job": job, "analysis": analysis, "score": score, "item": item}
 
@@ -323,6 +335,7 @@ def _matches_filters(row: dict, filters: JobFilters) -> bool:
         filters.has_missing_skills is None or ((item.missing_skills_count > 0) == filters.has_missing_skills),
         not filters.exclude_excluded or (job.status != "excluded" and not (score and score.recommendation_tier == "excluded")),
         filters.status is None or job.status == filters.status,
+        filters.availability_status is None or job.availability_status == filters.availability_status,
     ]
     return all(checks)
 

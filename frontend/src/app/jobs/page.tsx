@@ -19,6 +19,7 @@ const initialFilters: JobFiltersState = {
   min_score: "",
   max_score: "",
   exclude_excluded: false,
+  availability_status: "",
   sort: "total_score_desc"
 };
 
@@ -34,6 +35,7 @@ export default function JobsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
   const [scorecardLoading, setScorecardLoading] = useState(false);
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
 
   const params = useMemo(() => {
     const next = new URLSearchParams();
@@ -130,6 +132,24 @@ export default function JobsPage() {
     }
   };
 
+  const checkAvailability = async () => {
+    if (checkingAvailability) {
+      return;
+    }
+    setCheckingAvailability(true);
+    setNotice({ type: "info", message: "Checking job availability..." });
+    setError(null);
+    try {
+      const result = await api.checkJobsAvailability(selectedCount > 0 ? selectedJobIds : undefined);
+      await refresh();
+      setNotice({ type: "success", message: `${result.checked} jobs checked for availability.` });
+    } catch (err) {
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Availability check failed" });
+    } finally {
+      setCheckingAvailability(false);
+    }
+  };
+
   const openScorecard = async (jobId: number) => {
     setScorecardLoading(true);
     setScorecard(null);
@@ -165,6 +185,10 @@ export default function JobsPage() {
         <button type="button" className="primary-button" disabled={rescoring} onClick={() => void rescoreJobs()}>
           {rescoring ? <span className="spinner" aria-hidden="true" /> : null}
           {rescoring ? "Rescoring..." : "Rescore jobs"}
+        </button>
+        <button type="button" className="secondary-button" disabled={checkingAvailability} onClick={() => void checkAvailability()}>
+          {checkingAvailability ? <span className="spinner" aria-hidden="true" /> : null}
+          {checkingAvailability ? "Checking..." : selectedCount > 0 ? "Check selected availability" : "Check availability"}
         </button>
       </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
@@ -218,6 +242,10 @@ export default function JobsPage() {
             onDelete={(jobId) => deleteJobs([jobId])}
             onExclude={(jobId) => excludeJobs([jobId])}
             onScorecard={(jobId) => void openScorecard(jobId)}
+            onCheckAvailability={async (jobId) => {
+              await api.checkJobAvailability(jobId);
+              await refresh();
+            }}
           />
           <PaginationControls page={data.page} totalPages={data.total_pages} onPageChange={setPage} />
         </section>

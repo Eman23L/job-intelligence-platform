@@ -37,6 +37,9 @@ export interface JobListItem {
   missing_skills_count: number;
   status: string;
   application_status: ApplicationStatus;
+  availability_status: AvailabilityStatus;
+  last_checked_at: string | null;
+  availability_reason: string | null;
 }
 
 export interface PaginatedJobs {
@@ -115,6 +118,21 @@ export interface JobsRescoreResult {
 }
 
 export type ApplicationStatus = "not_started" | "ready_to_apply" | "opened" | "applied" | "skipped" | "failed";
+export type AvailabilityStatus = "active" | "expired" | "unavailable" | "redirected" | "unknown";
+
+export interface JobAvailabilityResult {
+  job_id: number;
+  availability_status: AvailabilityStatus;
+  last_checked_at: string;
+  availability_reason: string | null;
+  final_url: string | null;
+  status_code: number | null;
+}
+
+export interface BulkJobAvailabilityResult {
+  checked: number;
+  results: JobAvailabilityResult[];
+}
 
 export interface ApplicationItem {
   job_id: number;
@@ -123,6 +141,9 @@ export interface ApplicationItem {
   location: string | null;
   apply_url: string;
   application_status: ApplicationStatus;
+  availability_status: AvailabilityStatus;
+  last_checked_at: string | null;
+  availability_reason: string | null;
   total_score: string | null;
   recommendation_tier: string | null;
   recommendation: "apply" | "maybe" | "skip" | string | null;
