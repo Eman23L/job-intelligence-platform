@@ -28,6 +28,7 @@ const API_BASE_URL =
   configuredApiBaseUrl ?? (process.env.NODE_ENV === "production" ? PRODUCTION_API_BASE_URL : "http://127.0.0.1:8000");
 const REQUEST_TIMEOUT_MS = 10000;
 const DASHBOARD_REQUEST_TIMEOUT_MS = 20000;
+const JOBS_REQUEST_TIMEOUT_MS = 20000;
 
 export const apiConfig = {
   baseUrl: API_BASE_URL,
@@ -105,7 +106,7 @@ export const api = {
   overview: () => request<AnalyticsOverview>("/analytics/overview", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
   applications: () => request<ApplicationsList>("/applications"),
   prepareApplications: () => request<ApplicationsPrepareResult>("/applications/prepare", { method: "POST" }),
-  jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`),
+  jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`, { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
   rescoreJobs: () => request<JobsRescoreResult>("/jobs/rescore", { method: "POST" }),
   jobScorecard: (id: string | number) => request<JobScorecard>(`/jobs/${id}/scorecard`),

@@ -45,19 +45,28 @@ def list_jobs(
     user: User | None = None,
 ) -> PaginatedJobs:
     started = perf_counter()
+    timings: dict[str, int] = {}
     page = max(page, 1)
     page_size = max(1, min(page_size, 100))
     try:
         _set_statement_timeout(db)
-        query = _job_list_query(filters, sort, user)
+        query_start = perf_counter()
+        query = _job_list_query(filters, sort, user, timings=timings)
+        timings["build_query_ms"] = int((perf_counter() - query_start) * 1000)
         count_query = select(func.count()).select_from(query.order_by(None).subquery())
+        count_start = perf_counter()
         total_count = db.scalar(count_query) or 0
+        timings["count_query_ms"] = int((perf_counter() - count_start) * 1000)
         total_pages = ceil(total_count / page_size) if total_count else 0
         offset = (page - 1) * page_size
+        page_start = perf_counter()
         rows = db.execute(query.offset(offset).limit(page_size)).all()
+        timings["pagination_query_ms"] = int((perf_counter() - page_start) * 1000)
+        serialize_start = perf_counter()
         items = [_job_list_item(row) for row in rows]
+        timings["serialization_ms"] = int((perf_counter() - serialize_start) * 1000)
     except SQLAlchemyError:
-        logger.exception("jobs.list query failed; returning empty fallback")
+        logger.exception("jobs.list query failed timings=%s; returning empty fallback", timings)
         db.rollback()
         return PaginatedJobs(
             items=[],
@@ -69,13 +78,14 @@ def list_jobs(
         )
     elapsed_ms = int((perf_counter() - started) * 1000)
     logger.info(
-        "jobs.list completed total=%s returned=%s page=%s page_size=%s sort=%s elapsed_ms=%s",
+        "jobs.list completed total=%s returned=%s page=%s page_size=%s sort=%s elapsed_ms=%s timings=%s",
         total_count,
         len(items),
         page,
         page_size,
         sort,
         elapsed_ms,
+        timings,
     )
     return PaginatedJobs(
         items=items,
@@ -113,7 +123,8 @@ def _job_list_item(row) -> JobListItem:
     )
 
 
-def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select:
+def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: dict[str, int] | None = None) -> Select:
+    base_started = perf_counter()
     skills_count = (
         select(JobSkill.job_id.label("job_id"), func.count(JobSkill.id).label("skills_count"))
         .group_by(JobSkill.job_id)
@@ -145,7 +156,10 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select
     if user is not None:
         score_query = score_query.where(JobScore.user_id == user.id)
     score_subquery = score_query.subquery()
+    if timings is not None:
+        timings["score_application_data_query_build_ms"] = int((perf_counter() - base_started) * 1000)
 
+    base_select_started = perf_counter()
     query = (
         select(
             Job.id,
@@ -177,7 +191,10 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select
         .outerjoin(skills_count, skills_count.c.job_id == Job.id)
         .outerjoin(missing_count, missing_count.c.job_id == Job.id)
     )
+    if timings is not None:
+        timings["base_query_build_ms"] = int((perf_counter() - base_select_started) * 1000)
 
+    filter_started = perf_counter()
     if filters.role_family is not None:
         query = query.where(JobAnalysis.role_family == filters.role_family)
     if filters.recommendation_tier is not None:
@@ -211,8 +228,14 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None) -> Select
         )
     if filters.status is not None:
         query = query.where(Job.status == filters.status)
+    if timings is not None:
+        timings["filtering_ms"] = int((perf_counter() - filter_started) * 1000)
 
-    return query.order_by(*_sort_expressions(sort, score_subquery))
+    sorting_started = perf_counter()
+    query = query.order_by(*_sort_expressions(sort, score_subquery))
+    if timings is not None:
+        timings["sorting_ms"] = int((perf_counter() - sorting_started) * 1000)
+    return query
 
 
 def _sort_expressions(sort: str, score_subquery) -> tuple:
