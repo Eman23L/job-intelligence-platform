@@ -372,6 +372,25 @@ button:disabled {
   color: #ffd58a;
 }
 
+.badge.run-status-completed {
+  background: rgba(87, 209, 141, 0.16);
+  color: #89ecb2;
+}
+
+.badge.run-status-running,
+.badge.run-status-queued,
+.badge.run-status-pending {
+  background: rgba(88, 166, 255, 0.16);
+  color: #9ecbff;
+}
+
+.badge.run-status-failed,
+.badge.run-status-stalled,
+.badge.run-status-canceled {
+  background: rgba(255, 107, 95, 0.16);
+  color: #ffaea8;
+}
+
 .badge.neutral,
 .skill-badge.neutral {
   background: var(--panel-muted);
@@ -388,6 +407,25 @@ button:disabled {
   gap: 0.75rem;
   grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   padding: 1rem;
+}
+
+.progress-cell {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 150px;
+}
+
+.progress-track {
+  background: #0e141d;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  background: linear-gradient(90deg, #57d18d, #58a6ff);
+  height: 100%;
 }
 
 label {

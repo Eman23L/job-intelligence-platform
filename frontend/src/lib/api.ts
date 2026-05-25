@@ -28,6 +28,8 @@ import type {
   SourceScrapeRunStart,
   SourceScrapeRunStatus,
   SourceTestResult,
+  UnifiedRun,
+  UnifiedRunList,
   UserProfile
 } from "@/types/api";
 
@@ -177,6 +179,9 @@ export const api = {
   deleteSource: (id: number, deleteJobs = false) =>
     request<SourceDeleteResult>(`/sources/${id}?delete_jobs=${deleteJobs ? "true" : "false"}`, { method: "DELETE" }),
   scrapeRun: (id: number) => request<ScrapeRunStatus>(`/scrape-runs/${id}`),
+  runs: (params: URLSearchParams) => request<UnifiedRunList>(`/runs?${params.toString()}`),
+  retryRun: (type: string, id: string | number) => request<UnifiedRun>(`/runs/${type}/${id}/retry`, { method: "POST" }),
+  cancelRun: (type: string, id: string | number) => request<UnifiedRun>(`/runs/${type}/${id}/cancel`, { method: "POST" }),
   profile: () => request<UserProfile | null>("/profile"),
   saveProfileCv: (cvText: string) =>
     request<UserProfile>("/profile/cv", { method: "POST", body: JSON.stringify({ cv_text: cvText }) }),

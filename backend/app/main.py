@@ -12,6 +12,7 @@ from app.api.applications import router as applications_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.profile import router as profile_router
+from app.api.runs import router as runs_router
 from app.api.saved_jobs import router as saved_jobs_router
 from app.api.scrape_runs import router as scrape_runs_router
 from app.api.scores import router as scores_router
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(applications_router)
     app.include_router(ai_router)
     app.include_router(profile_router)
+    app.include_router(runs_router)
     return app
 
 

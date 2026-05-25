@@ -13,7 +13,8 @@ const navItems = [
   { href: "/missing-skills", label: "Missing skills" },
   { href: "/role-fit", label: "Role fit" },
   { href: "/salary", label: "Salary" },
-  { href: "/sources", label: "Sources" }
+  { href: "/sources", label: "Sources" },
+  { href: "/runs", label: "System Runs" }
 ];
 
 export function Sidebar() {

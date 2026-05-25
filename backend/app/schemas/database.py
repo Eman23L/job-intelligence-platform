@@ -209,6 +209,26 @@ class SourceDeleteResult(BaseModel):
     deleted_jobs: bool = False
 
 
+class UnifiedRun(BaseModel):
+    id: str
+    type: str
+    status: str
+    total: int = 0
+    processed: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    skipped: int = 0
+    error: str | None = None
+    started_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
+
+
+class UnifiedRunList(BaseModel):
+    items: list[UnifiedRun]
+
+
 class ParsedJobSummary(BaseModel):
     source_job_id: str | None = None
     title: str | None = None

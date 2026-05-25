@@ -452,3 +452,23 @@ export interface SourceDeleteResult {
   action: string;
   deleted_jobs: boolean;
 }
+
+export interface UnifiedRun {
+  id: string;
+  type: "scrape" | "rescore" | "availability" | "application_prepare" | string;
+  status: string;
+  total: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  error: string | null;
+  started_at: string | null;
+  last_heartbeat_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+}
+
+export interface UnifiedRunList {
+  items: UnifiedRun[];
+}
