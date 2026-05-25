@@ -10,6 +10,7 @@ from app.db.models import ApplicationPrepareRun, Base, Job, JobScore, JobSource,
 from app.db.session import get_db
 from app.main import app
 from app.services import applications
+from app.services import queue
 
 
 def test_prepare_returns_run_id_quickly_and_queues_after_completion(monkeypatch) -> None:
@@ -36,6 +37,27 @@ def test_prepare_returns_run_id_quickly_and_queues_after_completion(monkeypatch)
         assert body["queued"] == 2
         listed = client.get("/applications")
         assert {item["job_id"] for item in listed.json()["items"]} == set(ids["jobs"])
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_prepare_api_enqueues_when_queue_enabled(monkeypatch) -> None:
+    TestingSession = _session_factory()
+    _seed_jobs(TestingSession, count=1)
+    enqueued = []
+    monkeypatch.setattr(queue, "queue_enabled", lambda: True)
+    monkeypatch.setattr(queue, "rq_queue", lambda: _FakeQueue(enqueued))
+
+    def override_get_db():
+        with TestingSession() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post("/applications/prepare")
+        assert response.status_code == 200
+        assert response.json()["run_id"]
+        assert enqueued
     finally:
         app.dependency_overrides.clear()
 
@@ -131,3 +153,16 @@ def _mark_active(db: Session, job: Job) -> None:
     job.last_checked_at = datetime.now(tz=timezone.utc)
     job.availability_reason = "fixture"
     db.commit()
+
+
+class _FakeJob:
+    id = "fake-job"
+
+
+class _FakeQueue:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def enqueue_call(self, **kwargs):
+        self.calls.append(kwargs)
+        return _FakeJob()

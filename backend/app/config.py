@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     ai_model: str = Field(default="llama-3.1-8b-instant", alias="AI_MODEL")
     ai_timeout_seconds: float = Field(default=30.0, alias="AI_TIMEOUT_SECONDS")
     ai_max_retries: int = Field(default=2, alias="AI_MAX_RETRIES")
+    redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
+    queue_enabled: bool = Field(default=False, alias="QUEUE_ENABLED")
+    queue_name: str = Field(default="default", alias="QUEUE_NAME")
 
     @field_validator("database_url", mode="before")
     @classmethod

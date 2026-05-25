@@ -25,6 +25,7 @@ from app.schemas.database import (
 from app.scrapers.demo import DemoScraper
 from app.services import source_scraping
 from app.services import sources as source_service
+from app.services.queue import enqueue_or_background
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 logger = logging.getLogger(__name__)
@@ -75,7 +76,13 @@ def run_jobserve_search_scrape(
     db: Session = Depends(get_db),
 ):
     started = source_scraping.start_jobserve_search_scrape(db, payload)
-    background_tasks.add_task(source_scraping.run_jobserve_search_scrape_background, started.run_id, payload.model_dump())
+    enqueue_or_background(
+        background_tasks,
+        source_scraping.run_jobserve_search_scrape_background,
+        started.run_id,
+        payload.model_dump(),
+        job_id=f"jobserve-search-scrape-{started.run_id}",
+    )
     return started
 
 
@@ -169,10 +176,12 @@ def scrape_source_now(
     source = _get_source_or_404(db, source_id)
     request_payload = payload or ScrapeNowRequest()
     started = source_scraping.start_scrape_source_now(db, source, request_payload)
-    background_tasks.add_task(
+    enqueue_or_background(
+        background_tasks,
         source_scraping.run_scrape_background,
         started.scrape_run_id,
         source.id,
         request_payload.model_dump(),
+        job_id=f"source-scrape-{started.scrape_run_id}",
     )
     return started

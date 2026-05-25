@@ -11,6 +11,7 @@ from app.services.applications import (
     run_prepare_applications_background,
     start_prepare_applications_run,
 )
+from app.services.queue import enqueue_or_background
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
@@ -32,7 +33,7 @@ def prepare_application_queue(background_tasks: BackgroundTasks, db: Session = D
     user = _default_user(db)
     started, created = start_prepare_applications_run(db, user)
     if created:
-        background_tasks.add_task(run_prepare_applications_background, started.run_id, user.id)
+        enqueue_or_background(background_tasks, run_prepare_applications_background, started.run_id, user.id, job_id=f"application-prepare-{started.run_id}")
     return started
 
 

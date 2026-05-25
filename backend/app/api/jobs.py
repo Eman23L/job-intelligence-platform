@@ -38,6 +38,7 @@ from app.services.job_availability import (
     start_availability_run,
 )
 from app.services.job_scoring import scorecard_for_job
+from app.services.queue import enqueue_or_background
 from app.services.rescore_runs import cancel_rescore_run, get_rescore_run_status, retry_rescore_run, run_rescore_background, start_rescore_run
 from app.services.saved_jobs import set_saved_job_status
 from app.services.scoring import score_all_jobs, score_job
@@ -150,7 +151,7 @@ def bulk_check_availability(background_tasks: BackgroundTasks, payload: JobAvail
     job_ids = payload.job_ids if payload else None
     started, created = start_availability_run(db, job_ids)
     if created:
-        background_tasks.add_task(run_availability_background, started.run_id, job_ids)
+        enqueue_or_background(background_tasks, run_availability_background, started.run_id, job_ids, job_id=f"availability-{started.run_id}")
     return started
 
 
@@ -168,7 +169,7 @@ def rescore_all_jobs(background_tasks: BackgroundTasks, db: Session = Depends(ge
         user = _default_user(db)
         started, created = start_rescore_run(db, user)
         if created:
-            background_tasks.add_task(run_rescore_background, started.run_id, user.id)
+            enqueue_or_background(background_tasks, run_rescore_background, started.run_id, user.id, job_id=f"rescore-{started.run_id}")
         return started
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -189,7 +190,7 @@ def retry_rescore(run_id: int, background_tasks: BackgroundTasks, db: Session = 
     if started is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rescore run not found")
     if created:
-        background_tasks.add_task(run_rescore_background, started.run_id, user.id)
+        enqueue_or_background(background_tasks, run_rescore_background, started.run_id, user.id, job_id=f"rescore-{started.run_id}")
     return started
 
 

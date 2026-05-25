@@ -24,3 +24,47 @@ services:
         sync: false
       - key: AI_MODEL
         value: llama-3.1-8b-instant
+      - key: QUEUE_ENABLED
+        value: "true"
+      - key: QUEUE_NAME
+        value: default
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: job-intelligence-redis
+          property: connectionString
+  - type: worker
+    name: job-intelligence-worker
+    env: python
+    rootDir: .
+    buildCommand: python --version && pip --version && pip install -r requirements.txt
+    startCommand: PYTHONPATH=backend python -m app.worker
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        sync: false
+      - key: AI_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      - key: AI_MODEL
+        value: llama-3.1-8b-instant
+      - key: QUEUE_ENABLED
+        value: "true"
+      - key: QUEUE_NAME
+        value: default
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: job-intelligence-redis
+          property: connectionString
+  - type: redis
+    name: job-intelligence-redis
+    ipAllowList: []

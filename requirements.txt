@@ -7,5 +7,7 @@ pydantic-settings==2.4.0
 pytest==8.3.2
 python-dotenv==1.0.1
 requests==2.34.1
+redis==5.2.1
+rq==2.1.0
 SQLAlchemy==2.0.32
 uvicorn[standard]==0.30.6
