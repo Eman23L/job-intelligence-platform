@@ -212,6 +212,10 @@ export interface ApplicationItem {
   apply_difficulty: ApplyDifficulty;
   apply_strategy_reason: string | null;
   apply_readiness_score: string | null;
+  assisted_started_at: string | null;
+  assisted_result: AssistApplyResult | null;
+  assisted_warnings: string[] | null;
+  last_apply_attempt_at: string | null;
   total_score: string | null;
   recommendation_tier: string | null;
   recommendation: "apply" | "maybe" | "skip" | string | null;
@@ -219,6 +223,14 @@ export interface ApplicationItem {
 
 export interface ApplicationsList {
   items: ApplicationItem[];
+}
+
+export interface AssistApplyResult {
+  status: "review_required" | string;
+  filled_fields: string[];
+  unfilled_fields: string[];
+  warnings: string[];
+  screenshot_path: string | null;
 }
 
 export interface ApplicationsPrepareResult {

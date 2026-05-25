@@ -9,7 +9,7 @@ import { RecommendationActionBadge } from "@/components/RecommendationActionBadg
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { api } from "@/lib/api";
-import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, JobScorecard } from "@/types/api";
+import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyResult, JobScorecard } from "@/types/api";
 
 const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
 
@@ -23,6 +23,7 @@ export default function ApplicationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ type: "info" | "success" | "warning" | "error"; message: string } | null>(null);
   const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
+  const [assistResult, setAssistResult] = useState<{ jobTitle: string; result: AssistApplyResult } | null>(null);
 
   const refresh = useCallback(async () => {
     const result = await api.applications();
@@ -147,6 +148,22 @@ export default function ApplicationsPage() {
     }
   };
 
+  const assistApply = async (item: ApplicationItem) => {
+    setActionLoading(item.job_id);
+    setError(null);
+    setAssistResult(null);
+    try {
+      const result = await api.assistApply(item.job_id);
+      await refresh();
+      setAssistResult({ jobTitle: item.title, result });
+      setNotice({ type: "warning", message: "Assisted apply started. Review the browser manually before taking any next action." });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to assist apply");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   if (loading) {
     return <LoadingState label="Loading applications" />;
   }
@@ -226,6 +243,9 @@ export default function ApplicationsPage() {
                         <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void openApplyLink(item)}>
                           Open apply page
                         </button>
+                        <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void assistApply(item)}>
+                          Assist apply
+                        </button>
                         <button
                           type="button"
                           className="secondary-button compact-button"
@@ -255,7 +275,52 @@ export default function ApplicationsPage() {
         </section>
       ) : null}
       {scorecard ? <ScorecardModal scorecard={scorecard} onClose={() => setScorecard(null)} /> : null}
+      {assistResult ? <AssistApplyModal data={assistResult} onClose={() => setAssistResult(null)} /> : null}
     </div>
+  );
+}
+
+function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result: AssistApplyResult }; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-panel scorecard-modal">
+        <div className="modal-header">
+          <div>
+            <h2>Assist apply</h2>
+            <p className="muted-text">{data.jobTitle}</p>
+          </div>
+          <button type="button" className="secondary-button compact-button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="notice-banner warning">Review manually in the browser. The assistant did not submit the application.</div>
+        <section className="scorecard-section">
+          <h3>Filled fields</h3>
+          <FieldList items={data.result.filled_fields} empty="No fields filled" />
+        </section>
+        <section className="scorecard-section">
+          <h3>Unfilled fields</h3>
+          <FieldList items={data.result.unfilled_fields} empty="No unfilled fields detected" />
+        </section>
+        <section className="scorecard-section">
+          <h3>Warnings</h3>
+          <FieldList items={data.result.warnings} empty="No warnings" />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function FieldList({ items, empty }: { items: string[]; empty: string }) {
+  if (items.length === 0) {
+    return <p className="muted-text">{empty}</p>;
+  }
+  return (
+    <ul>
+      {items.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
   );
 }
 

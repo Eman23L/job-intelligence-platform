@@ -2,9 +2,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import User
+from app.db.models import Job, User
 from app.db.session import get_db
-from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList
+from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyResult
+from app.services.apply_agent import assist_apply_application
 from app.services.applications import (
     get_prepare_applications_run_status,
     list_applications,
@@ -43,3 +44,14 @@ def get_prepare_application_run(run_id: int, db: Session = Depends(get_db)):
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prepare run not found")
     return result
+
+
+@router.post("/{application_id}/assist-apply", response_model=AssistApplyResult)
+def assist_apply(application_id: int, db: Session = Depends(get_db)):
+    job = db.get(Job, application_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    try:
+        return assist_apply_application(db, job, _default_user(db))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

@@ -215,6 +215,10 @@ class Job(Base):
     apply_strategy: Mapped[str] = mapped_column(String(40), default="unknown", server_default="unknown", nullable=False, index=True)
     apply_difficulty: Mapped[str] = mapped_column(String(40), default="unknown", server_default="unknown", nullable=False, index=True)
     apply_strategy_reason: Mapped[str | None] = mapped_column(Text)
+    assisted_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    assisted_result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    assisted_warnings: Mapped[list[str] | None] = mapped_column(JSON)
+    last_apply_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     content_hash: Mapped[str | None] = mapped_column(String(128), index=True)
 
     source: Mapped[JobSource] = relationship(back_populates="jobs")

@@ -351,6 +351,10 @@ class JobBase(BaseModel):
     apply_strategy: str = "unknown"
     apply_difficulty: str = "unknown"
     apply_strategy_reason: str | None = None
+    assisted_started_at: datetime | None = None
+    assisted_result: dict[str, Any] | None = None
+    assisted_warnings: list[str] | None = None
+    last_apply_attempt_at: datetime | None = None
     content_hash: str | None = None
 
 
@@ -647,6 +651,10 @@ class ApplicationItem(BaseModel):
     apply_difficulty: str
     apply_strategy_reason: str | None = None
     apply_readiness_score: Decimal | None = None
+    assisted_started_at: datetime | None = None
+    assisted_result: dict[str, Any] | None = None
+    assisted_warnings: list[str] | None = None
+    last_apply_attempt_at: datetime | None = None
     total_score: Decimal | None = None
     recommendation_tier: str | None = None
     recommendation: str | None = None
@@ -654,6 +662,14 @@ class ApplicationItem(BaseModel):
 
 class ApplicationsList(BaseModel):
     items: list[ApplicationItem]
+
+
+class AssistApplyResult(BaseModel):
+    status: str
+    filled_fields: list[str] = Field(default_factory=list)
+    unfilled_fields: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    screenshot_path: str | None = None
 
 
 class ApplicationsPrepareResult(BaseModel):
