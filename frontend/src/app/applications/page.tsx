@@ -242,7 +242,9 @@ export default function ApplicationsPage() {
                       {item.availability_reason ? <div className="muted-text">{item.availability_reason}</div> : null}
                     </td>
                     <td>
-                      <span className={`badge apply-difficulty-${item.apply_difficulty}`}>{formatLabel(item.apply_strategy)}</span>
+                      <span className={`badge apply-difficulty-${item.apply_difficulty} apply-strategy-${item.apply_strategy}`}>
+                        {formatLabel(item.apply_strategy)}
+                      </span>
                       <div className="status-note">{formatLabel(item.apply_difficulty)}</div>
                       {item.apply_strategy_reason ? <div className="muted-text">{item.apply_strategy_reason}</div> : null}
                       {item.apply_readiness_score ? <div className="muted-text">Readiness {Math.round(Number(item.apply_readiness_score))}</div> : null}

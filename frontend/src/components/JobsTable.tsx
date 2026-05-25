@@ -92,7 +92,9 @@ export function JobsTable({
                 {job.availability_reason ? <div className="muted-text">{job.availability_reason}</div> : null}
               </td>
               <td>
-                <span className={`badge apply-difficulty-${job.apply_difficulty}`}>{formatLabel(job.apply_strategy)}</span>
+                <span className={`badge apply-difficulty-${job.apply_difficulty} apply-strategy-${job.apply_strategy}`}>
+                  {formatLabel(job.apply_strategy)}
+                </span>
                 <div className="status-note">{formatLabel(job.apply_difficulty)}</div>
                 {job.apply_strategy_reason ? <div className="muted-text">{job.apply_strategy_reason}</div> : null}
               </td>

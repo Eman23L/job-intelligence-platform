@@ -412,6 +412,24 @@ button:disabled {
   color: #ffaea8;
 }
 
+.badge.apply-strategy-jobserve_apply_easy {
+  border-color: rgba(87, 209, 141, 0.38);
+}
+
+.badge.apply-strategy-jobserve_apply_medium {
+  border-color: rgba(255, 213, 138, 0.42);
+}
+
+.badge.apply-strategy-external_ats {
+  background: rgba(255, 140, 80, 0.18);
+  border-color: rgba(255, 140, 80, 0.42);
+  color: #ffb084;
+}
+
+.badge.apply-strategy-blocked {
+  border-color: rgba(255, 107, 95, 0.42);
+}
+
 .badge.neutral,
 .skill-badge.neutral {
   background: var(--panel-muted);

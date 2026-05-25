@@ -37,7 +37,8 @@ def set_application_status(db: Session, job: Job, status: str) -> Job:
 
 
 def prepare_applications(db: Session, user: User | None = None) -> tuple[int, list[int]]:
-    rows = db.execute(
+    rows = _sorted_candidate_rows(
+        db,
         select(Job, JobScore)
         .join(JobScore, JobScore.job_id == Job.id)
         .where(
@@ -46,8 +47,8 @@ def prepare_applications(db: Session, user: User | None = None) -> tuple[int, li
             JobScore.total_score >= Decimal("70"),
             JobScore.recommendation_tier != "excluded",
         )
-        .order_by(JobScore.apply_readiness_score.desc().nulls_last(), JobScore.total_score.desc(), Job.id)
-    ).all()
+        .order_by(JobScore.apply_readiness_score.desc().nulls_last(), JobScore.total_score.desc(), Job.id),
+    )
     queued_ids: list[int] = []
     seen: set[int] = set()
     for job, score in rows:
@@ -251,7 +252,7 @@ def _candidate_application_rows(db: Session, user: User | None = None):
     )
     if user is not None:
         query = query.where(JobScore.user_id == user.id)
-    return db.execute(query).all()
+    return _sorted_candidate_rows(db, query)
 
 
 def _is_queueable(score: JobScore) -> bool:
@@ -281,7 +282,7 @@ def _recommendation_from_total(total_score: Decimal | None) -> str | None:
 
 
 def _ensure_apply_strategy(job: Job) -> None:
-    if job.apply_strategy == "unknown" and job.apply_difficulty == "unknown":
+    if (job.apply_strategy == "unknown" and job.apply_difficulty == "unknown") or job.apply_strategy == "jobserve_apply":
         classification = classify_job(job)
         job.apply_strategy = classification.strategy
         job.apply_difficulty = classification.difficulty
@@ -292,3 +293,24 @@ def _difficulty_order(column):
     from sqlalchemy import case
 
     return case((column == "easy", 0), (column == "medium", 1), (column == "hard", 2), (column == "unknown", 3), else_=4)
+
+
+def _sorted_candidate_rows(db: Session, query):
+    rows = db.execute(query).all()
+    for job, score in rows:
+        _ensure_apply_strategy(job)
+        refresh_apply_readiness(job, score)
+    db.flush()
+    return sorted(
+        rows,
+        key=lambda row: (
+            -(float(row[1].apply_readiness_score or 0)),
+            -(float(row[1].total_score or 0)),
+            _difficulty_rank(row[0].apply_difficulty),
+            row[0].id,
+        ),
+    )
+
+
+def _difficulty_rank(value: str | None) -> int:
+    return {"easy": 0, "medium": 1, "hard": 2, "unknown": 3, "blocked": 4}.get(value or "unknown", 3)

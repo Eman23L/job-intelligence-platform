@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_RUN_STATUSES = {"running", "queued"}
 EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.IGNORECASE)
+JOB_CLOSED_PATTERN = re.compile(r"\b(no longer available|job expired|application closed|vacancy closed|position filled)\b", re.IGNORECASE)
+JOBSERVE_APPLY_PATTERN = re.compile(r"\b(apply now|job application|upload cv|email address|working status in uk)\b", re.IGNORECASE)
+JOBSERVE_LOGIN_PATTERN = re.compile(r"\b(login|log in|sign in|register|create an account|job seeker account)\b", re.IGNORECASE)
+BLOCKED_PATTERN = re.compile(r"\b(captcha|recaptcha|hcaptcha|access denied|forbidden)\b", re.IGNORECASE)
+NO_APPLY_PATTERN = re.compile(r"\b(no apply|no application|apply button unavailable|cannot apply)\b", re.IGNORECASE)
+EXTERNAL_ATS_PATTERNS = {
+    "Workday": re.compile(r"\b(workday|myworkdayjobs)\b", re.IGNORECASE),
+    "Taleo": re.compile(r"\b(taleo)\b", re.IGNORECASE),
+    "SuccessFactors": re.compile(r"\b(successfactors|success factors)\b", re.IGNORECASE),
+    "Greenhouse": re.compile(r"\b(greenhouse|boards\.greenhouse\.io)\b", re.IGNORECASE),
+    "Lever": re.compile(r"\b(lever\.co|lever)\b", re.IGNORECASE),
+}
 
 
 @dataclass(frozen=True)
@@ -54,7 +66,7 @@ def classify_job(job: Job) -> StrategyClassification:
     source_type = (job.source.source_type if job.source else "").lower()
 
     if not url:
-        return StrategyClassification("blocked", "blocked", "Missing apply URL.")
+        return StrategyClassification("blocked", "blocked", "No usable apply URL found.")
     if url.lower().startswith("mailto:") or EMAIL_PATTERN.search(url) or EMAIL_PATTERN.search(text):
         return StrategyClassification("recruiter_email", "easy", "Recruiter email or mailto apply route detected.")
 
@@ -64,22 +76,37 @@ def classify_job(job: Job) -> StrategyClassification:
     combined = f"{host} {path} {source_name} {source_type} {text}"
 
     if "jobserve.com" in combined:
-        if "apply" in path or "job" in path:
-            return StrategyClassification("jobserve_apply_easy", "easy", "JobServe hosted apply modal flow detected.")
-        return StrategyClassification("jobserve_apply", "medium", "JobServe application flow detected.")
+        return _classify_jobserve(path, text)
     if "greenhouse.io" in host or "boards.greenhouse.io" in host:
         return StrategyClassification("greenhouse", "medium", "Greenhouse application flow detected.")
     if "lever.co" in host:
         return StrategyClassification("lever", "medium", "Lever application flow detected.")
     if "myworkdayjobs.com" in host or "workday" in combined:
-        return StrategyClassification("workday", "hard", "Workday application detected - likely manual/harder apply.")
+        return StrategyClassification("workday", "hard", "External ATS detected: Workday.")
     if "taleo.net" in host or "taleo" in combined:
-        return StrategyClassification("taleo", "hard", "Taleo application flow detected - likely manual/harder apply.")
+        return StrategyClassification("taleo", "hard", "External ATS detected: Taleo.")
     if "successfactors" in combined:
-        return StrategyClassification("successfactors", "hard", "SuccessFactors application flow detected - likely manual/harder apply.")
+        return StrategyClassification("successfactors", "hard", "External ATS detected: SuccessFactors.")
     if parsed.scheme in {"http", "https"} and host:
         return StrategyClassification("unknown", "unknown", "External application site could not be classified.")
-    return StrategyClassification("blocked", "blocked", "Apply URL is not usable.")
+    return StrategyClassification("blocked", "blocked", "No usable apply URL found.")
+
+
+def _classify_jobserve(path: str, text: str) -> StrategyClassification:
+    if JOB_CLOSED_PATTERN.search(text) or BLOCKED_PATTERN.search(text) or NO_APPLY_PATTERN.search(text):
+        return StrategyClassification("blocked", "blocked", "No usable apply URL found.")
+    for ats_name, pattern in EXTERNAL_ATS_PATTERNS.items():
+        if pattern.search(text):
+            return StrategyClassification("external_ats", "hard", f"External ATS detected: {ats_name}.")
+    if JOBSERVE_APPLY_PATTERN.search(text):
+        if JOBSERVE_LOGIN_PATTERN.search(text):
+            return StrategyClassification("jobserve_apply_medium", "medium", "JobServe login/register may be required.")
+        return StrategyClassification("jobserve_apply_easy", "easy", "JobServe hosted apply flow detected.")
+    if "apply" in path or "job" in path:
+        return StrategyClassification("jobserve_apply_easy", "easy", "JobServe hosted apply flow detected.")
+    if JOBSERVE_LOGIN_PATTERN.search(text):
+        return StrategyClassification("jobserve_apply_medium", "medium", "JobServe login/register may be required.")
+    return StrategyClassification("blocked", "blocked", "No usable apply URL found.")
 
 
 def calculate_apply_readiness(job: Job, score: JobScore | None) -> Decimal:
