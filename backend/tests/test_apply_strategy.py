@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from app.db.models import Job, JobScore, JobSource, User
+from app.db.models import Job, JobScore, JobSource, User, UserProfile
 from app.services.applications import prepare_applications
 from app.services.apply_strategy import calculate_apply_readiness, classify_apply_strategy, classify_job
 
@@ -153,6 +153,51 @@ def test_application_queue_orders_easy_before_medium_and_hard(db_session, monkey
     _, job_ids = prepare_applications(db_session, user)
 
     assert job_ids == [easy.id, medium.id, hard.id]
+
+
+def test_changing_threshold_to_70_queues_70_plus_jobs(db_session, monkeypatch) -> None:
+    user = User(email="threshold70@example.invalid")
+    source = JobSource(name="Threshold 70", base_url="https://example.invalid", source_type="fixture")
+    db_session.add_all([user, source])
+    db_session.flush()
+    db_session.add(UserProfile(user_id=user.id, cv_text="", minimum_apply_score=70))
+    seventy = _job(db_session, "mailto:jobs@example.invalid", source=source, source_job_id="seventy")
+    sixty_nine = _job(db_session, "mailto:jobs2@example.invalid", source=source, source_job_id="sixty-nine")
+    for job in [seventy, sixty_nine]:
+        job.availability_status = "active"
+    db_session.add_all(
+        [
+            JobScore(job_id=seventy.id, user_id=user.id, total_score=Decimal("70"), recommendation="apply", recommendation_tier="Strong match"),
+            JobScore(job_id=sixty_nine.id, user_id=user.id, total_score=Decimal("69"), recommendation="apply", recommendation_tier="Possible match"),
+        ]
+    )
+    db_session.commit()
+
+    from app.services import applications
+
+    monkeypatch.setattr(applications, "check_job_availability", lambda db, job: None)
+    _, job_ids = prepare_applications(db_session, user)
+
+    assert job_ids == [seventy.id]
+
+
+def test_jobs_below_default_threshold_are_not_queued(db_session, monkeypatch) -> None:
+    user = User(email="threshold80@example.invalid")
+    source = JobSource(name="Threshold 80", base_url="https://example.invalid", source_type="fixture")
+    db_session.add_all([user, source])
+    db_session.flush()
+    job = _job(db_session, "mailto:jobs@example.invalid", source=source, source_job_id="below80")
+    job.availability_status = "active"
+    db_session.add(JobScore(job_id=job.id, user_id=user.id, total_score=Decimal("79"), recommendation="apply", recommendation_tier="Strong match"))
+    db_session.commit()
+
+    from app.services import applications
+
+    monkeypatch.setattr(applications, "check_job_availability", lambda db, job: None)
+    queued, job_ids = prepare_applications(db_session, user)
+
+    assert queued == 0
+    assert job_ids == []
 
 
 def test_readiness_score_prefers_easy_medium_active_jobs(db_session) -> None:

@@ -69,6 +69,10 @@ class ApplicationProfileUpdate(BaseModel):
     work_status_uk: str | None = None
     salary_expectation: str | None = None
     travel_distance: str | None = None
+    availability_notice: str | None = None
+    salary_expectation_gbp: int | None = None
+    travel_distance_miles: int | None = None
+    minimum_apply_score: int = Field(default=80, ge=0, le=100)
     sponsorship_required: bool = False
 
 
@@ -92,6 +96,10 @@ class UserProfileRead(ORMModel):
     work_status_uk: str | None = None
     salary_expectation: str | None = None
     travel_distance: str | None = None
+    availability_notice: str | None = None
+    salary_expectation_gbp: int | None = None
+    travel_distance_miles: int | None = None
+    minimum_apply_score: int = 80
     sponsorship_required: bool = False
     cv_file_path: str | None = None
     cv_file_name: str | None = None
@@ -689,6 +697,7 @@ class ApplicationItem(BaseModel):
 
 class ApplicationsList(BaseModel):
     items: list[ApplicationItem]
+    minimum_apply_score: int = 80
 
 
 class AssistApplyResult(BaseModel):

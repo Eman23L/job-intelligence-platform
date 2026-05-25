@@ -24,10 +24,12 @@ export default function ApplicationsPage() {
   const [notice, setNotice] = useState<{ type: "info" | "success" | "warning" | "error"; message: string } | null>(null);
   const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
   const [assistResult, setAssistResult] = useState<{ jobTitle: string; result: AssistApplyResult } | null>(null);
+  const [threshold, setThreshold] = useState(80);
 
   const refresh = useCallback(async () => {
     const result = await api.applications();
     setData(result);
+    setThreshold(result.minimum_apply_score);
   }, []);
 
   useEffect(() => {
@@ -95,6 +97,18 @@ export default function ApplicationsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to prepare applications");
       setActionLoading(null);
+    }
+  };
+
+  const saveThreshold = async (value: number) => {
+    setThreshold(value);
+    setError(null);
+    try {
+      await api.saveApplicationProfile({ minimum_apply_score: value });
+      await refresh();
+      setNotice({ type: "success", message: `Apply threshold set to ${value}+. Queue refreshed.` });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save apply threshold");
     }
   };
 
@@ -180,12 +194,23 @@ export default function ApplicationsPage() {
   return (
     <div className="page-stack">
       <div className="action-row">
+        <label>
+          Only prepare/apply for jobs scoring at least
+          <select value={threshold} onChange={(event) => void saveThreshold(Number(event.target.value))}>
+            <option value={60}>60+</option>
+            <option value={70}>70+</option>
+            <option value={80}>80+</option>
+            <option value={85}>85+</option>
+            <option value={90}>90+</option>
+          </select>
+        </label>
         <button type="button" className="primary-button" disabled={actionLoading === "prepare"} onClick={() => void prepareApplications()}>
           {actionLoading === "prepare" ? <span className="spinner" aria-hidden="true" /> : null}
           {actionLoading === "prepare" ? "Preparing..." : "Prepare applications"}
         </button>
       </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
+      <div className="notice-banner info">Current apply threshold: {threshold}+.</div>
       {prepareRunId && prepareRun ? (
         <div className="notice-banner info">
           Preparing applications... {prepareRun.processed} / {prepareRun.total} processed, {prepareRun.queued} queued, {prepareRun.failed} failed.

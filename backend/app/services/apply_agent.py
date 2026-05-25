@@ -5,10 +5,11 @@ import logging
 import re
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.models import Job, User
+from app.db.models import Job, JobScore, User
 from app.schemas.database import AssistApplyResult
 from app.services.job_availability import check_job_availability
 from app.services.profile import get_profile
@@ -46,7 +47,7 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
 
     profile = get_profile(db, user)
     if mode == "submit_with_confirmation":
-        _validate_jobserve_submit(job, profile)
+        _validate_jobserve_submit(db, job, user, profile)
     candidates = profile_field_candidates(user, profile)
     warnings = _safety_warnings(job)
     try:
@@ -85,6 +86,9 @@ def profile_field_candidates(user: User, profile) -> dict[str, FieldCandidate]:
         "portfolio": preferences.get("portfolio") or preferences.get("portfolio_url") or preferences.get("website"),
         "salary": getattr(profile, "salary_expectation", None) or preferences.get("salary_expectation") or preferences.get("salary"),
         "travel_distance": getattr(profile, "travel_distance", None),
+        "availability_notice": getattr(profile, "availability_notice", None),
+        "salary_expectation_gbp": getattr(profile, "salary_expectation_gbp", None),
+        "travel_distance_miles": getattr(profile, "travel_distance_miles", None),
         "work_authorization": getattr(profile, "work_status_uk", None) or preferences.get("work_authorization"),
     }
     return {
@@ -202,13 +206,24 @@ def _validate_application(job: Job) -> None:
         raise ValueError("Missing apply URL.")
 
 
-def _validate_jobserve_submit(job: Job, profile) -> None:
+def _validate_jobserve_submit(db: Session, job: Job, user: User, profile) -> None:
     if job.apply_strategy != "jobserve_apply_easy":
         raise ValueError("Submit with confirmation is only available for JobServe easy apply.")
     if not profile or not profile.cv_file_path:
         raise ValueError("Saved CV file is required before submitting a JobServe application.")
     if not (getattr(profile, "email", None) or ""):
         raise ValueError("Email is required before submitting a JobServe application.")
+    if not getattr(profile, "availability_notice", None):
+        raise ValueError("Availability notice missing")
+    if getattr(profile, "salary_expectation_gbp", None) is None:
+        raise ValueError("Salary expectation missing")
+    if getattr(profile, "travel_distance_miles", None) is None:
+        raise ValueError("Travel distance missing")
+    score = db.scalar(select(JobScore).where(JobScore.job_id == job.id, JobScore.user_id == user.id).order_by(JobScore.scored_at.desc()))
+    threshold = int(getattr(profile, "minimum_apply_score", None) or 80)
+    total = float(score.total_score) if score is not None and score.total_score is not None else 0.0
+    if total < threshold:
+        raise ValueError(f"Job score {round(total):g} is below your apply threshold of {threshold}.")
 
 
 def _safety_warnings(job: Job) -> list[str]:
@@ -256,6 +271,44 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
             unfilled.append("Working status in UK")
     else:
         unfilled_required.append("working status in UK")
+
+    _handle_required_dropdown(
+        page,
+        candidates,
+        "availability_notice",
+        [r"availability", r"notice"],
+        lambda value: value,
+        "Availability notice",
+        "Availability notice missing",
+        filled,
+        unfilled_required,
+        warnings,
+    )
+    _handle_required_dropdown(
+        page,
+        candidates,
+        "salary_expectation_gbp",
+        [r"salary expectation", r"salary"],
+        salary_range_label,
+        "Salary expectation",
+        "Salary expectation missing",
+        filled,
+        unfilled_required,
+        warnings,
+        no_match_warning="Could not match salary range",
+    )
+    _handle_required_dropdown(
+        page,
+        candidates,
+        "travel_distance_miles",
+        [r"travel distance", r"travel"],
+        travel_distance_label,
+        "Travel distance",
+        "Travel distance missing",
+        filled,
+        unfilled_required,
+        warnings,
+    )
 
     if profile and profile.cv_file_path:
         try:
@@ -323,6 +376,96 @@ def _select_work_status(page, value: str) -> bool:
             except Exception:  # noqa: BLE001
                 continue
     return False
+
+
+def _handle_required_dropdown(
+    page,
+    candidates: dict[str, FieldCandidate],
+    key: str,
+    label_patterns: list[str],
+    matcher,
+    field_name: str,
+    missing_warning: str,
+    filled: list[str],
+    unfilled_required: list[str],
+    warnings: list[str],
+    *,
+    no_match_warning: str | None = None,
+) -> None:
+    candidate = candidates.get(key)
+    if candidate is None:
+        warnings.append(missing_warning)
+        unfilled_required.append(field_name)
+        return
+    option = matcher(candidate.value)
+    if option is None:
+        warnings.append(no_match_warning or f"Could not match {field_name.lower()}")
+        unfilled_required.append(field_name)
+        return
+    if _select_dropdown_by_label_patterns(page, label_patterns, option):
+        filled.append(field_name)
+        return
+    warnings.append(f"Could not fill {field_name.lower()}")
+    unfilled_required.append(field_name)
+
+
+def _select_dropdown_by_label_patterns(page, label_patterns: list[str], visible_text: str) -> bool:
+    for pattern in label_patterns:
+        locator = page.get_by_label(re.compile(pattern, re.I)).first
+        try:
+            locator.select_option(label=visible_text, timeout=1500)
+            return True
+        except Exception:  # noqa: BLE001
+            try:
+                locator.select_option(label=re.compile(re.escape(visible_text), re.I), timeout=1500)
+                return True
+            except Exception:  # noqa: BLE001
+                continue
+    return False
+
+
+def salary_range_label(value: str) -> str | None:
+    amount = _int_value(value)
+    if amount is None:
+        return None
+    ranges = [
+        (0, 15000, "0 - £15,000"),
+        (15000, 20000, "£15,000 - £20,000"),
+        (20000, 25000, "£20,000 - £25,000"),
+        (25000, 30000, "£25,000 - £30,000"),
+        (30000, 40000, "£30,000 - £40,000"),
+        (40000, 50000, "£40,000 - £50,000"),
+        (50000, 75000, "£50,000 - £75,000"),
+        (75000, 100000, "£75,000 - £100,000"),
+    ]
+    for lower, upper, label in ranges:
+        if lower <= amount <= upper:
+            return label
+    if amount > 100000:
+        return "Above £100,000"
+    return None
+
+
+def travel_distance_label(value: str) -> str | None:
+    miles = _int_value(value)
+    if miles is None:
+        return None
+    if miles <= 5:
+        return "0 to 5"
+    if miles <= 15:
+        return "6 to 15"
+    if miles <= 30:
+        return "16 to 30"
+    if miles <= 50:
+        return "31 to 50"
+    return "50+"
+
+
+def _int_value(value: str) -> int | None:
+    match = re.search(r"\d[\d,]*", str(value))
+    if not match:
+        return None
+    return int(match.group(0).replace(",", ""))
 
 
 def _disable_jobserve_account_options(page, warnings: list[str]) -> None:

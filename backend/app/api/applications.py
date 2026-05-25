@@ -9,6 +9,7 @@ from app.services.apply_agent import assist_apply_application
 from app.services.applications import (
     get_prepare_applications_run_status,
     list_applications,
+    minimum_apply_score,
     run_prepare_applications_background,
     start_prepare_applications_run,
 )
@@ -26,7 +27,8 @@ def _default_user(db: Session) -> User:
 
 @router.get("", response_model=ApplicationsList)
 def get_applications(db: Session = Depends(get_db)):
-    return ApplicationsList(items=list_applications(db, _default_user(db)))
+    user = _default_user(db)
+    return ApplicationsList(items=list_applications(db, user), minimum_apply_score=minimum_apply_score(db, user))
 
 
 @router.post("/prepare", response_model=ApplicationPrepareRunStart)

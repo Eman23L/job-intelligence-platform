@@ -131,6 +131,43 @@ export default function ProfilePage() {
             <ProfileInput label="UK work status" value={profile?.work_status_uk ?? ""} onChange={(value) => setProfileField("work_status_uk", value)} />
             <ProfileInput label="Salary expectation" value={profile?.salary_expectation ?? ""} onChange={(value) => setProfileField("salary_expectation", value)} />
             <ProfileInput label="Travel distance" value={profile?.travel_distance ?? ""} onChange={(value) => setProfileField("travel_distance", value)} />
+            <ProfileSelect
+              label="Availability notice"
+              value={profile?.availability_notice ?? ""}
+              options={["Immediate", "1 Week", "2 Weeks", "3 Weeks", "1 Month", "3 Months", ">3 Months"]}
+              onChange={(value) => setProfileField("availability_notice", value)}
+            />
+            <ProfileSelect
+              label="Salary expectation GBP"
+              value={String(profile?.salary_expectation_gbp ?? "")}
+              options={["15000", "20000", "25000", "30000", "40000", "50000", "65000", "90000", "100001"]}
+              optionLabels={{
+                "15000": "0 - £15,000",
+                "20000": "£15,000 - £20,000",
+                "25000": "£20,000 - £25,000",
+                "30000": "£25,000 - £30,000",
+                "40000": "£30,000 - £40,000",
+                "50000": "£40,000 - £50,000",
+                "65000": "£50,000 - £75,000",
+                "90000": "£75,000 - £100,000",
+                "100001": "Above £100,000"
+              }}
+              onChange={(value) => setProfileField("salary_expectation_gbp", value ? Number(value) : null)}
+            />
+            <ProfileSelect
+              label="Travel distance miles"
+              value={String(profile?.travel_distance_miles ?? "")}
+              options={["5", "15", "30", "50", "51"]}
+              optionLabels={{ "5": "0 to 5", "15": "6 to 15", "30": "16 to 30", "50": "31 to 50", "51": "50+" }}
+              onChange={(value) => setProfileField("travel_distance_miles", value ? Number(value) : null)}
+            />
+            <ProfileSelect
+              label="Minimum apply score"
+              value={String(profile?.minimum_apply_score ?? 80)}
+              options={["60", "70", "80", "85", "90"]}
+              optionLabels={{ "60": "60+", "70": "70+", "80": "80+", "85": "85+", "90": "90+" }}
+              onChange={(value) => setProfileField("minimum_apply_score", Number(value))}
+            />
             <label className="checkbox-label">
               <input
                 type="checkbox"
@@ -197,7 +234,7 @@ export default function ProfilePage() {
     </div>
   );
 
-  function setProfileField(key: keyof UserProfile, value: string | boolean) {
+  function setProfileField(key: keyof UserProfile, value: string | boolean | number | null) {
     setProfile((current) => (current ? { ...current, [key]: value } : current));
   }
 }
@@ -207,6 +244,34 @@ function ProfileInput({ label, value, onChange }: { label: string; value: string
     <label>
       {label}
       <input value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+function ProfileSelect({
+  label,
+  value,
+  options,
+  optionLabels,
+  onChange
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  optionLabels?: Record<string, string>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label>
+      {label}
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">Not set</option>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {optionLabels?.[option] ?? option}
+          </option>
+        ))}
+      </select>
     </label>
   );
 }

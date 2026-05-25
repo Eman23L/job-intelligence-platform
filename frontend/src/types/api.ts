@@ -223,6 +223,7 @@ export interface ApplicationItem {
 
 export interface ApplicationsList {
   items: ApplicationItem[];
+  minimum_apply_score: number;
 }
 
 export interface AssistApplyResult {
@@ -325,6 +326,10 @@ export interface UserProfile {
   work_status_uk: string | null;
   salary_expectation: string | null;
   travel_distance: string | null;
+  availability_notice: string | null;
+  salary_expectation_gbp: number | null;
+  travel_distance_miles: number | null;
+  minimum_apply_score: number;
   sponsorship_required: boolean;
   cv_file_path: string | null;
   cv_file_name: string | null;

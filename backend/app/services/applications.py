@@ -9,6 +9,7 @@ from app.db.session import SessionLocal
 from app.schemas.database import ApplicationItem, ApplicationPrepareRunStart, ApplicationPrepareRunStatus
 from app.services.apply_strategy import classify_job, refresh_apply_readiness
 from app.services.job_availability import QUEUEABLE_AVAILABILITY_STATUSES, check_job_availability
+from app.services.profile import get_profile
 from app.services.run_tracking import finish_run, heartbeat, utcnow
 
 APPLICATION_STATUSES = {"not_started", "ready_to_apply", "opened", "applied", "skipped", "failed"}
@@ -37,6 +38,7 @@ def set_application_status(db: Session, job: Job, status: str) -> Job:
 
 
 def prepare_applications(db: Session, user: User | None = None) -> tuple[int, list[int]]:
+    threshold = minimum_apply_score(db, user)
     rows = _sorted_candidate_rows(
         db,
         select(Job, JobScore)
@@ -44,7 +46,7 @@ def prepare_applications(db: Session, user: User | None = None) -> tuple[int, li
         .where(
             Job.status != "excluded",
             Job.application_status.not_in(TERMINAL_APPLICATION_STATUSES),
-            JobScore.total_score >= Decimal("70"),
+            JobScore.total_score >= Decimal(threshold),
             JobScore.recommendation_tier != "excluded",
         )
         .order_by(JobScore.apply_readiness_score.desc().nulls_last(), JobScore.total_score.desc(), Job.id),
@@ -239,13 +241,14 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
 
 
 def _candidate_application_rows(db: Session, user: User | None = None):
+    threshold = minimum_apply_score(db, user)
     query = (
         select(Job, JobScore)
         .join(JobScore, JobScore.job_id == Job.id)
         .where(
             Job.status != "excluded",
             Job.application_status.not_in(TERMINAL_APPLICATION_STATUSES),
-            JobScore.total_score >= Decimal("70"),
+            JobScore.total_score >= Decimal(threshold),
             JobScore.recommendation_tier != "excluded",
         )
         .order_by(JobScore.apply_readiness_score.desc().nulls_last(), JobScore.total_score.desc(), _difficulty_order(Job.apply_difficulty), Job.id)
@@ -314,3 +317,11 @@ def _sorted_candidate_rows(db: Session, query):
 
 def _difficulty_rank(value: str | None) -> int:
     return {"easy": 0, "medium": 1, "hard": 2, "unknown": 3, "blocked": 4}.get(value or "unknown", 3)
+
+
+def minimum_apply_score(db: Session, user: User | None) -> int:
+    if user is None:
+        return 80
+    profile = get_profile(db, user)
+    value = getattr(profile, "minimum_apply_score", None) if profile else None
+    return int(value or 80)

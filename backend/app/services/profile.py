@@ -197,6 +197,10 @@ def update_application_profile(db: Session, user: User, values: dict[str, Any]) 
         "work_status_uk",
         "salary_expectation",
         "travel_distance",
+        "availability_notice",
+        "salary_expectation_gbp",
+        "travel_distance_miles",
+        "minimum_apply_score",
         "sponsorship_required",
     ):
         if field in values:

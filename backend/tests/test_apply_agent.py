@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.models import Base, Job, JobSource, User, UserProfile
+from app.db.models import Base, Job, JobScore, JobSource, User, UserProfile
 from app.db.session import get_db
 from app.main import app
 from app.schemas.database import AssistApplyResult
@@ -195,6 +195,75 @@ def test_account_registration_toggles_are_disabled_if_present() -> None:
     assert any("Disabled option" in warning for warning in warnings)
 
 
+def test_availability_dropdown_selects_immediate() -> None:
+    page = _FakeSelectPage()
+
+    assert apply_agent._select_dropdown_by_label_patterns(page, [r"availability"], "Immediate") is True
+    assert page.selected == "Immediate"
+
+
+def test_salary_65000_selects_50_to_75_range() -> None:
+    assert apply_agent.salary_range_label("65000") == "£50,000 - £75,000"
+
+
+def test_salary_90000_selects_75_to_100_range() -> None:
+    assert apply_agent.salary_range_label("90000") == "£75,000 - £100,000"
+
+
+def test_travel_25_selects_16_to_30() -> None:
+    assert apply_agent.travel_distance_label("25") == "16 to 30"
+
+
+def test_missing_required_dropdown_blocks_submit(monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+    with apply_client(jobserve=True, with_profile=True, with_cv=True, dropdowns=False) as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "submit_with_confirmation"})
+
+    assert response.status_code == 400
+    assert "Availability notice missing" in response.json()["detail"]
+
+
+def test_review_only_leaves_missing_dropdown_blank() -> None:
+    warnings: list[str] = []
+    filled: list[str] = []
+    unfilled_required: list[str] = []
+    apply_agent._handle_required_dropdown(
+        _FakeSelectPage(),
+        {},
+        "availability_notice",
+        [r"availability"],
+        lambda value: value,
+        "Availability notice",
+        "Availability notice missing",
+        filled,
+        unfilled_required,
+        warnings,
+    )
+
+    assert filled == []
+    assert "Availability notice" in unfilled_required
+    assert "Availability notice missing" in warnings
+
+
+def test_default_threshold_is_80(db_session) -> None:
+    user = User(email="threshold@example.invalid")
+    db_session.add(user)
+    db_session.commit()
+
+    from app.services.applications import minimum_apply_score
+
+    assert minimum_apply_score(db_session, user) == 80
+
+
+def test_submit_apply_blocks_below_threshold(monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+    with apply_client(jobserve=True, with_profile=True, with_cv=True, score=74, minimum_apply_score=80) as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "submit_with_confirmation"})
+
+    assert response.status_code == 400
+    assert "Job score 74 is below your apply threshold of 80." in response.json()["detail"]
+
+
 @contextmanager
 def apply_client(
     *,
@@ -202,6 +271,9 @@ def apply_client(
     with_profile: bool = False,
     with_cv: bool = False,
     email: str = "apply-agent@example.invalid",
+    dropdowns: bool = True,
+    score: int = 90,
+    minimum_apply_score: int = 80,
 ) -> Generator[tuple[TestClient, dict], None, None]:
     engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
@@ -219,10 +291,15 @@ def apply_client(
                     last_name="Applicant",
                     phone="07000000000",
                     work_status_uk="UK citizen",
+                    availability_notice="Immediate" if dropdowns else None,
+                    salary_expectation_gbp=65000 if dropdowns else None,
+                    travel_distance_miles=25 if dropdowns else None,
+                    minimum_apply_score=minimum_apply_score,
                     cv_file_path=cv_path,
                     cv_file_name="cv.pdf" if cv_path else None,
                 )
             )
+            db.add(JobScore(job_id=job.id, user_id=user.id, total_score=score, recommendation="apply", recommendation_tier="Strong match"))
             db.commit()
         ids = {"user": user.id, "job": job.id, "Session": TestingSession}
 
@@ -288,3 +365,23 @@ class _FakePage:
 
     def get_by_label(self, pattern):
         return _FakeLocator(self.controls)
+
+
+class _FakeSelectPage:
+    def __init__(self) -> None:
+        self.selected = None
+
+    def get_by_label(self, pattern):
+        return _FakeSelectLocator(self)
+
+
+class _FakeSelectLocator:
+    def __init__(self, page: _FakeSelectPage) -> None:
+        self.page = page
+        self.first = self
+
+    def select_option(self, *, label, timeout=0):
+        if isinstance(label, str):
+            self.page.selected = label
+            return
+        self.page.selected = getattr(label, "pattern", str(label))

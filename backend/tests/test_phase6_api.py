@@ -356,14 +356,14 @@ def test_prepare_applications_queues_high_scoring_non_excluded_jobs_once(monkeyp
         first_status = client.get(f"/applications/prepare-runs/{first.json()['run_id']}")
         assert first_status.status_code == 200
         assert first_status.json()["status"] == "completed"
-        assert first_status.json()["queued"] == 2
+        assert first_status.json()["queued"] == 1
         assert second.status_code == 200
         second_status = client.get(f"/applications/prepare-runs/{second.json()['run_id']}")
         assert second_status.status_code == 200
         assert second_status.json()["queued"] == 0
         assert listed.status_code == 200
         items = listed.json()["items"]
-        assert {item["job_id"] for item in items} == {ids["excellent"], ids["strong"]}
+        assert {item["job_id"] for item in items} == {ids["excellent"]}
         assert {item["application_status"] for item in items} == {"ready_to_apply"}
         assert all(item["apply_url"].startswith("https://example.invalid/jobs/") for item in items)
 
