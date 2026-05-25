@@ -29,6 +29,8 @@ def set_application_status(db: Session, job: Job, status: str) -> Job:
         if job.apply_difficulty == "blocked" or job.apply_strategy == "blocked":
             raise ValueError("Blocked apply routes cannot be queued or applied to")
     job.application_status = status
+    if status == "applied":
+        job.applied_at = utcnow()
     db.commit()
     db.refresh(job)
     return job

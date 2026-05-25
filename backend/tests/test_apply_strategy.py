@@ -34,13 +34,13 @@ def test_workday_is_hard(db_session) -> None:
     assert result.difficulty == "hard"
 
 
-def test_jobserve_is_medium(db_session) -> None:
+def test_jobserve_modal_flow_is_easy(db_session) -> None:
     job = _job(db_session, "https://www.jobserve.com/gb/en/job/AI-Engineer")
 
     result = classify_job(job)
 
-    assert result.strategy == "jobserve_apply"
-    assert result.difficulty == "medium"
+    assert result.strategy == "jobserve_apply_easy"
+    assert result.difficulty == "easy"
 
 
 def test_application_queue_excludes_blocked(db_session, monkeypatch) -> None:

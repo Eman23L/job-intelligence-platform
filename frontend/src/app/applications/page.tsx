@@ -148,15 +148,24 @@ export default function ApplicationsPage() {
     }
   };
 
-  const assistApply = async (item: ApplicationItem) => {
+  const assistApply = async (item: ApplicationItem, mode: "review_only" | "submit_with_confirmation") => {
+    if (mode === "submit_with_confirmation") {
+      const confirmed = window.confirm("This will submit the application on JobServe using your saved CV. Continue?");
+      if (!confirmed) {
+        return;
+      }
+    }
     setActionLoading(item.job_id);
     setError(null);
     setAssistResult(null);
     try {
-      const result = await api.assistApply(item.job_id);
+      const result = await api.assistApply(item.job_id, mode);
       await refresh();
       setAssistResult({ jobTitle: item.title, result });
-      setNotice({ type: "warning", message: "Assisted apply started. Review the browser manually before taking any next action." });
+      setNotice({
+        type: result.submitted ? "success" : "warning",
+        message: result.submitted ? "JobServe application submitted." : "Assisted apply started. Review the browser manually before taking any next action."
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to assist apply");
     } finally {
@@ -243,8 +252,16 @@ export default function ApplicationsPage() {
                         <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void openApplyLink(item)}>
                           Open apply page
                         </button>
-                        <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void assistApply(item)}>
-                          Assist apply
+                        <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void assistApply(item, "review_only")}>
+                          Assist fill
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button compact-button"
+                          disabled={actionLoading === item.job_id || item.apply_strategy !== "jobserve_apply_easy"}
+                          onClick={() => void assistApply(item, "submit_with_confirmation")}
+                        >
+                          Submit JobServe application
                         </button>
                         <button
                           type="button"
@@ -303,6 +320,17 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
           <FieldList items={data.result.unfilled_fields} empty="No unfilled fields detected" />
         </section>
         <section className="scorecard-section">
+          <h3>Required fields not filled</h3>
+          <FieldList items={data.result.unfilled_required_fields} empty="No missing required fields reported" />
+        </section>
+        <section className="scorecard-section">
+          <h3>Result</h3>
+          <div className="metric-list">
+            <Metric label="CV uploaded" value={data.result.uploaded_cv ? "Yes" : "No"} />
+            <Metric label="Submitted" value={data.result.submitted ? "Yes" : "No"} />
+          </div>
+        </section>
+        <section className="scorecard-section">
           <h3>Warnings</h3>
           <FieldList items={data.result.warnings} empty="No warnings" />
         </section>
@@ -321,6 +349,15 @@ function FieldList({ items, empty }: { items: string[]; empty: string }) {
         <li key={item}>{item}</li>
       ))}
     </ul>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="metric-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 

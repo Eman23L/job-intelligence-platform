@@ -1,11 +1,14 @@
 import re
+import shutil
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import User, UserProfile
+from app.services.run_tracking import utcnow
 
 
 KNOWN_SKILLS = (
@@ -174,6 +177,52 @@ def upsert_cv_profile(db: Session, user: User, cv_text: str) -> UserProfile:
         profile.cv_text = cv_text
         for field, value in storage_fields.items():
             setattr(profile, field, value)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def update_application_profile(db: Session, user: User, values: dict[str, Any]) -> UserProfile:
+    profile = get_profile(db, user)
+    if profile is None:
+        profile = UserProfile(user_id=user.id, cv_text="", summary="", skills=[], experience=[], projects=[], education=[], preferred_roles=[])
+        db.add(profile)
+    for field in (
+        "email",
+        "first_name",
+        "last_name",
+        "phone",
+        "address",
+        "country",
+        "work_status_uk",
+        "salary_expectation",
+        "travel_distance",
+        "sponsorship_required",
+    ):
+        if field in values:
+            setattr(profile, field, values[field])
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def store_cv_file(db: Session, user: User, file_name: str, source_file) -> UserProfile:
+    suffix = Path(file_name).suffix.lower()
+    if suffix not in {".pdf", ".doc", ".docx"}:
+        raise ValueError("CV file must be PDF, DOC, or DOCX.")
+    storage_dir = Path(__file__).resolve().parents[3] / "storage" / "cv_files" / str(user.id)
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(file_name).name).strip("._") or f"cv{suffix}"
+    target = storage_dir / safe_name
+    with target.open("wb") as output:
+        shutil.copyfileobj(source_file, output)
+    profile = get_profile(db, user)
+    if profile is None:
+        profile = UserProfile(user_id=user.id, cv_text="", summary="", skills=[], experience=[], projects=[], education=[], preferred_roles=[])
+        db.add(profile)
+    profile.cv_file_path = str(target)
+    profile.cv_file_name = safe_name
+    profile.cv_uploaded_at = utcnow()
     db.commit()
     db.refresh(profile)
     return profile

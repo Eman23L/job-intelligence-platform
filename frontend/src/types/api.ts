@@ -229,6 +229,9 @@ export interface AssistApplyResult {
   status: "review_required" | string;
   filled_fields: string[];
   unfilled_fields: string[];
+  unfilled_required_fields: string[];
+  uploaded_cv: boolean;
+  submitted: boolean;
   warnings: string[];
   screenshot_path: string | null;
 }
@@ -313,6 +316,19 @@ export interface UserProfile {
     work_authorization?: string;
     target_seniority?: "junior" | "mid" | "mid_senior" | "senior" | "any" | string;
   };
+  email: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  phone: string | null;
+  address: string | null;
+  country: string | null;
+  work_status_uk: string | null;
+  salary_expectation: string | null;
+  travel_distance: string | null;
+  sponsorship_required: boolean;
+  cv_file_path: string | null;
+  cv_file_name: string | null;
+  cv_uploaded_at: string | null;
   location_preference: string | null;
   remote_preference: string | null;
   salary_min_preference: string | null;

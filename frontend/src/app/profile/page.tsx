@@ -13,7 +13,9 @@ export default function ProfilePage() {
   const [cvText, setCvText] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [fileUploading, setFileUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -35,10 +37,46 @@ export default function ProfilePage() {
       const saved = await api.saveProfileCv(cvText);
       setProfile(saved);
       setCvText(saved.cv_text);
+      setNotice("CV text saved.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save CV profile");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveApplicationProfile = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!profile) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await api.saveApplicationProfile(profile);
+      setProfile(saved);
+      setNotice("Application profile saved.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save application profile");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const uploadCvFile = async (file: File | null) => {
+    if (!file) {
+      return;
+    }
+    setFileUploading(true);
+    setError(null);
+    try {
+      const saved = await api.uploadProfileCvFile(file);
+      setProfile(saved);
+      setNotice("CV file uploaded.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to upload CV file");
+    } finally {
+      setFileUploading(false);
     }
   };
 
@@ -49,6 +87,7 @@ export default function ProfilePage() {
   return (
     <div className="page-stack">
       {error ? <ErrorState message={error} /> : null}
+      {notice ? <div className="notice-banner success">{notice}</div> : null}
 
       <section className="panel">
         <div className="panel-header">
@@ -71,6 +110,43 @@ export default function ProfilePage() {
           <div className="action-row">
             <button type="submit" disabled={saving || !cvText.trim()}>
               {saving ? "Saving" : "Save CV"}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Application details</h2>
+          <span className="muted-text">{profile?.cv_file_name ? `CV file: ${profile.cv_file_name}` : "No CV file uploaded"}</span>
+        </div>
+        <form className="profile-form" onSubmit={saveApplicationProfile}>
+          <div className="profile-summary-grid">
+            <ProfileInput label="Email" value={profile?.email ?? ""} onChange={(value) => setProfileField("email", value)} />
+            <ProfileInput label="First name" value={profile?.first_name ?? ""} onChange={(value) => setProfileField("first_name", value)} />
+            <ProfileInput label="Last name" value={profile?.last_name ?? ""} onChange={(value) => setProfileField("last_name", value)} />
+            <ProfileInput label="Phone" value={profile?.phone ?? ""} onChange={(value) => setProfileField("phone", value)} />
+            <ProfileInput label="Address" value={profile?.address ?? ""} onChange={(value) => setProfileField("address", value)} />
+            <ProfileInput label="Country" value={profile?.country ?? ""} onChange={(value) => setProfileField("country", value)} />
+            <ProfileInput label="UK work status" value={profile?.work_status_uk ?? ""} onChange={(value) => setProfileField("work_status_uk", value)} />
+            <ProfileInput label="Salary expectation" value={profile?.salary_expectation ?? ""} onChange={(value) => setProfileField("salary_expectation", value)} />
+            <ProfileInput label="Travel distance" value={profile?.travel_distance ?? ""} onChange={(value) => setProfileField("travel_distance", value)} />
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={profile?.sponsorship_required ?? false}
+                onChange={(event) => setProfileField("sponsorship_required", event.target.checked)}
+              />
+              Sponsorship required
+            </label>
+          </div>
+          <label>
+            CV file
+            <input type="file" accept=".pdf,.doc,.docx" disabled={fileUploading} onChange={(event) => void uploadCvFile(event.target.files?.[0] ?? null)} />
+          </label>
+          <div className="action-row">
+            <button type="submit" disabled={saving || !profile}>
+              {saving ? "Saving" : "Save application details"}
             </button>
           </div>
         </form>
@@ -119,6 +195,19 @@ export default function ProfilePage() {
         </section>
       ) : null}
     </div>
+  );
+
+  function setProfileField(key: keyof UserProfile, value: string | boolean) {
+    setProfile((current) => (current ? { ...current, [key]: value } : current));
+  }
+}
+
+function ProfileInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label>
+      {label}
+      <input value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
   );
 }
 

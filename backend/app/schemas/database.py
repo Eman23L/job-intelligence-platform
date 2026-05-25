@@ -59,6 +59,19 @@ class CVProfileCreate(BaseModel):
     cv_text: str = Field(min_length=1)
 
 
+class ApplicationProfileUpdate(BaseModel):
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    country: str | None = None
+    work_status_uk: str | None = None
+    salary_expectation: str | None = None
+    travel_distance: str | None = None
+    sponsorship_required: bool = False
+
+
 class UserProfileRead(ORMModel):
     id: int
     user_id: int
@@ -70,6 +83,19 @@ class UserProfileRead(ORMModel):
     education: list[str]
     preferred_roles: list[str]
     preferences: dict[str, str]
+    email: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    country: str | None = None
+    work_status_uk: str | None = None
+    salary_expectation: str | None = None
+    travel_distance: str | None = None
+    sponsorship_required: bool = False
+    cv_file_path: str | None = None
+    cv_file_name: str | None = None
+    cv_uploaded_at: datetime | None = None
     location_preference: str | None = None
     remote_preference: str | None = None
     salary_min_preference: Decimal | None = None
@@ -355,6 +381,7 @@ class JobBase(BaseModel):
     assisted_result: dict[str, Any] | None = None
     assisted_warnings: list[str] | None = None
     last_apply_attempt_at: datetime | None = None
+    applied_at: datetime | None = None
     content_hash: str | None = None
 
 
@@ -668,8 +695,15 @@ class AssistApplyResult(BaseModel):
     status: str
     filled_fields: list[str] = Field(default_factory=list)
     unfilled_fields: list[str] = Field(default_factory=list)
+    unfilled_required_fields: list[str] = Field(default_factory=list)
+    uploaded_cv: bool = False
+    submitted: bool = False
     warnings: list[str] = Field(default_factory=list)
     screenshot_path: str | None = None
+
+
+class AssistApplyRequest(BaseModel):
+    mode: str = "review_only"
 
 
 class ApplicationsPrepareResult(BaseModel):

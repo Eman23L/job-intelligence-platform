@@ -64,6 +64,8 @@ def classify_job(job: Job) -> StrategyClassification:
     combined = f"{host} {path} {source_name} {source_type} {text}"
 
     if "jobserve.com" in combined:
+        if "apply" in path or "job" in path:
+            return StrategyClassification("jobserve_apply_easy", "easy", "JobServe hosted apply modal flow detected.")
         return StrategyClassification("jobserve_apply", "medium", "JobServe application flow detected.")
     if "greenhouse.io" in host or "boards.greenhouse.io" in host:
         return StrategyClassification("greenhouse", "medium", "Greenhouse application flow detected.")

@@ -73,7 +73,7 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
   const timeoutMs = configuredTimeoutMs ?? REQUEST_TIMEOUT_MS;
   const url = `${API_BASE_URL}${path}`;
   const headers = new Headers(fetchInit.headers);
-  if (fetchInit.body && !headers.has("Content-Type")) {
+  if (fetchInit.body && !(fetchInit.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   const controller = new AbortController();
@@ -122,7 +122,12 @@ export const api = {
   applications: () => request<ApplicationsList>("/applications"),
   prepareApplications: () => request<ApplicationPrepareRunStart>("/applications/prepare", { method: "POST" }),
   prepareApplicationsRun: (id: number) => request<ApplicationPrepareRunStatus>(`/applications/prepare-runs/${id}`),
-  assistApply: (id: number) => request<AssistApplyResult>(`/applications/${id}/assist-apply`, { method: "POST", timeoutMs: 30000 }),
+  assistApply: (id: number, mode: "review_only" | "submit_with_confirmation" = "review_only") =>
+    request<AssistApplyResult>(`/applications/${id}/assist-apply`, {
+      method: "POST",
+      timeoutMs: 30000,
+      body: JSON.stringify({ mode })
+    }),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`, { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
   rescoreJobs: () => request<JobRescoreRunStart>("/jobs/rescore", { method: "POST" }),
@@ -196,6 +201,13 @@ export const api = {
   profile: () => request<UserProfile | null>("/profile"),
   saveProfileCv: (cvText: string) =>
     request<UserProfile>("/profile/cv", { method: "POST", body: JSON.stringify({ cv_text: cvText }) }),
+  saveApplicationProfile: (body: Partial<UserProfile>) =>
+    request<UserProfile>("/profile/application", { method: "POST", body: JSON.stringify(body) }),
+  uploadProfileCvFile: (file: File) => {
+    const formData = new FormData();
+    formData.set("file", file);
+    return request<UserProfile>("/profile/cv-file", { method: "POST", body: formData });
+  },
   aiChat: (message: string) =>
     request<AIChatResponse>("/ai/chat", { method: "POST", body: JSON.stringify({ message }) }),
   aiHistory: () => request<AIHistoryMessage[]>("/ai/history"),

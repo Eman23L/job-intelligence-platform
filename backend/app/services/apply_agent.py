@@ -17,6 +17,7 @@ from app.services.run_tracking import utcnow
 logger = logging.getLogger(__name__)
 
 ALLOWED_APPLICATION_STATUSES = {"ready_to_apply", "opened"}
+ASSIST_MODES = {"review_only", "submit_with_confirmation"}
 LEGAL_FIELD_PATTERN = re.compile(r"\b(visa|sponsor|sponsorship|authorized|authorised|eligibility|criminal|disability|veteran)\b", re.I)
 SUBMIT_PATTERN = re.compile(r"\b(submit|send application|apply now|final)\b", re.I)
 _OPEN_REVIEW_BROWSERS: list[Any] = []
@@ -29,7 +30,9 @@ class FieldCandidate:
     reason: str
 
 
-def assist_apply_application(db: Session, job: Job, user: User, *, browser_runner=None) -> AssistApplyResult:
+def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "review_only", browser_runner=None) -> AssistApplyResult:
+    if mode not in ASSIST_MODES:
+        raise ValueError("Invalid assisted apply mode.")
     _validate_application(job)
     availability = check_job_availability(db, job)
     if availability.availability_status != "active":
@@ -42,17 +45,27 @@ def assist_apply_application(db: Session, job: Job, user: User, *, browser_runne
     db.commit()
 
     profile = get_profile(db, user)
+    if mode == "submit_with_confirmation":
+        _validate_jobserve_submit(job, profile)
     candidates = profile_field_candidates(user, profile)
     warnings = _safety_warnings(job)
     try:
-        result = browser_runner(job.canonical_url, candidates) if browser_runner else run_playwright_assist(job.canonical_url, candidates)
+        result = (
+            browser_runner(job.canonical_url, candidates, profile, mode, job.apply_strategy)
+            if browser_runner
+            else run_playwright_assist(job.canonical_url, candidates, profile=profile, mode=mode, apply_strategy=job.apply_strategy)
+        )
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
 
     result.warnings[:] = [*warnings, *result.warnings]
     job.assisted_result = result.model_dump()
     job.assisted_warnings = result.warnings
-    job.application_status = "opened"
+    if result.submitted:
+        job.application_status = "applied"
+        job.applied_at = utcnow()
+    else:
+        job.application_status = "opened"
     db.commit()
     return result
 
@@ -60,14 +73,19 @@ def assist_apply_application(db: Session, job: Job, user: User, *, browser_runne
 def profile_field_candidates(user: User, profile) -> dict[str, FieldCandidate]:
     preferences = profile.preferences if profile is not None and profile.preferences else {}
     raw_values = {
-        "email": user.email,
+        "email": getattr(profile, "email", None) or user.email,
+        "first_name": getattr(profile, "first_name", None),
+        "last_name": getattr(profile, "last_name", None),
         "name": preferences.get("name") or preferences.get("full_name"),
-        "phone": preferences.get("phone") or preferences.get("phone_number"),
+        "phone": getattr(profile, "phone", None) or preferences.get("phone") or preferences.get("phone_number"),
+        "address": getattr(profile, "address", None),
+        "country": getattr(profile, "country", None),
         "location": profile.location_preference if profile is not None else preferences.get("location"),
         "linkedin": preferences.get("linkedin") or preferences.get("linkedin_url"),
         "portfolio": preferences.get("portfolio") or preferences.get("portfolio_url") or preferences.get("website"),
-        "salary": preferences.get("salary_expectation") or preferences.get("salary"),
-        "work_authorization": preferences.get("work_authorization"),
+        "salary": getattr(profile, "salary_expectation", None) or preferences.get("salary_expectation") or preferences.get("salary"),
+        "travel_distance": getattr(profile, "travel_distance", None),
+        "work_authorization": getattr(profile, "work_status_uk", None) or preferences.get("work_authorization"),
     }
     return {
         key: FieldCandidate(key=key, value=str(value).strip(), reason="Saved profile value")
@@ -86,6 +104,10 @@ def classify_form_field(label_text: str, input_type: str = "", autocomplete: str
         return "portfolio"
     if "email" in text:
         return "email"
+    if "first name" in text or autocomplete == "given-name":
+        return "first_name"
+    if "last name" in text or "surname" in text or autocomplete == "family-name":
+        return "last_name"
     if "phone" in text or "mobile" in text or "tel" in text:
         return "phone"
     if "salary" in text or "compensation" in text:
@@ -96,12 +118,10 @@ def classify_form_field(label_text: str, input_type: str = "", autocomplete: str
         return "work_authorization"
     if "full name" in text or autocomplete == "name":
         return "name"
-    if "first name" in text or "last name" in text:
-        return None
     return None
 
 
-def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate]) -> AssistApplyResult:
+def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate], *, profile=None, mode: str = "review_only", apply_strategy: str = "unknown") -> AssistApplyResult:
     try:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
@@ -119,6 +139,8 @@ def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate]) -> As
             try:
                 page = browser.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                if apply_strategy == "jobserve_apply_easy":
+                    return _run_jobserve_modal(page, browser, candidates, profile, mode=mode, keep_open_for_review=keep_open_for_review)
                 if _captcha_visible(page):
                     warnings.append("Captcha detected; manual review required.")
                 fields = page.locator("input, textarea, select").all()
@@ -160,7 +182,7 @@ def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate]) -> As
                     warnings.append("Submit control detected and intentionally not clicked.")
                 if keep_open_for_review:
                     warnings.append("Browser left open for manual review; close it after reviewing the application.")
-                return AssistApplyResult(status="review_required", filled_fields=_dedupe(filled), unfilled_fields=_dedupe(unfilled), warnings=_dedupe(warnings), screenshot_path=None)
+                return AssistApplyResult(status="review_required", filled_fields=_dedupe(filled), unfilled_fields=_dedupe(unfilled), unfilled_required_fields=[], uploaded_cv=False, submitted=False, warnings=_dedupe(warnings), screenshot_path=None)
             finally:
                 if keep_open_for_review:
                     _OPEN_REVIEW_BROWSERS.append(browser)
@@ -180,6 +202,15 @@ def _validate_application(job: Job) -> None:
         raise ValueError("Missing apply URL.")
 
 
+def _validate_jobserve_submit(job: Job, profile) -> None:
+    if job.apply_strategy != "jobserve_apply_easy":
+        raise ValueError("Submit with confirmation is only available for JobServe easy apply.")
+    if not profile or not profile.cv_file_path:
+        raise ValueError("Saved CV file is required before submitting a JobServe application.")
+    if not (getattr(profile, "email", None) or ""):
+        raise ValueError("Email is required before submitting a JobServe application.")
+
+
 def _safety_warnings(job: Job) -> list[str]:
     warnings = [
         "Assisted apply will not submit the application.",
@@ -188,6 +219,138 @@ def _safety_warnings(job: Job) -> list[str]:
     if job.apply_difficulty == "hard":
         warnings.append("Hard application flow detected; expect manual review.")
     return warnings
+
+
+def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], profile, *, mode: str, keep_open_for_review: bool) -> AssistApplyResult:
+    filled: list[str] = []
+    unfilled_required: list[str] = []
+    unfilled: list[str] = []
+    warnings: list[str] = []
+    uploaded_cv = False
+    submitted = False
+    status = "review_required"
+    page.get_by_text(re.compile(r"^apply\b", re.I)).first.click(timeout=8000)
+    modal = page.locator("[role=dialog], .modal, #ApplyModal, text=Job Application").first
+    modal.wait_for(timeout=10000)
+    if _captcha_visible(page):
+        warnings.append("Captcha detected; manual review required.")
+
+    _disable_jobserve_account_options(page, warnings)
+    required = ["email"]
+    for key, patterns in {
+        "email": [r"email address", r"email"],
+        "first_name": [r"first name"],
+        "last_name": [r"last name", r"surname"],
+        "phone": [r"phone", r"mobile"],
+    }.items():
+        label = _fill_by_label_patterns(page, patterns, candidates.get(key))
+        if label:
+            filled.append(label)
+        elif key in required:
+            unfilled_required.append(key.replace("_", " "))
+
+    if candidates.get("work_authorization"):
+        if _select_work_status(page, candidates["work_authorization"].value):
+            filled.append("Working status in UK")
+        else:
+            unfilled.append("Working status in UK")
+    else:
+        unfilled_required.append("working status in UK")
+
+    if profile and profile.cv_file_path:
+        try:
+            file_input = page.locator("input[type=file]").first
+            file_input.set_input_files(profile.cv_file_path, timeout=5000)
+            uploaded_cv = True
+            filled.append("CV upload")
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Could not upload CV: {exc}")
+            unfilled_required.append("CV upload")
+    else:
+        unfilled_required.append("CV upload")
+
+    _disable_jobserve_account_options(page, warnings)
+    if mode == "submit_with_confirmation":
+        if unfilled_required:
+            raise RuntimeError(f"Required fields missing: {', '.join(_dedupe(unfilled_required))}")
+        apply_button = _jobserve_apply_button(page)
+        apply_button.click(timeout=8000)
+        success = page.get_by_text("Your application has been submitted.").first
+        success.wait_for(timeout=12000)
+        submitted = True
+        status = "submitted"
+        _close_modal(page)
+    else:
+        warnings.append("Review-only mode: JobServe Apply button was intentionally not clicked.")
+        if keep_open_for_review:
+            warnings.append("Browser left open for manual review; close it after reviewing the application.")
+
+    return AssistApplyResult(
+        status=status,
+        filled_fields=_dedupe(filled),
+        unfilled_fields=_dedupe(unfilled),
+        unfilled_required_fields=_dedupe(unfilled_required),
+        uploaded_cv=uploaded_cv,
+        submitted=submitted,
+        warnings=_dedupe(warnings),
+        screenshot_path=None,
+    )
+
+
+def _fill_by_label_patterns(page, patterns: list[str], candidate: FieldCandidate | None) -> str | None:
+    if candidate is None:
+        return None
+    for pattern in patterns:
+        locator = page.get_by_label(re.compile(pattern, re.I)).first
+        try:
+            locator.fill(candidate.value, timeout=1500)
+            return pattern
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _select_work_status(page, value: str) -> bool:
+    for pattern in [r"working status", r"work status", r"status in uk", r"eligible.*uk"]:
+        locator = page.get_by_label(re.compile(pattern, re.I)).first
+        try:
+            locator.select_option(label=re.compile("Citizen|Permanent|Eligible|No sponsorship|UK", re.I), timeout=1500)
+            return True
+        except Exception:  # noqa: BLE001
+            try:
+                locator.fill(value, timeout=1500)
+                return True
+            except Exception:  # noqa: BLE001
+                continue
+    return False
+
+
+def _disable_jobserve_account_options(page, warnings: list[str]) -> None:
+    for text in ["register a Job Seeker account", "make my CV searchable", "job alerts", "create an account"]:
+        controls = page.get_by_label(re.compile(text, re.I)).all()
+        for control in controls:
+            try:
+                if control.is_checked():
+                    control.uncheck()
+                    warnings.append(f"Disabled option: {text}.")
+            except Exception:  # noqa: BLE001
+                continue
+
+
+def _jobserve_apply_button(page):
+    buttons = page.get_by_role("button", name=re.compile(r"^apply$", re.I)).all()
+    if buttons:
+        return buttons[-1]
+    return page.locator("input[type=submit], button[type=submit]").last
+
+
+def _close_modal(page) -> None:
+    for locator in [page.get_by_role("button", name=re.compile(r"close", re.I)).first, page.locator(".modal button.close").first]:
+        try:
+            locator.click(timeout=1000)
+            return
+        except Exception:  # noqa: BLE001
+            continue
 
 
 def _captcha_visible(page) -> bool:

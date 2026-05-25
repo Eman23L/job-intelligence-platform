@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Job, User
 from app.db.session import get_db
-from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyResult
+from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyRequest, AssistApplyResult
 from app.services.apply_agent import assist_apply_application
 from app.services.applications import (
     get_prepare_applications_run_status,
@@ -47,11 +47,11 @@ def get_prepare_application_run(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{application_id}/assist-apply", response_model=AssistApplyResult)
-def assist_apply(application_id: int, db: Session = Depends(get_db)):
+def assist_apply(application_id: int, payload: AssistApplyRequest | None = None, db: Session = Depends(get_db)):
     job = db.get(Job, application_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
     try:
-        return assist_apply_application(db, job, _default_user(db))
+        return assist_apply_application(db, job, _default_user(db), mode=(payload.mode if payload else "review_only"))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
