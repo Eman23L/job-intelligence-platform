@@ -185,6 +185,7 @@ export default function ApplicationsPage() {
                   <th>Recommendation</th>
                   <th>Status</th>
                   <th>Availability</th>
+                  <th>Apply route</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -213,6 +214,12 @@ export default function ApplicationsPage() {
                       <AvailabilityBadge status={item.availability_status} />
                       <div className="muted-text">{item.last_checked_at ? `Checked ${formatShortDate(item.last_checked_at)}` : "Not checked"}</div>
                       {item.availability_reason ? <div className="muted-text">{item.availability_reason}</div> : null}
+                    </td>
+                    <td>
+                      <span className={`badge apply-difficulty-${item.apply_difficulty}`}>{formatLabel(item.apply_strategy)}</span>
+                      <div className="status-note">{formatLabel(item.apply_difficulty)}</div>
+                      {item.apply_strategy_reason ? <div className="muted-text">{item.apply_strategy_reason}</div> : null}
+                      {item.apply_readiness_score ? <div className="muted-text">Readiness {Math.round(Number(item.apply_readiness_score))}</div> : null}
                     </td>
                     <td>
                       <div className="row-actions">
@@ -295,6 +302,10 @@ function formatShortDate(value: string): string {
   return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(
     new Date(value)
   );
+}
+
+function formatLabel(value: string | null | undefined): string {
+  return value ? value.replaceAll("_", " ") : "unknown";
 }
 
 function emptyPrepareRun(runId: number, status: string): ApplicationPrepareRunStatus {

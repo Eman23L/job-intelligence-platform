@@ -9,6 +9,8 @@ import type {
   JobAvailabilityResult,
   JobAvailabilityRunStart,
   JobAvailabilityRunStatus,
+  JobApplyStrategyRunStart,
+  JobApplyStrategyRunStatus,
   JobRescoreRunStart,
   JobRescoreRunStatus,
   JobServeSearchPayload,
@@ -146,6 +148,13 @@ export const api = {
       body: JSON.stringify({ job_ids: jobIds ?? null })
     }),
   availabilityRun: (id: number) => request<JobAvailabilityRunStatus>(`/jobs/availability-runs/${id}`),
+  classifyApplyStrategies: (jobIds?: number[]) =>
+    request<JobApplyStrategyRunStart>("/jobs/classify-apply-strategies", {
+      method: "POST",
+      timeoutMs: JOBS_REQUEST_TIMEOUT_MS,
+      body: jobIds ? JSON.stringify({ job_ids: jobIds }) : undefined
+    }),
+  applyStrategyRun: (id: number) => request<JobApplyStrategyRunStatus>(`/jobs/apply-strategy-runs/${id}`),
   saveJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/save`, { method: "POST" }),
   rejectJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/reject`, { method: "POST" }),
   markReadyToApply: (id: string | number) => request<JobDetail>(`/jobs/${id}/mark-ready-to-apply`, { method: "POST" }),

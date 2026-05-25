@@ -8,7 +8,7 @@ import { JobsTable } from "@/components/JobsTable";
 import { LoadingState } from "@/components/LoadingState";
 import { PaginationControls } from "@/components/PaginationControls";
 import { ApiError, api } from "@/lib/api";
-import type { JobAvailabilityRunStatus, JobRescoreRunStatus, JobScorecard, PaginatedJobs } from "@/types/api";
+import type { JobApplyStrategyRunStatus, JobAvailabilityRunStatus, JobRescoreRunStatus, JobScorecard, PaginatedJobs } from "@/types/api";
 
 const initialFilters: JobFiltersState = {
   role_family: "",
@@ -20,6 +20,7 @@ const initialFilters: JobFiltersState = {
   max_score: "",
   exclude_excluded: false,
   availability_status: "",
+  apply_difficulty: "",
   source_id: "",
   sort: "total_score_desc"
 };
@@ -46,6 +47,9 @@ export default function JobsPage() {
   const [availabilityRunId, setAvailabilityRunId] = useState<number | null>(null);
   const [availabilityRun, setAvailabilityRun] = useState<JobAvailabilityRunStatus | null>(null);
   const [availabilityPollFailures, setAvailabilityPollFailures] = useState(0);
+  const [classifyingApply, setClassifyingApply] = useState(false);
+  const [applyStrategyRunId, setApplyStrategyRunId] = useState<number | null>(null);
+  const [applyStrategyRun, setApplyStrategyRun] = useState<JobApplyStrategyRunStatus | null>(null);
 
   const params = useMemo(() => {
     const next = new URLSearchParams();
@@ -172,6 +176,42 @@ export default function JobsPage() {
     };
   }, [availabilityRunId, refresh]);
 
+  useEffect(() => {
+    if (!applyStrategyRunId) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await api.applyStrategyRun(applyStrategyRunId);
+        if (cancelled) {
+          return;
+        }
+        setApplyStrategyRun(result);
+        if (result.status === "completed" || result.status === "failed") {
+          setApplyStrategyRunId(null);
+          setClassifyingApply(false);
+          await refresh();
+          setNotice({
+            type: result.status === "completed" ? "success" : "error",
+            message:
+              result.status === "completed"
+                ? `${result.classified} jobs classified for apply strategy, ${result.failed} failed.`
+                : result.error ?? "Apply strategy classification failed"
+          });
+        }
+      } catch (err) {
+        setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary apply strategy polling failure" });
+      }
+    };
+    poll();
+    const intervalId = globalThis.setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(intervalId);
+    };
+  }, [applyStrategyRunId, refresh]);
+
   const runAction = async (action: () => Promise<unknown>) => {
     setActionLoading(true);
     try {
@@ -278,6 +318,24 @@ export default function JobsPage() {
     }
   };
 
+  const classifyApplyStrategies = async () => {
+    if (classifyingApply) {
+      return;
+    }
+    setClassifyingApply(true);
+    setApplyStrategyRun(null);
+    setError(null);
+    setNotice({ type: "info", message: "Classifying apply strategies..." });
+    try {
+      const started = await api.classifyApplyStrategies(selectedCount > 0 ? selectedJobIds : undefined);
+      setApplyStrategyRunId(started.run_id);
+      setApplyStrategyRun(emptyApplyStrategyRun(started.run_id, started.status));
+    } catch (err) {
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Apply strategy classification failed" });
+      setClassifyingApply(false);
+    }
+  };
+
   const openScorecard = async (jobId: number) => {
     setScorecardLoading(true);
     setScorecard(null);
@@ -318,6 +376,10 @@ export default function JobsPage() {
           {checkingAvailability ? <span className="spinner" aria-hidden="true" /> : null}
           {checkingAvailability ? "Checking..." : selectedCount > 0 ? "Check selected availability" : "Check availability"}
         </button>
+        <button type="button" className="secondary-button" disabled={classifyingApply} onClick={() => void classifyApplyStrategies()}>
+          {classifyingApply ? <span className="spinner" aria-hidden="true" /> : null}
+          {classifyingApply ? "Classifying..." : selectedCount > 0 ? "Classify selected apply strategy" : "Classify apply strategy"}
+        </button>
       </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
       {rescoring ? (
@@ -342,6 +404,11 @@ export default function JobsPage() {
       {availabilityRunId && availabilityRun ? (
         <div className="notice-banner info">
           Checking availability... {availabilityRun.processed} / {availabilityRun.total} processed, {availabilityRun.checked} checked, {availabilityRun.failed} failed.
+        </div>
+      ) : null}
+      {applyStrategyRunId && applyStrategyRun ? (
+        <div className="notice-banner info">
+          Classifying apply strategies... {applyStrategyRun.processed} / {applyStrategyRun.total} processed, {applyStrategyRun.classified} classified, {applyStrategyRun.failed} failed.
         </div>
       ) : null}
       {error ? <ErrorState message={error} /> : null}
@@ -514,6 +581,21 @@ function emptyAvailabilityRun(runId: number, status: string): JobAvailabilityRun
     total: 0,
     processed: 0,
     checked: 0,
+    failed: 0,
+    error: null,
+    started_at: null,
+    finished_at: null,
+    last_heartbeat_at: null
+  };
+}
+
+function emptyApplyStrategyRun(runId: number, status: string): JobApplyStrategyRunStatus {
+  return {
+    run_id: runId,
+    status,
+    total: 0,
+    processed: 0,
+    classified: 0,
     failed: 0,
     error: null,
     started_at: null,

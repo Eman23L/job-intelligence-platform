@@ -34,6 +34,7 @@ class JobFilters:
     exclude_excluded: bool = False
     status: str | None = None
     availability_status: str | None = None
+    apply_difficulty: str | None = None
     source_id: int | None = None
 
 
@@ -125,6 +126,10 @@ def _job_list_item(row) -> JobListItem:
         availability_status=row.availability_status,
         last_checked_at=row.last_checked_at,
         availability_reason=row.availability_reason,
+        apply_strategy=row.apply_strategy,
+        apply_difficulty=row.apply_difficulty,
+        apply_strategy_reason=row.apply_strategy_reason,
+        apply_readiness_score=row.apply_readiness_score,
     )
 
 
@@ -156,6 +161,7 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
             ),
         ).label("recommendation"),
         JobScore.recommendation_tier.label("recommendation_tier"),
+        JobScore.apply_readiness_score.label("apply_readiness_score"),
         JobScore.scored_at.label("scored_at"),
     )
     if user is not None:
@@ -186,9 +192,13 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
             Job.availability_status,
             Job.last_checked_at,
             Job.availability_reason,
+            Job.apply_strategy,
+            Job.apply_difficulty,
+            Job.apply_strategy_reason,
             JobAnalysis.role_family,
             score_subquery.c.recommendation_tier,
             score_subquery.c.total_score,
+            score_subquery.c.apply_readiness_score,
             score_subquery.c.recommendation,
             func.coalesce(skills_count.c.skills_count, 0).label("skills_count"),
             func.coalesce(missing_count.c.missing_skills_count, 0).label("missing_skills_count"),
@@ -238,6 +248,8 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
         query = query.where(Job.status == filters.status)
     if filters.availability_status is not None:
         query = query.where(Job.availability_status == filters.availability_status)
+    if filters.apply_difficulty is not None:
+        query = query.where(Job.apply_difficulty == filters.apply_difficulty)
     if filters.source_id is not None:
         query = query.where(Job.source_id == filters.source_id)
     if timings is not None:
@@ -314,6 +326,10 @@ def _job_row(db: Session, job: Job, user: User | None) -> dict:
         availability_status=job.availability_status,
         last_checked_at=job.last_checked_at,
         availability_reason=job.availability_reason,
+        apply_strategy=job.apply_strategy,
+        apply_difficulty=job.apply_difficulty,
+        apply_strategy_reason=job.apply_strategy_reason,
+        apply_readiness_score=score.apply_readiness_score if score else None,
     )
     return {"job": job, "analysis": analysis, "score": score, "item": item}
 
@@ -339,6 +355,7 @@ def _matches_filters(row: dict, filters: JobFilters) -> bool:
         not filters.exclude_excluded or (job.status != "excluded" and not (score and score.recommendation_tier == "excluded")),
         filters.status is None or job.status == filters.status,
         filters.availability_status is None or job.availability_status == filters.availability_status,
+        filters.apply_difficulty is None or job.apply_difficulty == filters.apply_difficulty,
         filters.source_id is None or job.source_id == filters.source_id,
     ]
     return all(checks)

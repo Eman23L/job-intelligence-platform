@@ -391,6 +391,27 @@ button:disabled {
   color: #ffaea8;
 }
 
+.badge.apply-difficulty-easy {
+  background: rgba(87, 209, 141, 0.16);
+  color: #89ecb2;
+}
+
+.badge.apply-difficulty-medium,
+.badge.apply-difficulty-unknown {
+  background: rgba(255, 213, 138, 0.16);
+  color: #ffd58a;
+}
+
+.badge.apply-difficulty-hard {
+  background: rgba(255, 140, 80, 0.18);
+  color: #ffb084;
+}
+
+.badge.apply-difficulty-blocked {
+  background: rgba(255, 107, 95, 0.16);
+  color: #ffaea8;
+}
+
 .badge.neutral,
 .skill-badge.neutral {
   background: var(--panel-muted);

@@ -8,6 +8,7 @@ export interface JobFiltersState {
   max_score: string;
   exclude_excluded: boolean;
   availability_status: string;
+  apply_difficulty: string;
   source_id: string;
   sort: string;
 }
@@ -78,6 +79,17 @@ export function FiltersBar({
           <option value="expired">Expired</option>
           <option value="unavailable">Unavailable</option>
           <option value="redirected">Redirected</option>
+        </select>
+      </label>
+      <label>
+        Apply difficulty
+        <select value={filters.apply_difficulty} onChange={(event) => update("apply_difficulty", event.target.value)}>
+          <option value="">Any</option>
+          <option value="easy">Easy</option>
+          <option value="medium">Medium</option>
+          <option value="hard">Hard</option>
+          <option value="blocked">Blocked</option>
+          <option value="unknown">Unknown</option>
         </select>
       </label>
       <label>

@@ -348,6 +348,9 @@ class JobBase(BaseModel):
     availability_status: str = "unknown"
     last_checked_at: datetime | None = None
     availability_reason: str | None = None
+    apply_strategy: str = "unknown"
+    apply_difficulty: str = "unknown"
+    apply_strategy_reason: str | None = None
     content_hash: str | None = None
 
 
@@ -387,6 +390,10 @@ class JobListItem(BaseModel):
     availability_status: str
     last_checked_at: datetime | None = None
     availability_reason: str | None = None
+    apply_strategy: str
+    apply_difficulty: str
+    apply_strategy_reason: str | None = None
+    apply_readiness_score: Decimal | None = None
 
 
 class PaginatedJobs(BaseModel):
@@ -436,6 +443,32 @@ class JobAvailabilityRunStatus(BaseModel):
     total: int = 0
     processed: int = 0
     checked: int = 0
+    failed: int = 0
+    error: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+
+
+class JobApplyStrategyResult(BaseModel):
+    job_id: int
+    apply_strategy: str
+    apply_difficulty: str
+    apply_strategy_reason: str | None = None
+    apply_readiness_score: Decimal | None = None
+
+
+class JobApplyStrategyRunStart(BaseModel):
+    run_id: int
+    status: str
+
+
+class JobApplyStrategyRunStatus(BaseModel):
+    run_id: int
+    status: str
+    total: int = 0
+    processed: int = 0
+    classified: int = 0
     failed: int = 0
     error: str | None = None
     started_at: datetime | None = None
@@ -518,6 +551,7 @@ class JobScoreBase(BaseModel):
     location_score: Decimal | None = None
     freshness_score: Decimal | None = None
     missing_skill_penalty: Decimal | None = None
+    apply_readiness_score: Decimal | None = None
     explanation: str | None = None
     recommendation: str | None = None
     recommendation_tier: str | None = None
@@ -609,6 +643,10 @@ class ApplicationItem(BaseModel):
     availability_status: str
     last_checked_at: datetime | None = None
     availability_reason: str | None = None
+    apply_strategy: str
+    apply_difficulty: str
+    apply_strategy_reason: str | None = None
+    apply_readiness_score: Decimal | None = None
     total_score: Decimal | None = None
     recommendation_tier: str | None = None
     recommendation: str | None = None

@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobAnalysis, JobScore, JobSkill, MissingSkill, User, UserProfile
+from app.services.apply_strategy import refresh_apply_readiness
 from app.services.profile import get_profile
 
 
@@ -129,6 +130,7 @@ def apply_score_result(score: JobScore, job: Job, result: ScoreResult) -> None:
     score.missing_skill_penalty = _decimal(max(0, 35 - result.breakdown["skill_match"]))
     score.recommendation = result.recommendation
     score.recommendation_tier = result.tier
+    refresh_apply_readiness(job, score)
     score.explanation = json.dumps(_scorecard_payload(job, result), sort_keys=True)
     score.scored_at = datetime.now(tz=timezone.utc)
 

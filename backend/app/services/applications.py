@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.db.models import ApplicationPrepareRun, Job, JobScore, User
 from app.db.session import SessionLocal
 from app.schemas.database import ApplicationItem, ApplicationPrepareRunStart, ApplicationPrepareRunStatus
+from app.services.apply_strategy import classify_job, refresh_apply_readiness
 from app.services.job_availability import QUEUEABLE_AVAILABILITY_STATUSES, check_job_availability
 from app.services.run_tracking import finish_run, heartbeat, utcnow
 
@@ -25,6 +26,8 @@ def set_application_status(db: Session, job: Job, status: str) -> Job:
             raise ValueError("Excluded jobs cannot be queued or applied to")
         if job.availability_status not in QUEUEABLE_AVAILABILITY_STATUSES:
             raise ValueError("Only active or unknown-availability jobs can be queued or applied to")
+        if job.apply_difficulty == "blocked" or job.apply_strategy == "blocked":
+            raise ValueError("Blocked apply routes cannot be queued or applied to")
     job.application_status = status
     db.commit()
     db.refresh(job)
@@ -41,7 +44,7 @@ def prepare_applications(db: Session, user: User | None = None) -> tuple[int, li
             JobScore.total_score >= Decimal("70"),
             JobScore.recommendation_tier != "excluded",
         )
-        .order_by(JobScore.total_score.desc(), Job.id)
+        .order_by(JobScore.apply_readiness_score.desc().nulls_last(), JobScore.total_score.desc(), Job.id)
     ).all()
     queued_ids: list[int] = []
     seen: set[int] = set()
@@ -52,6 +55,10 @@ def prepare_applications(db: Session, user: User | None = None) -> tuple[int, li
             continue
         seen.add(job.id)
         if not _is_queueable(score):
+            continue
+        _ensure_apply_strategy(job)
+        refresh_apply_readiness(job, score)
+        if job.apply_difficulty == "blocked" or job.apply_strategy == "blocked":
             continue
         check_job_availability(db, job)
         if job.availability_status not in QUEUEABLE_AVAILABILITY_STATUSES:
@@ -118,6 +125,11 @@ def run_prepare_applications_background(run_id: int, user_id: int) -> None:
                     if not _is_queueable(score):
                         run.skipped += 1
                         continue
+                    _ensure_apply_strategy(job)
+                    refresh_apply_readiness(job, score)
+                    if job.apply_difficulty == "blocked" or job.apply_strategy == "blocked":
+                        run.skipped += 1
+                        continue
                     check_job_availability(db, job)
                     if job.availability_status not in QUEUEABLE_AVAILABILITY_STATUSES:
                         run.skipped += 1
@@ -156,6 +168,7 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
     score_query = select(
         JobScore.job_id.label("job_id"),
         JobScore.total_score.label("total_score"),
+        JobScore.apply_readiness_score.label("apply_readiness_score"),
         JobScore.recommendation.label("recommendation"),
         JobScore.recommendation_tier.label("recommendation_tier"),
     )
@@ -174,13 +187,22 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
             Job.availability_status,
             Job.last_checked_at,
             Job.availability_reason,
+            Job.apply_strategy,
+            Job.apply_difficulty,
+            Job.apply_strategy_reason,
             score_subquery.c.total_score,
+            score_subquery.c.apply_readiness_score,
             score_subquery.c.recommendation,
             score_subquery.c.recommendation_tier,
         )
         .outerjoin(score_subquery, score_subquery.c.job_id == Job.id)
         .where(Job.status != "excluded", Job.application_status.in_(("ready_to_apply", "opened", "failed")))
-        .order_by(score_subquery.c.total_score.desc(), Job.id)
+        .order_by(
+            score_subquery.c.apply_readiness_score.desc().nulls_last(),
+            score_subquery.c.total_score.desc().nulls_last(),
+            _difficulty_order(Job.apply_difficulty),
+            Job.id,
+        )
     ).all()
     return [
         ApplicationItem(
@@ -193,6 +215,10 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
             availability_status=row.availability_status,
             last_checked_at=row.last_checked_at,
             availability_reason=row.availability_reason,
+            apply_strategy=row.apply_strategy,
+            apply_difficulty=row.apply_difficulty,
+            apply_strategy_reason=row.apply_strategy_reason,
+            apply_readiness_score=row.apply_readiness_score,
             total_score=row.total_score,
             recommendation_tier=row.recommendation_tier,
             recommendation=row.recommendation or _recommendation_from_total(row.total_score),
@@ -211,7 +237,7 @@ def _candidate_application_rows(db: Session, user: User | None = None):
             JobScore.total_score >= Decimal("70"),
             JobScore.recommendation_tier != "excluded",
         )
-        .order_by(JobScore.total_score.desc(), Job.id)
+        .order_by(JobScore.apply_readiness_score.desc().nulls_last(), JobScore.total_score.desc(), _difficulty_order(Job.apply_difficulty), Job.id)
     )
     if user is not None:
         query = query.where(JobScore.user_id == user.id)
@@ -242,3 +268,17 @@ def _recommendation_from_total(total_score: Decimal | None) -> str | None:
     if total_score >= Decimal("50"):
         return "maybe"
     return "skip"
+
+
+def _ensure_apply_strategy(job: Job) -> None:
+    if job.apply_strategy == "unknown" and job.apply_difficulty == "unknown":
+        classification = classify_job(job)
+        job.apply_strategy = classification.strategy
+        job.apply_difficulty = classification.difficulty
+        job.apply_strategy_reason = classification.reason
+
+
+def _difficulty_order(column):
+    from sqlalchemy import case
+
+    return case((column == "easy", 0), (column == "medium", 1), (column == "hard", 2), (column == "unknown", 3), else_=4)

@@ -16,6 +16,9 @@ from app.schemas.database import (
     JobAvailabilityResult,
     JobAvailabilityRunStart,
     JobAvailabilityRunStatus,
+    JobApplyStrategyResult,
+    JobApplyStrategyRunStart,
+    JobApplyStrategyRunStatus,
     JobAnalysisRead,
     JobDetail,
     JobIdsRequest,
@@ -36,6 +39,12 @@ from app.services.job_availability import (
     get_availability_run_status,
     run_availability_background,
     start_availability_run,
+)
+from app.services.apply_strategy import (
+    classify_apply_strategy,
+    get_apply_strategy_run_status,
+    run_apply_strategy_background,
+    start_apply_strategy_run,
 )
 from app.services.job_scoring import scorecard_for_job
 from app.services.queue import enqueue_or_background
@@ -78,6 +87,7 @@ def get_jobs(
     exclude_excluded: bool = False,
     status: str | None = None,
     availability_status: str | None = None,
+    apply_difficulty: str | None = None,
     source_id: int | None = None,
     sort: str = Query(default="total_score_desc"),
     page: int = Query(default=1, ge=1),
@@ -100,6 +110,7 @@ def get_jobs(
         exclude_excluded=exclude_excluded,
         status=status,
         availability_status=availability_status,
+        apply_difficulty=apply_difficulty,
         source_id=source_id,
     )
     started = perf_counter()
@@ -163,6 +174,23 @@ def get_availability_run(run_id: int, db: Session = Depends(get_db)):
     return result
 
 
+@router.post("/classify-apply-strategies", response_model=JobApplyStrategyRunStart)
+def bulk_classify_apply_strategies(background_tasks: BackgroundTasks, payload: JobIdsRequest | None = None, db: Session = Depends(get_db)):
+    job_ids = payload.job_ids if payload else None
+    started, created = start_apply_strategy_run(db, job_ids)
+    if created:
+        enqueue_or_background(background_tasks, run_apply_strategy_background, started.run_id, job_ids, job_id=f"apply-strategy-{started.run_id}")
+    return started
+
+
+@router.get("/apply-strategy-runs/{run_id}", response_model=JobApplyStrategyRunStatus)
+def get_apply_strategy_run(run_id: int, db: Session = Depends(get_db)):
+    result = get_apply_strategy_run_status(db, run_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Apply strategy run not found")
+    return result
+
+
 @router.post("/rescore", response_model=JobRescoreRunStart)
 def rescore_all_jobs(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
@@ -210,6 +238,11 @@ def get_job_detail(job_id: int, db: Session = Depends(get_db)):
 @router.post("/{job_id}/check-availability", response_model=JobAvailabilityResult)
 def check_single_availability(job_id: int, db: Session = Depends(get_db)):
     return check_job_availability(db, _get_job_or_404(db, job_id))
+
+
+@router.post("/{job_id}/classify-apply-strategy", response_model=JobApplyStrategyResult)
+def classify_single_apply_strategy(job_id: int, db: Session = Depends(get_db)):
+    return classify_apply_strategy(db, _get_job_or_404(db, job_id))
 
 
 @router.delete("/{job_id}", response_model=BulkJobActionResult)

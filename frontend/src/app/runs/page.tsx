@@ -12,7 +12,8 @@ const typeOptions = [
   ["scrape", "Scrape"],
   ["rescore", "Rescore"],
   ["availability", "Availability"],
-  ["application_prepare", "Application prepare"]
+  ["application_prepare", "Application prepare"],
+  ["apply_strategy", "Apply strategy"]
 ];
 
 const statusOptions = [

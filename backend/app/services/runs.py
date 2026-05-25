@@ -3,9 +3,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from app.db.models import ApplicationPrepareRun, JobAvailabilityRun, JobRescoreRun, ScrapeRun, User
+from app.db.models import ApplicationPrepareRun, JobApplyStrategyRun, JobAvailabilityRun, JobRescoreRun, ScrapeRun, User
 from app.schemas.database import UnifiedRun
 from app.services.applications import start_prepare_applications_run
+from app.services.apply_strategy import start_apply_strategy_run
 from app.services.job_availability import start_availability_run
 from app.services.rescore_runs import cancel_rescore_run, retry_rescore_run
 from app.services.run_tracking import finish_run
@@ -24,6 +25,8 @@ def list_unified_runs(db: Session, *, run_type: str = "all", status: str = "all"
         rows.extend(_availability_runs(db, limit))
     if run_type in {"all", "application_prepare"}:
         rows.extend(_application_prepare_runs(db, limit))
+    if run_type in {"all", "apply_strategy"}:
+        rows.extend(_apply_strategy_runs(db, limit))
     if status != "all":
         rows = [row for row in rows if row.status == status]
     return sorted(rows, key=lambda row: row.started_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:limit]
@@ -39,6 +42,9 @@ def retry_run(db: Session, run_type: str, run_id: int, user: User) -> tuple[Unif
     if run_type == "application_prepare":
         started, created = start_prepare_applications_run(db, user)
         return _run_from_application_prepare(db.get(ApplicationPrepareRun, started.run_id)), created
+    if run_type == "apply_strategy":
+        started, created = start_apply_strategy_run(db)
+        return _run_from_apply_strategy(db.get(JobApplyStrategyRun, started.run_id)), created
     if run_type == "scrape":
         return None, False
     return None, False
@@ -80,6 +86,10 @@ def _availability_runs(db: Session, limit: int) -> list[UnifiedRun]:
 
 def _application_prepare_runs(db: Session, limit: int) -> list[UnifiedRun]:
     return [_run_from_application_prepare(run) for run in db.scalars(select(ApplicationPrepareRun).order_by(desc(ApplicationPrepareRun.id)).limit(limit)).all()]
+
+
+def _apply_strategy_runs(db: Session, limit: int) -> list[UnifiedRun]:
+    return [_run_from_apply_strategy(run) for run in db.scalars(select(JobApplyStrategyRun).order_by(desc(JobApplyStrategyRun.id)).limit(limit)).all()]
 
 
 def _run_from_scrape(run: ScrapeRun | None) -> UnifiedRun | None:
@@ -167,6 +177,26 @@ def _run_from_application_prepare(run: ApplicationPrepareRun | None) -> UnifiedR
     )
 
 
+def _run_from_apply_strategy(run: JobApplyStrategyRun | None) -> UnifiedRun | None:
+    if run is None:
+        return None
+    return UnifiedRun(
+        id=str(run.id),
+        type="apply_strategy",
+        status=_status(run.status, run.last_heartbeat_at, run.started_at, run.finished_at),
+        total=run.total,
+        processed=run.processed,
+        succeeded=run.classified,
+        failed=run.failed,
+        skipped=max(0, run.total - run.processed),
+        error=run.error,
+        started_at=run.started_at,
+        last_heartbeat_at=run.last_heartbeat_at,
+        finished_at=run.finished_at,
+        duration_seconds=_duration(run.started_at, run.finished_at),
+    )
+
+
 def _to_unified(run_type: str, run) -> UnifiedRun | None:
     if run_type == "scrape":
         return _run_from_scrape(run)
@@ -176,6 +206,8 @@ def _to_unified(run_type: str, run) -> UnifiedRun | None:
         return _run_from_availability(run)
     if run_type == "application_prepare":
         return _run_from_application_prepare(run)
+    if run_type == "apply_strategy":
+        return _run_from_apply_strategy(run)
     return None
 
 
@@ -184,6 +216,7 @@ def _model_for_type(run_type: str):
         "scrape": ScrapeRun,
         "availability": JobAvailabilityRun,
         "application_prepare": ApplicationPrepareRun,
+        "apply_strategy": JobApplyStrategyRun,
     }.get(run_type)
 
 

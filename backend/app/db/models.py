@@ -212,6 +212,9 @@ class Job(Base):
     )
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     availability_reason: Mapped[str | None] = mapped_column(Text)
+    apply_strategy: Mapped[str] = mapped_column(String(40), default="unknown", server_default="unknown", nullable=False, index=True)
+    apply_difficulty: Mapped[str] = mapped_column(String(40), default="unknown", server_default="unknown", nullable=False, index=True)
+    apply_strategy_reason: Mapped[str | None] = mapped_column(Text)
     content_hash: Mapped[str | None] = mapped_column(String(128), index=True)
 
     source: Mapped[JobSource] = relationship(back_populates="jobs")
@@ -281,6 +284,7 @@ class JobScore(Base):
     location_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     freshness_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     missing_skill_penalty: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    apply_readiness_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), index=True)
     explanation: Mapped[str | None] = mapped_column(Text)
     recommendation: Mapped[str | None] = mapped_column(String(40), index=True)
     recommendation_tier: Mapped[str | None] = mapped_column(String(80), index=True)
@@ -344,6 +348,21 @@ class JobAvailabilityRun(Base):
     total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     processed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     checked: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class JobApplyStrategyRun(Base):
+    __tablename__ = "job_apply_strategy_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(40), default="running", server_default="running", nullable=False, index=True)
+    total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    classified: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

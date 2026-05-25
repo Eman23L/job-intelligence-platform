@@ -40,6 +40,10 @@ export interface JobListItem {
   availability_status: AvailabilityStatus;
   last_checked_at: string | null;
   availability_reason: string | null;
+  apply_strategy: string;
+  apply_difficulty: ApplyDifficulty;
+  apply_strategy_reason: string | null;
+  apply_readiness_score: string | null;
 }
 
 export interface PaginatedJobs {
@@ -96,6 +100,7 @@ export interface JobScore {
   location_score: string | null;
   freshness_score: string | null;
   missing_skill_penalty: string | null;
+  apply_readiness_score: string | null;
   explanation: string | null;
   recommendation: string | null;
   recommendation_tier: string | null;
@@ -141,6 +146,7 @@ export interface JobRescoreRunStatus {
 
 export type ApplicationStatus = "not_started" | "ready_to_apply" | "opened" | "applied" | "skipped" | "failed";
 export type AvailabilityStatus = "active" | "expired" | "unavailable" | "redirected" | "replaced" | "unknown";
+export type ApplyDifficulty = "easy" | "medium" | "hard" | "blocked" | "unknown";
 
 export interface JobAvailabilityResult {
   job_id: number;
@@ -174,6 +180,24 @@ export interface JobAvailabilityRunStatus {
   last_heartbeat_at: string | null;
 }
 
+export interface JobApplyStrategyRunStart {
+  run_id: number;
+  status: "queued" | "running" | "completed" | "failed" | string;
+}
+
+export interface JobApplyStrategyRunStatus {
+  run_id: number;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  total: number;
+  processed: number;
+  classified: number;
+  failed: number;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  last_heartbeat_at: string | null;
+}
+
 export interface ApplicationItem {
   job_id: number;
   title: string;
@@ -184,6 +208,10 @@ export interface ApplicationItem {
   availability_status: AvailabilityStatus;
   last_checked_at: string | null;
   availability_reason: string | null;
+  apply_strategy: string;
+  apply_difficulty: ApplyDifficulty;
+  apply_strategy_reason: string | null;
+  apply_readiness_score: string | null;
   total_score: string | null;
   recommendation_tier: string | null;
   recommendation: "apply" | "maybe" | "skip" | string | null;
@@ -455,7 +483,7 @@ export interface SourceDeleteResult {
 
 export interface UnifiedRun {
   id: string;
-  type: "scrape" | "rescore" | "availability" | "application_prepare" | string;
+  type: "scrape" | "rescore" | "availability" | "application_prepare" | "apply_strategy" | string;
   status: string;
   total: number;
   processed: number;

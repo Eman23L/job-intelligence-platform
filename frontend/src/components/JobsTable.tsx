@@ -48,6 +48,7 @@ export function JobsTable({
             <th>Salary</th>
             <th>Posted</th>
             <th>Availability</th>
+            <th>Apply strategy</th>
             <th>Role family</th>
             <th>Tier</th>
             <th>Recommendation</th>
@@ -90,6 +91,11 @@ export function JobsTable({
                 <div className="muted-text">{job.last_checked_at ? `Checked ${formatDate(job.last_checked_at)}` : "Not checked"}</div>
                 {job.availability_reason ? <div className="muted-text">{job.availability_reason}</div> : null}
               </td>
+              <td>
+                <span className={`badge apply-difficulty-${job.apply_difficulty}`}>{formatLabel(job.apply_strategy)}</span>
+                <div className="status-note">{formatLabel(job.apply_difficulty)}</div>
+                {job.apply_strategy_reason ? <div className="muted-text">{job.apply_strategy_reason}</div> : null}
+              </td>
               <td>{job.role_family ?? "Unanalysed"}</td>
               <td>
                 {job.total_score === null ? <PendingScoringBadge /> : <RecommendationBadge tier={job.recommendation_tier} />}
@@ -127,4 +133,8 @@ export function JobsTable({
       </table>
     </div>
   );
+}
+
+function formatLabel(value: string | null | undefined): string {
+  return value ? value.replaceAll("_", " ") : "unknown";
 }
