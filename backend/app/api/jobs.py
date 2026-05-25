@@ -12,9 +12,10 @@ from app.db.models import Job, JobAnalysis, JobScore, JobSkill, User
 from app.db.session import get_db
 from app.schemas.database import (
     BulkJobActionResult,
-    BulkJobAvailabilityResult,
     JobAvailabilityCheckRequest,
     JobAvailabilityResult,
+    JobAvailabilityRunStart,
+    JobAvailabilityRunStatus,
     JobAnalysisRead,
     JobDetail,
     JobIdsRequest,
@@ -30,7 +31,12 @@ from app.services.analysis import analyse_all_jobs, analyse_job
 from app.services.applications import set_application_status
 from app.services.job_cleanup import delete_job, delete_jobs, exclude_jobs
 from app.services.job_discovery import JobFilters, job_detail, list_jobs
-from app.services.job_availability import check_job_availability, check_jobs_availability
+from app.services.job_availability import (
+    check_job_availability,
+    get_availability_run_status,
+    run_availability_background,
+    start_availability_run,
+)
 from app.services.job_scoring import scorecard_for_job
 from app.services.rescore_runs import cancel_rescore_run, get_rescore_run_status, retry_rescore_run, run_rescore_background, start_rescore_run
 from app.services.saved_jobs import set_saved_job_status
@@ -139,11 +145,21 @@ def bulk_exclude_jobs(payload: JobIdsRequest, db: Session = Depends(get_db)):
     return BulkJobActionResult(affected=len(excluded_ids), job_ids=excluded_ids)
 
 
-@router.post("/check-availability", response_model=BulkJobAvailabilityResult)
-def bulk_check_availability(payload: JobAvailabilityCheckRequest | None = None, db: Session = Depends(get_db)):
+@router.post("/check-availability", response_model=JobAvailabilityRunStart)
+def bulk_check_availability(background_tasks: BackgroundTasks, payload: JobAvailabilityCheckRequest | None = None, db: Session = Depends(get_db)):
     job_ids = payload.job_ids if payload else None
-    results = check_jobs_availability(db, job_ids)
-    return BulkJobAvailabilityResult(checked=len(results), results=results)
+    started, created = start_availability_run(db, job_ids)
+    if created:
+        background_tasks.add_task(run_availability_background, started.run_id, job_ids)
+    return started
+
+
+@router.get("/availability-runs/{run_id}", response_model=JobAvailabilityRunStatus)
+def get_availability_run(run_id: int, db: Session = Depends(get_db)):
+    result = get_availability_run_status(db, run_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Availability run not found")
+    return result
 
 
 @router.post("/rescore", response_model=JobRescoreRunStart)

@@ -8,7 +8,7 @@ import { JobsTable } from "@/components/JobsTable";
 import { LoadingState } from "@/components/LoadingState";
 import { PaginationControls } from "@/components/PaginationControls";
 import { ApiError, api } from "@/lib/api";
-import type { JobRescoreRunStatus, JobScorecard, PaginatedJobs } from "@/types/api";
+import type { JobAvailabilityRunStatus, JobRescoreRunStatus, JobScorecard, PaginatedJobs } from "@/types/api";
 
 const initialFilters: JobFiltersState = {
   role_family: "",
@@ -43,6 +43,9 @@ export default function JobsPage() {
   const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
   const [scorecardLoading, setScorecardLoading] = useState(false);
   const [checkingAvailability, setCheckingAvailability] = useState(false);
+  const [availabilityRunId, setAvailabilityRunId] = useState<number | null>(null);
+  const [availabilityRun, setAvailabilityRun] = useState<JobAvailabilityRunStatus | null>(null);
+  const [availabilityPollFailures, setAvailabilityPollFailures] = useState(0);
 
   const params = useMemo(() => {
     const next = new URLSearchParams();
@@ -123,6 +126,51 @@ export default function JobsPage() {
       globalThis.clearInterval(intervalId);
     };
   }, [refresh, rescoreRunId]);
+
+  useEffect(() => {
+    if (!availabilityRunId) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await api.availabilityRun(availabilityRunId);
+        if (cancelled) {
+          return;
+        }
+        setAvailabilityRun(result);
+        setAvailabilityPollFailures(0);
+        if (result.status === "completed" || result.status === "failed") {
+          setAvailabilityRunId(null);
+          setCheckingAvailability(false);
+          await refresh();
+          setNotice({
+            type: result.status === "completed" ? "success" : "error",
+            message:
+              result.status === "completed"
+                ? `${result.checked} jobs checked for availability, ${result.failed} failed.`
+                : result.error ?? "Availability check failed"
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setAvailabilityPollFailures((current) => {
+            const next = current + 1;
+            if (next >= 3) {
+              setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary availability polling failure" });
+            }
+            return next;
+          });
+        }
+      }
+    };
+    poll();
+    const intervalId = globalThis.setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(intervalId);
+    };
+  }, [availabilityRunId, refresh]);
 
   const runAction = async (action: () => Promise<unknown>) => {
     setActionLoading(true);
@@ -217,14 +265,15 @@ export default function JobsPage() {
     }
     setCheckingAvailability(true);
     setNotice({ type: "info", message: "Checking job availability..." });
+    setAvailabilityRun(null);
+    setAvailabilityPollFailures(0);
     setError(null);
     try {
-      const result = await api.checkJobsAvailability(selectedCount > 0 ? selectedJobIds : undefined);
-      await refresh();
-      setNotice({ type: "success", message: `${result.checked} jobs checked for availability.` });
+      const started = await api.checkJobsAvailability(selectedCount > 0 ? selectedJobIds : undefined);
+      setAvailabilityRunId(started.run_id);
+      setAvailabilityRun(emptyAvailabilityRun(started.run_id, started.status));
     } catch (err) {
       setNotice({ type: "error", message: err instanceof Error ? err.message : "Availability check failed" });
-    } finally {
       setCheckingAvailability(false);
     }
   };
@@ -288,6 +337,11 @@ export default function JobsPage() {
           <button type="button" className="secondary-button compact-button" onClick={() => void retryRescore()}>
             Retry failed run
           </button>
+        </div>
+      ) : null}
+      {availabilityRunId && availabilityRun ? (
+        <div className="notice-banner info">
+          Checking availability... {availabilityRun.processed} / {availabilityRun.total} processed, {availabilityRun.checked} checked, {availabilityRun.failed} failed.
         </div>
       ) : null}
       {error ? <ErrorState message={error} /> : null}
@@ -450,6 +504,21 @@ function emptyRescoreRun(runId: number, status: string): JobRescoreRunStatus {
     finished_at: null,
     last_heartbeat_at: null,
     error: null
+  };
+}
+
+function emptyAvailabilityRun(runId: number, status: string): JobAvailabilityRunStatus {
+  return {
+    run_id: runId,
+    status,
+    total: 0,
+    processed: 0,
+    checked: 0,
+    failed: 0,
+    error: null,
+    started_at: null,
+    finished_at: null,
+    last_heartbeat_at: null
   };
 }
 

@@ -320,6 +320,37 @@ class JobRescoreRunFailure(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ApplicationPrepareRun(Base):
+    __tablename__ = "application_prepare_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(40), default="running", server_default="running", nullable=False, index=True)
+    total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    queued: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    skipped: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class JobAvailabilityRun(Base):
+    __tablename__ = "job_availability_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(40), default="running", server_default="running", nullable=False, index=True)
+    total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    checked: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class MissingSkill(Base):
     __tablename__ = "missing_skills"
 

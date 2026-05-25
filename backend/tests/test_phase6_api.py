@@ -44,11 +44,14 @@ def phase6_client() -> Generator[tuple[TestClient, dict[str, int]], None, None]:
 
     app.dependency_overrides[get_db] = override_get_db
     original_rescore_session_local = rescore_runs.SessionLocal
+    original_applications_session_local = applications.SessionLocal
     rescore_runs.SessionLocal = TestingSession
+    applications.SessionLocal = TestingSession
     try:
         yield TestClient(app), ids
     finally:
         rescore_runs.SessionLocal = original_rescore_session_local
+        applications.SessionLocal = original_applications_session_local
         app.dependency_overrides.clear()
 
 
@@ -350,10 +353,14 @@ def test_prepare_applications_queues_high_scoring_non_excluded_jobs_once(monkeyp
         second = client.post("/applications/prepare")
 
         assert first.status_code == 200
-        assert set(first.json()["job_ids"]) == {ids["excellent"], ids["strong"]}
-        assert first.json()["queued"] == 2
+        first_status = client.get(f"/applications/prepare-runs/{first.json()['run_id']}")
+        assert first_status.status_code == 200
+        assert first_status.json()["status"] == "completed"
+        assert first_status.json()["queued"] == 2
         assert second.status_code == 200
-        assert second.json() == {"queued": 0, "job_ids": []}
+        second_status = client.get(f"/applications/prepare-runs/{second.json()['run_id']}")
+        assert second_status.status_code == 200
+        assert second_status.json()["queued"] == 0
         assert listed.status_code == 200
         items = listed.json()["items"]
         assert {item["job_id"] for item in items} == {ids["excellent"], ids["strong"]}

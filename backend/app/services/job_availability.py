@@ -11,10 +11,12 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Job
+from app.db.models import Job, JobAvailabilityRun
+from app.db.session import SessionLocal
 from app.scrapers.parsers.job_detail import parse_job_detail
 from app.scrapers.utils.hashing import content_hash
-from app.schemas.database import JobAvailabilityResult
+from app.schemas.database import JobAvailabilityResult, JobAvailabilityRunStart, JobAvailabilityRunStatus
+from app.services.run_tracking import finish_run, heartbeat, utcnow
 
 AVAILABILITY_ACTIVE = "active"
 AVAILABILITY_EXPIRED = "expired"
@@ -23,6 +25,7 @@ AVAILABILITY_REDIRECTED = "redirected"
 AVAILABILITY_REPLACED = "replaced"
 AVAILABILITY_UNKNOWN = "unknown"
 QUEUEABLE_AVAILABILITY_STATUSES = {AVAILABILITY_ACTIVE, AVAILABILITY_UNKNOWN}
+ACTIVE_RUN_STATUSES = {"running", "queued"}
 
 CLOSED_PHRASES = (
     "no longer available",
@@ -91,6 +94,77 @@ def check_jobs_availability(db: Session, job_ids: list[int] | None = None, fetch
         query = query.where(Job.id.in_(job_ids))
     jobs = db.scalars(query).all()
     return [check_job_availability(db, job, fetcher=fetcher) for job in jobs]
+
+
+def start_availability_run(db: Session, job_ids: list[int] | None = None) -> tuple[JobAvailabilityRunStart, bool]:
+    active = db.scalar(select(JobAvailabilityRun).where(JobAvailabilityRun.status.in_(ACTIVE_RUN_STATUSES)).order_by(JobAvailabilityRun.id.desc()))
+    if active is not None:
+        return JobAvailabilityRunStart(run_id=active.id, status=active.status), False
+    query = select(Job.id).where(Job.status != "excluded")
+    if job_ids:
+        query = query.where(Job.id.in_(job_ids))
+    total = len(db.scalars(query).all())
+    run = JobAvailabilityRun(status="running", total=total, last_heartbeat_at=utcnow())
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return JobAvailabilityRunStart(run_id=run.id, status=run.status), True
+
+
+def get_availability_run_status(db: Session, run_id: int) -> JobAvailabilityRunStatus | None:
+    run = db.get(JobAvailabilityRun, run_id)
+    if run is None:
+        return None
+    return JobAvailabilityRunStatus(
+        run_id=run.id,
+        status=run.status,
+        total=run.total,
+        processed=run.processed,
+        checked=run.checked,
+        failed=run.failed,
+        error=run.error,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        last_heartbeat_at=run.last_heartbeat_at,
+    )
+
+
+def run_availability_background(run_id: int, job_ids: list[int] | None = None) -> None:
+    with SessionLocal() as db:
+        run = db.get(JobAvailabilityRun, run_id)
+        if run is None:
+            return
+        try:
+            query = select(Job).where(Job.status != "excluded").order_by(Job.id)
+            if job_ids:
+                query = query.where(Job.id.in_(job_ids))
+            jobs = db.scalars(query).all()
+            run.total = len(jobs)
+            heartbeat(run)
+            db.commit()
+            for job in jobs:
+                try:
+                    check_job_availability(db, job)
+                    run.checked += 1
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    run = db.get(JobAvailabilityRun, run_id)
+                    if run is None:
+                        return
+                    run.failed += 1
+                    run.error = str(exc)
+                finally:
+                    run.processed += 1
+                    heartbeat(run)
+                    db.commit()
+            finish_run(run, "failed" if run.failed and run.checked == 0 else "completed", run.error if run.failed and run.checked == 0 else None)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            run = db.get(JobAvailabilityRun, run_id)
+            if run is not None:
+                finish_run(run, "failed", str(exc))
+                db.commit()
 
 
 def _fetch_job_page(url: str) -> FetchResult:

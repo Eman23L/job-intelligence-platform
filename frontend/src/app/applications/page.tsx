@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
@@ -9,7 +9,7 @@ import { RecommendationActionBadge } from "@/components/RecommendationActionBadg
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { api } from "@/lib/api";
-import type { ApplicationItem, ApplicationsList, JobScorecard } from "@/types/api";
+import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, JobScorecard } from "@/types/api";
 
 const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
 
@@ -17,35 +17,82 @@ export default function ApplicationsPage() {
   const [data, setData] = useState<ApplicationsList | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<number | "prepare" | null>(null);
+  const [prepareRunId, setPrepareRunId] = useState<number | null>(null);
+  const [prepareRun, setPrepareRun] = useState<ApplicationPrepareRunStatus | null>(null);
+  const [preparePollFailures, setPreparePollFailures] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ type: "info" | "success" | "warning" | "error"; message: string } | null>(null);
   const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     const result = await api.applications();
     setData(result);
-  };
+  }, []);
 
   useEffect(() => {
     setLoading(true);
     refresh()
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!prepareRunId) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await api.prepareApplicationsRun(prepareRunId);
+        if (cancelled) {
+          return;
+        }
+        setPrepareRun(result);
+        setPreparePollFailures(0);
+        if (result.status === "completed" || result.status === "failed") {
+          setPrepareRunId(null);
+          setActionLoading(null);
+          await refresh();
+          setNotice({
+            type: result.status === "completed" ? "success" : "error",
+            message:
+              result.status === "completed"
+                ? `Prepare complete: ${result.queued} queued, ${result.skipped} skipped, ${result.failed} failed.`
+                : result.error ?? "Prepare applications failed"
+          });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setPreparePollFailures((current) => {
+            const next = current + 1;
+            if (next >= 3) {
+              setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary prepare status polling failure" });
+            }
+            return next;
+          });
+        }
+      }
+    };
+    poll();
+    const intervalId = globalThis.setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(intervalId);
+    };
+  }, [prepareRunId, refresh]);
 
   const prepareApplications = async () => {
     setActionLoading("prepare");
     setError(null);
+    setNotice({ type: "info", message: "Preparing applications..." });
+    setPrepareRun(null);
+    setPreparePollFailures(0);
     try {
-      const result = await api.prepareApplications();
-      await refresh();
-      setNotice({
-        type: "success",
-        message: result.queued === 1 ? "1 job added to the application queue." : `${result.queued} jobs added to the application queue.`
-      });
+      const started = await api.prepareApplications();
+      setPrepareRunId(started.run_id);
+      setPrepareRun(emptyPrepareRun(started.run_id, started.status));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to prepare applications");
-    } finally {
       setActionLoading(null);
     }
   };
@@ -113,6 +160,11 @@ export default function ApplicationsPage() {
         </button>
       </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
+      {prepareRunId && prepareRun ? (
+        <div className="notice-banner info">
+          Preparing applications... {prepareRun.processed} / {prepareRun.total} processed, {prepareRun.queued} queued, {prepareRun.failed} failed.
+        </div>
+      ) : null}
       {error ? <ErrorState message={error} /> : null}
       {!error && data?.items.length === 0 ? (
         <EmptyState title="No applications queued" message="Prepare applications to queue high-scoring jobs for manual submission." />
@@ -243,4 +295,20 @@ function formatShortDate(value: string): string {
   return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(
     new Date(value)
   );
+}
+
+function emptyPrepareRun(runId: number, status: string): ApplicationPrepareRunStatus {
+  return {
+    run_id: runId,
+    status,
+    total: 0,
+    processed: 0,
+    queued: 0,
+    skipped: 0,
+    failed: 0,
+    error: null,
+    started_at: null,
+    finished_at: null,
+    last_heartbeat_at: null
+  };
 }

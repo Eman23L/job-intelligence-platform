@@ -405,6 +405,24 @@ class BulkJobAvailabilityResult(BaseModel):
     results: list[JobAvailabilityResult]
 
 
+class JobAvailabilityRunStart(BaseModel):
+    run_id: int
+    status: str
+
+
+class JobAvailabilityRunStatus(BaseModel):
+    run_id: int
+    status: str
+    total: int = 0
+    processed: int = 0
+    checked: int = 0
+    failed: int = 0
+    error: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+
+
 class JobRescoreRunStart(BaseModel):
     run_id: int
     status: str
@@ -583,6 +601,25 @@ class ApplicationsList(BaseModel):
 class ApplicationsPrepareResult(BaseModel):
     queued: int
     job_ids: list[int]
+
+
+class ApplicationPrepareRunStart(BaseModel):
+    run_id: int
+    status: str
+
+
+class ApplicationPrepareRunStatus(BaseModel):
+    run_id: int
+    status: str
+    total: int = 0
+    processed: int = 0
+    queued: int = 0
+    skipped: int = 0
+    failed: int = 0
+    error: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
 
 
 class AnalyticsOverview(BaseModel):

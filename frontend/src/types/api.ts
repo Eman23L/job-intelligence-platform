@@ -156,6 +156,24 @@ export interface BulkJobAvailabilityResult {
   results: JobAvailabilityResult[];
 }
 
+export interface JobAvailabilityRunStart {
+  run_id: number;
+  status: "running" | "completed" | "failed" | string;
+}
+
+export interface JobAvailabilityRunStatus {
+  run_id: number;
+  status: "running" | "completed" | "failed" | string;
+  total: number;
+  processed: number;
+  checked: number;
+  failed: number;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  last_heartbeat_at: string | null;
+}
+
 export interface ApplicationItem {
   job_id: number;
   title: string;
@@ -178,6 +196,25 @@ export interface ApplicationsList {
 export interface ApplicationsPrepareResult {
   queued: number;
   job_ids: number[];
+}
+
+export interface ApplicationPrepareRunStart {
+  run_id: number;
+  status: "running" | "completed" | "failed" | string;
+}
+
+export interface ApplicationPrepareRunStatus {
+  run_id: number;
+  status: "running" | "completed" | "failed" | string;
+  total: number;
+  processed: number;
+  queued: number;
+  skipped: number;
+  failed: number;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  last_heartbeat_at: string | null;
 }
 
 export interface JobSkill {

@@ -9,6 +9,7 @@ from app.db.models import Job, JobAnalysis, JobCompany, JobEvent, JobScore, JobS
 from app.schemas.database import JobSourceCreate, JobSourceUpdate, SourceDeleteResult, SourcePermissionValidation
 
 logger = logging.getLogger(__name__)
+DELETE_CHUNK_SIZE = 250
 
 
 def list_sources(db: Session) -> Sequence[JobSource]:
@@ -48,10 +49,13 @@ def set_source_enabled(db: Session, source: JobSource, enabled: bool) -> JobSour
 def delete_or_disable_source(db: Session, source: JobSource, *, delete_jobs: bool = False) -> SourceDeleteResult:
     source_id = source.id
     if delete_jobs:
-        job_ids = select(Job.id).where(Job.source_id == source_id)
-        for model in (JobCompany, JobSkill, JobAnalysis, JobScore, MissingSkill, SavedJob, JobEvent):
-            db.execute(delete(model).where(model.job_id.in_(job_ids)).execution_options(synchronize_session=False))
-        db.execute(delete(Job).where(Job.source_id == source_id).execution_options(synchronize_session=False))
+        job_ids = list(db.scalars(select(Job.id).where(Job.source_id == source_id)).all())
+        for chunk in _chunks(job_ids, DELETE_CHUNK_SIZE):
+            for model in (JobCompany, JobSkill, JobAnalysis, JobScore, MissingSkill, SavedJob, JobEvent):
+                db.execute(delete(model).where(model.job_id.in_(chunk)).execution_options(synchronize_session=False))
+            db.execute(delete(Job).where(Job.id.in_(chunk)).execution_options(synchronize_session=False))
+            db.commit()
+            logger.info("source.delete_jobs_chunk source_id=%s deleted_jobs_chunk=%s", source_id, len(chunk))
         db.execute(delete(RawJobSnapshot).where(RawJobSnapshot.source_id == source_id).execution_options(synchronize_session=False))
         db.execute(delete(ScrapeRun).where(ScrapeRun.source_id == source_id).execution_options(synchronize_session=False))
         db.execute(delete(JobSource).where(JobSource.id == source_id).execution_options(synchronize_session=False))
@@ -90,3 +94,8 @@ def validate_source_permission(source: JobSource) -> SourcePermissionValidation:
         reasons=reasons,
         warnings=warnings,
     )
+
+
+def _chunks(items: list[int], size: int):
+    for index in range(0, len(items), size):
+        yield items[index : index + size]

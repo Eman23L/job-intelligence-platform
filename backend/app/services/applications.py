@@ -1,15 +1,20 @@
 from decimal import Decimal
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Job, JobScore, User
-from app.schemas.database import ApplicationItem
+from app.db.models import ApplicationPrepareRun, Job, JobScore, User
+from app.db.session import SessionLocal
+from app.schemas.database import ApplicationItem, ApplicationPrepareRunStart, ApplicationPrepareRunStatus
 from app.services.job_availability import QUEUEABLE_AVAILABILITY_STATUSES, check_job_availability
+from app.services.run_tracking import finish_run, heartbeat, utcnow
 
 APPLICATION_STATUSES = {"not_started", "ready_to_apply", "opened", "applied", "skipped", "failed"}
 QUEUEABLE_RECOMMENDATIONS = {"apply", "maybe"}
 TERMINAL_APPLICATION_STATUSES = {"applied", "skipped"}
+ACTIVE_RUN_STATUSES = {"running", "queued"}
+logger = logging.getLogger(__name__)
 
 
 def set_application_status(db: Session, job: Job, status: str) -> Job:
@@ -56,6 +61,95 @@ def prepare_applications(db: Session, user: User | None = None) -> tuple[int, li
             queued_ids.append(job.id)
     db.commit()
     return len(queued_ids), queued_ids
+
+
+def start_prepare_applications_run(db: Session, user: User) -> tuple[ApplicationPrepareRunStart, bool]:
+    active = db.scalar(select(ApplicationPrepareRun).where(ApplicationPrepareRun.status.in_(ACTIVE_RUN_STATUSES)).order_by(ApplicationPrepareRun.id.desc()))
+    if active is not None:
+        return ApplicationPrepareRunStart(run_id=active.id, status=active.status), False
+    run = ApplicationPrepareRun(status="running", last_heartbeat_at=utcnow())
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    logger.info("application_prepare_run_created run_id=%s user_id=%s", run.id, user.id)
+    return ApplicationPrepareRunStart(run_id=run.id, status=run.status), True
+
+
+def get_prepare_applications_run_status(db: Session, run_id: int) -> ApplicationPrepareRunStatus | None:
+    run = db.get(ApplicationPrepareRun, run_id)
+    if run is None:
+        return None
+    return ApplicationPrepareRunStatus(
+        run_id=run.id,
+        status=run.status,
+        total=run.total,
+        processed=run.processed,
+        queued=run.queued,
+        skipped=run.skipped,
+        failed=run.failed,
+        error=run.error,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        last_heartbeat_at=run.last_heartbeat_at,
+    )
+
+
+def run_prepare_applications_background(run_id: int, user_id: int) -> None:
+    logger.info("application_prepare_background_start run_id=%s user_id=%s", run_id, user_id)
+    with SessionLocal() as db:
+        run = db.get(ApplicationPrepareRun, run_id)
+        user = db.get(User, user_id)
+        if run is None or user is None:
+            logger.error("application_prepare_missing_context run_id=%s user_id=%s", run_id, user_id)
+            return
+        try:
+            rows = _candidate_application_rows(db, user)
+            run.total = len(rows)
+            heartbeat(run)
+            db.commit()
+            seen: set[int] = set()
+            for job, score in rows:
+                logger.info("application_prepare_job_start run_id=%s job_id=%s", run_id, job.id)
+                try:
+                    if job.id in seen:
+                        run.skipped += 1
+                        continue
+                    seen.add(job.id)
+                    if not _is_queueable(score):
+                        run.skipped += 1
+                        continue
+                    check_job_availability(db, job)
+                    if job.availability_status not in QUEUEABLE_AVAILABILITY_STATUSES:
+                        run.skipped += 1
+                        continue
+                    if job.application_status == "ready_to_apply":
+                        run.skipped += 1
+                        continue
+                    job.application_status = "ready_to_apply"
+                    run.queued += 1
+                    logger.info("application_prepare_job_queued run_id=%s job_id=%s", run_id, job.id)
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    run = db.get(ApplicationPrepareRun, run_id)
+                    if run is None:
+                        return
+                    run.failed += 1
+                    run.error = str(exc)
+                    logger.exception("application_prepare_job_failed run_id=%s job_id=%s error=%s", run_id, job.id, exc)
+                finally:
+                    run.processed += 1
+                    heartbeat(run)
+                    db.commit()
+            finish_run(run, "failed" if run.failed and run.queued == 0 else "completed", run.error if run.failed and run.queued == 0 else None)
+            db.commit()
+            logger.info("application_prepare_run_completed run_id=%s total=%s processed=%s queued=%s skipped=%s failed=%s status=%s", run.id, run.total, run.processed, run.queued, run.skipped, run.failed, run.status)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            run = db.get(ApplicationPrepareRun, run_id)
+            if run is not None:
+                finish_run(run, "failed", str(exc))
+                db.commit()
+            logger.exception("application_prepare_run_failed run_id=%s error=%s", run_id, exc)
 
 
 def list_applications(db: Session, user: User | None = None) -> list[ApplicationItem]:
@@ -105,6 +199,23 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
         )
         for row in rows
     ]
+
+
+def _candidate_application_rows(db: Session, user: User | None = None):
+    query = (
+        select(Job, JobScore)
+        .join(JobScore, JobScore.job_id == Job.id)
+        .where(
+            Job.status != "excluded",
+            Job.application_status.not_in(TERMINAL_APPLICATION_STATUSES),
+            JobScore.total_score >= Decimal("70"),
+            JobScore.recommendation_tier != "excluded",
+        )
+        .order_by(JobScore.total_score.desc(), Job.id)
+    )
+    if user is not None:
+        query = query.where(JobScore.user_id == user.id)
+    return db.execute(query).all()
 
 
 def _is_queueable(score: JobScore) -> bool:

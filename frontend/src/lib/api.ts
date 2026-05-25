@@ -1,12 +1,14 @@
 import type {
   AIChatResponse,
   AIHistoryMessage,
+  ApplicationPrepareRunStart,
+  ApplicationPrepareRunStatus,
   ApplicationsList,
-  ApplicationsPrepareResult,
   AnalyticsOverview,
-  BulkJobAvailabilityResult,
   JobDetail,
   JobAvailabilityResult,
+  JobAvailabilityRunStart,
+  JobAvailabilityRunStatus,
   JobRescoreRunStart,
   JobRescoreRunStatus,
   JobServeSearchPayload,
@@ -113,7 +115,8 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
 export const api = {
   overview: () => request<AnalyticsOverview>("/analytics/overview", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
   applications: () => request<ApplicationsList>("/applications"),
-  prepareApplications: () => request<ApplicationsPrepareResult>("/applications/prepare", { method: "POST" }),
+  prepareApplications: () => request<ApplicationPrepareRunStart>("/applications/prepare", { method: "POST" }),
+  prepareApplicationsRun: (id: number) => request<ApplicationPrepareRunStatus>(`/applications/prepare-runs/${id}`),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`, { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
   rescoreJobs: () => request<JobRescoreRunStart>("/jobs/rescore", { method: "POST" }),
@@ -135,11 +138,12 @@ export const api = {
   checkJobAvailability: (id: string | number) =>
     request<JobAvailabilityResult>(`/jobs/${id}/check-availability`, { method: "POST", timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   checkJobsAvailability: (jobIds?: number[]) =>
-    request<BulkJobAvailabilityResult>("/jobs/check-availability", {
+    request<JobAvailabilityRunStart>("/jobs/check-availability", {
       method: "POST",
       timeoutMs: JOBS_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({ job_ids: jobIds ?? null })
     }),
+  availabilityRun: (id: number) => request<JobAvailabilityRunStatus>(`/jobs/availability-runs/${id}`),
   saveJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/save`, { method: "POST" }),
   rejectJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/reject`, { method: "POST" }),
   markReadyToApply: (id: string | number) => request<JobDetail>(`/jobs/${id}/mark-ready-to-apply`, { method: "POST" }),
