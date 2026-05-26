@@ -35,3 +35,14 @@ def test_ai_provider_defaults_to_groq() -> None:
     assert settings.ai_provider == "groq"
     assert settings.ai_model == "llama-3.1-8b-instant"
     assert settings.groq_api_key == ""
+
+
+def test_browser_timeout_defaults() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.scrape_timeout_seconds == 600
+    assert settings.apply_timeout_seconds == 900
+    assert settings.playwright_step_timeout_ms == 30000
+    assert settings.page_navigation_timeout_ms == 60000
+    assert settings.rq_result_ttl_seconds == 3600
+    assert settings.rq_failure_ttl_seconds == 86400

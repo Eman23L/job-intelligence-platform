@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     queue_enabled: bool = Field(default=False, alias="QUEUE_ENABLED")
     queue_name: str = Field(default="default", alias="QUEUE_NAME")
+    rq_result_ttl_seconds: int = Field(default=3600, alias="RQ_RESULT_TTL_SECONDS")
+    rq_failure_ttl_seconds: int = Field(default=86400, alias="RQ_FAILURE_TTL_SECONDS")
+    scrape_timeout_seconds: int = Field(default=600, alias="SCRAPE_TIMEOUT_SECONDS")
+    apply_timeout_seconds: int = Field(default=900, alias="APPLY_TIMEOUT_SECONDS")
+    playwright_step_timeout_ms: int = Field(default=30000, alias="PLAYWRIGHT_STEP_TIMEOUT_MS")
+    page_navigation_timeout_ms: int = Field(default=60000, alias="PAGE_NAVIGATION_TIMEOUT_MS")
     playwright_enabled: bool = Field(default=False, alias="PLAYWRIGHT_ENABLED")
     service_type: str = Field(default="web", alias="SERVICE_TYPE")
 

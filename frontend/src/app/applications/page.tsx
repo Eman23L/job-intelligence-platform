@@ -301,6 +301,11 @@ export default function ApplicationsPage() {
                     <td>
                       {item.application_status.replaceAll("_", " ")}
                       {isAvailabilityCheckStale(item.last_checked_at) ? <div className="status-note">Availability check needed</div> : null}
+                      {item.assisted_result?.progress?.current_step ? (
+                        <div className="status-note">
+                          {String(item.assisted_result.progress.current_step).replaceAll("_", " ")} · {formatElapsed(item.assisted_result.progress.elapsed_ms)}
+                        </div>
+                      ) : null}
                     </td>
                     <td>
                       <AvailabilityBadge status={item.availability_status} />
@@ -402,6 +407,12 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
           <h3>Result</h3>
           <div className="metric-list">
             <Metric label="Status" value={result.status} />
+            <Metric label="Running step" value={String(result.progress?.current_step ?? "Not reported")} />
+            <Metric label="Elapsed" value={formatElapsed(result.progress?.elapsed_ms ?? result.timing_diagnostics?.total_runtime_ms)} />
+            <Metric label="Browser startup" value={formatElapsed(result.timing_diagnostics?.browser_startup_ms)} />
+            <Metric label="Waiting on JobServe" value={formatElapsed(result.timing_diagnostics?.search_page_load_ms)} />
+            <Metric label="Uploading CV" value={formatElapsed(result.timing_diagnostics?.cv_upload_ms)} />
+            <Metric label="Submitting application" value={formatElapsed(result.timing_diagnostics?.submit_wait_ms)} />
             <Metric label="CV uploaded" value={result.uploaded_cv ? "Yes" : "No"} />
             <Metric label="Submitted" value={result.submitted ? "Yes" : "No"} />
           </div>
@@ -422,6 +433,8 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
           <ArtifactLinks title="Screenshots" urls={result.screenshot_urls} paths={result.screenshot_paths} image />
           <ArtifactLinks title="HTML snapshots" urls={result.html_snapshot_urls} paths={result.html_snapshot_paths} />
           <DebugJsonList title="Step timeline" items={result.debug_steps} empty="No debug steps returned" />
+          <DebugJsonList title="Progress" items={objectToList(result.progress)} empty="No progress returned" />
+          <DebugJsonList title="Timing diagnostics" items={objectToList(result.timing_diagnostics)} empty="No timing diagnostics returned" />
           <DebugJsonList title="JobServe flow" items={objectToList(result.jobserve_flow_diagnostics)} empty="No JobServe flow diagnostics returned" />
           <DebugJsonList title="Profile hydration" items={objectToList(result.profile_diagnostics)} empty="No profile diagnostics returned" />
           <DebugJsonList title="Upload diagnostics" items={objectToList(result.upload_diagnostics)} empty="No upload diagnostics returned" />
@@ -592,6 +605,8 @@ function normaliseAssistResult(result: AssistApplyResult): AssistApplyResult {
     final_url: result.final_url ?? null,
     final_error: result.final_error ?? null,
     debug_mode: result.debug_mode ?? false,
+    timing_diagnostics: result.timing_diagnostics ?? {},
+    progress: result.progress ?? {},
     profile_diagnostics: result.profile_diagnostics ?? {},
     jobserve_flow_diagnostics: result.jobserve_flow_diagnostics ?? {},
     upload_diagnostics: result.upload_diagnostics ?? {},
@@ -605,4 +620,14 @@ function objectToList(value: Record<string, unknown> | undefined): Array<Record<
     return [];
   }
   return [value];
+}
+
+function formatElapsed(value: unknown): string {
+  if (typeof value !== "number") {
+    return "Not reported";
+  }
+  if (value < 1000) {
+    return `${value} ms`;
+  }
+  return `${Math.round(value / 100) / 10}s`;
 }

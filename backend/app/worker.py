@@ -17,12 +17,18 @@ def main() -> None:
     status = browser_status()
     chromium = chromium_diagnostics()
     logger.info(
-        "worker_startup service_type=%s queue=%s queue_enabled=%s redis_connected=%s playwright_enabled=%s playwright_installed=%s chromium_available=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_path_source=%s chromium_file_exists=%s chromium_file_executable=%s",
+        "worker_startup service_type=%s queue=%s queue_enabled=%s redis_connected=%s playwright_enabled=%s scrape_timeout_seconds=%s apply_timeout_seconds=%s playwright_step_timeout_ms=%s page_navigation_timeout_ms=%s result_ttl=%s failure_ttl=%s playwright_installed=%s chromium_available=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_path_source=%s chromium_file_exists=%s chromium_file_executable=%s",
         settings.service_type,
         settings.queue_name,
         settings.queue_enabled,
         redis_connected,
         settings.playwright_enabled,
+        settings.scrape_timeout_seconds,
+        settings.apply_timeout_seconds,
+        settings.playwright_step_timeout_ms,
+        settings.page_navigation_timeout_ms,
+        settings.rq_result_ttl_seconds,
+        settings.rq_failure_ttl_seconds,
         status["playwright_installed"],
         status["chromium_available"],
         chromium["playwright_browsers_path"],

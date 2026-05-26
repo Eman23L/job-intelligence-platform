@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.config import settings
 from app.schemas.database import (
     JobSourceCreate,
     JobSourceRead,
@@ -82,6 +83,9 @@ def run_jobserve_search_scrape(
         started.run_id,
         payload.model_dump(),
         job_id=f"jobserve-search-scrape-{started.run_id}",
+        job_timeout=settings.scrape_timeout_seconds,
+        result_ttl=settings.rq_result_ttl_seconds,
+        failure_ttl=settings.rq_failure_ttl_seconds,
     )
     return started
 
@@ -183,5 +187,8 @@ def scrape_source_now(
         source.id,
         request_payload.model_dump(),
         job_id=f"source-scrape-{started.scrape_run_id}",
+        job_timeout=settings.scrape_timeout_seconds,
+        result_ttl=settings.rq_result_ttl_seconds,
+        failure_ttl=settings.rq_failure_ttl_seconds,
     )
     return started

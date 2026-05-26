@@ -2,6 +2,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from types import SimpleNamespace
 from pathlib import Path
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -311,6 +312,30 @@ def test_submit_validation_allows_optional_salary_travel_defaults(db_session) ->
     db_session.commit()
 
     apply_agent._validate_jobserve_submit(db_session, job, user, profile)
+
+
+def test_assist_progress_heartbeat_persists(db_session) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+
+    apply_agent._persist_assist_progress(db_session, job, "search_page_loaded", {"fixture": True}, time.perf_counter())
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "running"
+    assert job.assisted_result["progress"]["current_step"] == "search_page_loaded"
+    assert job.assisted_result["progress"]["last_heartbeat_at"]
+    assert job.assisted_result["timing_diagnostics"]["total_runtime_ms"] >= 0
+
+
+def test_playwright_result_includes_timing_from_fake_browser_runner(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session)
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+
+    def runner(url, candidates, profile, mode, apply_strategy):
+        return AssistApplyResult(status="review_required", timing_diagnostics={"total_runtime_ms": 123}, progress={"current_step": "review_required"})
+
+    result = apply_agent.assist_apply_application(db_session, job, user, browser_runner=runner)
+
+    assert result.timing_diagnostics["total_runtime_ms"] == 123
 
 
 def test_salary_65000_selects_50_to_75_range() -> None:

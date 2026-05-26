@@ -723,6 +723,8 @@ class AssistApplyResult(BaseModel):
     final_url: str | None = None
     final_error: str | None = None
     debug_mode: bool = False
+    timing_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    progress: dict[str, Any] = Field(default_factory=dict)
     profile_diagnostics: dict[str, Any] = Field(default_factory=dict)
     jobserve_flow_diagnostics: dict[str, Any] = Field(default_factory=dict)
     upload_diagnostics: dict[str, Any] = Field(default_factory=dict)

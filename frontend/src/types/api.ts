@@ -247,6 +247,8 @@ export interface AssistApplyResult {
   final_url: string | null;
   final_error: string | null;
   debug_mode: boolean;
+  timing_diagnostics?: Record<string, unknown>;
+  progress?: Record<string, unknown>;
   profile_diagnostics?: Record<string, unknown>;
   jobserve_flow_diagnostics?: Record<string, unknown>;
   upload_diagnostics?: Record<string, unknown>;

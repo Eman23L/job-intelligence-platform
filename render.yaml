@@ -30,6 +30,18 @@ services:
         value: "true"
       - key: QUEUE_NAME
         value: default
+      - key: RQ_RESULT_TTL_SECONDS
+        value: "3600"
+      - key: RQ_FAILURE_TTL_SECONDS
+        value: "86400"
+      - key: SCRAPE_TIMEOUT_SECONDS
+        value: "600"
+      - key: APPLY_TIMEOUT_SECONDS
+        value: "900"
+      - key: PLAYWRIGHT_STEP_TIMEOUT_MS
+        value: "30000"
+      - key: PAGE_NAVIGATION_TIMEOUT_MS
+        value: "60000"
       - key: PLAYWRIGHT_ENABLED
         value: "true"
       - key: PLAYWRIGHT_BROWSERS_PATH
@@ -68,6 +80,18 @@ services:
         value: "true"
       - key: QUEUE_NAME
         value: default
+      - key: RQ_RESULT_TTL_SECONDS
+        value: "3600"
+      - key: RQ_FAILURE_TTL_SECONDS
+        value: "86400"
+      - key: SCRAPE_TIMEOUT_SECONDS
+        value: "600"
+      - key: APPLY_TIMEOUT_SECONDS
+        value: "900"
+      - key: PLAYWRIGHT_STEP_TIMEOUT_MS
+        value: "30000"
+      - key: PAGE_NAVIGATION_TIMEOUT_MS
+        value: "60000"
       - key: PLAYWRIGHT_ENABLED
         value: "true"
       - key: PLAYWRIGHT_BROWSERS_PATH

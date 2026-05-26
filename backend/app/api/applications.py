@@ -76,7 +76,17 @@ def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload
     mode = payload.mode if payload else "review_only"
     debug_mode = bool(payload.debug_mode) if payload else False
     if queue_enabled():
-        enqueue_or_background(background_tasks, run_assist_apply_background, application_id, user.id, mode, debug_mode)
+        enqueue_or_background(
+            background_tasks,
+            run_assist_apply_background,
+            application_id,
+            user.id,
+            mode,
+            debug_mode,
+            job_timeout=settings.apply_timeout_seconds,
+            result_ttl=settings.rq_result_ttl_seconds,
+            failure_ttl=settings.rq_failure_ttl_seconds,
+        )
         logger.info(
             "assist_apply_queued service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s",
             settings.service_type,

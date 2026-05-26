@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import time
 import traceback
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -75,6 +75,10 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     job.assisted_started_at = started_at
     job.last_apply_attempt_at = started_at
     db.commit()
+    progress_started = time.perf_counter()
+
+    def progress_callback(step: str, payload: dict[str, Any]) -> None:
+        _persist_assist_progress(db, job, step, payload, progress_started)
 
     profile = get_profile(db, user)
     if mode == "submit_with_confirmation":
@@ -94,6 +98,7 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
                 debug_mode=True,
                 profile_diagnostics=profile_debug_payload(user, profile, candidates),
                 job_context=jobserve_job_context(job),
+                progress_callback=progress_callback,
             )
         else:
             result = run_playwright_assist(
@@ -104,6 +109,7 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
                 apply_strategy=job.apply_strategy,
                 profile_diagnostics=profile_debug_payload(user, profile, candidates),
                 job_context=jobserve_job_context(job),
+                progress_callback=progress_callback,
             )
     except BrowserAutomationError:
         raise
@@ -177,6 +183,7 @@ def queued_assist_apply_result() -> AssistApplyResult:
         submitted=False,
         warnings=["Assisted apply queued on the browser automation worker."],
         screenshot_path=None,
+        progress={"current_step": "queued", "elapsed_ms": 0},
     )
 
 
@@ -195,6 +202,44 @@ def _store_assist_failure(db: Session, job: Job, message: str, *, error: str | N
     job.assisted_warnings = result.warnings
     job.last_apply_attempt_at = utcnow()
     db.commit()
+
+
+def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str, Any], started_perf: float) -> None:
+    existing = job.assisted_result or {}
+    progress = {
+        "current_step": step,
+        "elapsed_ms": int((time.perf_counter() - started_perf) * 1000),
+        "last_heartbeat_at": utcnow().isoformat(),
+        "message": _progress_message(step),
+    }
+    job.assisted_result = {
+        **existing,
+        "status": existing.get("status") or "running",
+        "filled_fields": existing.get("filled_fields", []),
+        "unfilled_fields": existing.get("unfilled_fields", []),
+        "unfilled_required_fields": existing.get("unfilled_required_fields", []),
+        "uploaded_cv": existing.get("uploaded_cv", False),
+        "submitted": existing.get("submitted", False),
+        "warnings": existing.get("warnings", []),
+        "screenshot_path": existing.get("screenshot_path"),
+        "progress": progress,
+        "timing_diagnostics": {**existing.get("timing_diagnostics", {}), "total_runtime_ms": progress["elapsed_ms"]},
+        "debug_steps": [*existing.get("debug_steps", []), {"step": step, **payload}][-100:],
+    }
+    job.last_apply_attempt_at = utcnow()
+    db.commit()
+
+
+def _progress_message(step: str) -> str:
+    if "browser" in step:
+        return "browser startup"
+    if "search" in step:
+        return "waiting on JobServe"
+    if "cv_upload" in step:
+        return "uploading CV"
+    if "submit" in step or "final_apply" in step or "confirmation" in step:
+        return "submitting application"
+    return step.replace("_", " ")
 
 
 def profile_field_candidates(user: User, profile) -> dict[str, FieldCandidate]:
@@ -297,7 +342,10 @@ def run_playwright_assist(
     debug_mode: bool = False,
     profile_diagnostics: dict[str, Any] | None = None,
     job_context: dict[str, Any] | None = None,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> AssistApplyResult:
+    total_started = time.perf_counter()
+    timing_diagnostics: dict[str, Any] = {}
     diagnostics = chromium_diagnostics()
     logger.info(
         "assist_apply_browser_preflight service_type=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_file_exists=%s chromium_file_executable=%s",
@@ -326,13 +374,19 @@ def run_playwright_assist(
             launch_options = {"headless": headless}
             if executable_path:
                 launch_options["executable_path"] = executable_path
+            browser_started = time.perf_counter()
+            if progress_callback:
+                progress_callback("browser_startup", {"launch_options": {key: value for key, value in launch_options.items() if key != "executable_path"}})
             browser = playwright.chromium.launch(**launch_options)
+            timing_diagnostics["browser_startup_ms"] = int((time.perf_counter() - browser_started) * 1000)
             keep_open_for_review = not headless
             try:
                 page = browser.new_page()
+                page.set_default_timeout(settings.playwright_step_timeout_ms)
+                page.set_default_navigation_timeout(settings.page_navigation_timeout_ms)
                 if apply_strategy == "jobserve_apply_easy":
                     try:
-                        return _run_jobserve_search_to_apply(
+                        result = _run_jobserve_search_to_apply(
                             page,
                             browser,
                             candidates,
@@ -342,13 +396,16 @@ def run_playwright_assist(
                             keep_open_for_review=keep_open_for_review,
                             debug_mode=debug_mode,
                             profile_diagnostics=profile_diagnostics,
+                            progress_callback=progress_callback,
                         )
+                        result.timing_diagnostics = {**result.timing_diagnostics, **timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)}
+                        return result
                     except RuntimeError as exc:
                         if "No matching JobServe search result found" not in str(exc):
                             raise
                         logger.warning("jobserve_search_to_apply_no_match_falling_back error=%s", exc)
                         page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                        return _run_jobserve_modal(
+                        result = _run_jobserve_modal(
                             page,
                             browser,
                             candidates,
@@ -357,7 +414,10 @@ def run_playwright_assist(
                             keep_open_for_review=keep_open_for_review,
                             debug_mode=debug_mode,
                             profile_diagnostics=profile_diagnostics,
+                            progress_callback=progress_callback,
                         )
+                        result.timing_diagnostics = {**result.timing_diagnostics, **timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)}
+                        return result
                 page.goto(url, wait_until="domcontentloaded", timeout=20000)
                 if _captcha_visible(page):
                     warnings.append("Captcha detected; manual review required.")
@@ -400,7 +460,7 @@ def run_playwright_assist(
                     warnings.append("Submit control detected and intentionally not clicked.")
                 if keep_open_for_review:
                     warnings.append("Browser left open for manual review; close it after reviewing the application.")
-                return AssistApplyResult(status="review_required", filled_fields=_dedupe(filled), unfilled_fields=_dedupe(unfilled), unfilled_required_fields=[], uploaded_cv=False, submitted=False, warnings=_dedupe(warnings), screenshot_path=None)
+                return AssistApplyResult(status="review_required", filled_fields=_dedupe(filled), unfilled_fields=_dedupe(unfilled), unfilled_required_fields=[], uploaded_cv=False, submitted=False, warnings=_dedupe(warnings), screenshot_path=None, timing_diagnostics={**timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)})
             finally:
                 if keep_open_for_review:
                     _OPEN_REVIEW_BROWSERS.append(browser)
@@ -451,7 +511,7 @@ def _safety_warnings(job: Job) -> list[str]:
 
 
 class _ApplyDebugRecorder:
-    def __init__(self, page, browser, *, enabled: bool, prefix: str = "jobserve") -> None:
+    def __init__(self, page, browser, *, enabled: bool, prefix: str = "jobserve", progress_callback: Callable[[str, dict[str, Any]], None] | None = None) -> None:
         self.page = page
         self.browser = browser
         self.enabled = enabled
@@ -462,6 +522,7 @@ class _ApplyDebugRecorder:
         self.html_snapshot_paths: list[str] = []
         self.steps: list[dict[str, Any]] = []
         self.final_error: str | None = None
+        self.progress_callback = progress_callback
         if enabled:
             self.dir.mkdir(parents=True, exist_ok=True)
 
@@ -469,13 +530,15 @@ class _ApplyDebugRecorder:
         state: dict[str, Any] = {"step": name, **_page_state(self.page, self.browser), **extra}
         self.steps.append(state)
         logger.info("jobserve_apply_step %s", state)
+        if self.progress_callback is not None:
+            self.progress_callback(name, state)
 
     def screenshot(self, name: str) -> None:
         if not self.enabled:
             return
-        path = self.dir / f"{len(self.screenshot_paths) + 1:02d}_{_slug(name)}.png"
+        path = self.dir / f"{len(self.screenshot_paths) + 1:02d}_{_slug(name)}.jpg"
         try:
-            self.page.screenshot(path=str(path), full_page=True, timeout=8000)
+            self.page.screenshot(path=str(path), full_page=False, type="jpeg", quality=70, timeout=min(settings.playwright_step_timeout_ms, 10000))
             self.screenshot_paths.append(str(path))
             logger.info("jobserve_apply_screenshot_saved path=%s", path)
         except Exception as exc:  # noqa: BLE001
@@ -486,7 +549,7 @@ class _ApplyDebugRecorder:
             return None
         path = self.dir / f"{len(self.html_snapshot_paths) + 1:02d}_{_slug(name)}.html"
         try:
-            html = (target or self.page).content()
+            html = (target or self.page).content()[:500_000]
             path.write_text(html, encoding="utf-8")
             self.html_snapshot_paths.append(str(path))
             logger.info("jobserve_apply_html_snapshot_saved path=%s", path)
@@ -779,7 +842,10 @@ def _run_jobserve_search_to_apply(
     keep_open_for_review: bool,
     debug_mode: bool = False,
     profile_diagnostics: dict[str, Any] | None = None,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> AssistApplyResult:
+    flow_started = time.perf_counter()
+    timing_diagnostics: dict[str, Any] = {}
     flow: dict[str, Any] = {
         "mode": "search_to_apply",
         "search_url": JOBSERVE_SEARCH_URL,
@@ -812,9 +878,11 @@ def _run_jobserve_search_to_apply(
     uploaded_cv = False
     submitted = False
     status = "review_required"
-    debug = _ApplyDebugRecorder(page, browser, enabled=debug_mode, prefix="jobserve_search")
+    debug = _ApplyDebugRecorder(page, browser, enabled=debug_mode, prefix="jobserve_search", progress_callback=progress_callback)
 
-    page.goto(JOBSERVE_SEARCH_URL, wait_until="domcontentloaded", timeout=25000)
+    search_started = time.perf_counter()
+    _retry_step("search page load", lambda: page.goto(JOBSERVE_SEARCH_URL, wait_until="domcontentloaded", timeout=settings.page_navigation_timeout_ms))
+    timing_diagnostics["search_page_load_ms"] = int((time.perf_counter() - search_started) * 1000)
     flow["search_page_loaded"] = True
     debug.step("jobserve_search_page_loaded", jobserve_flow_diagnostics=flow)
     debug.screenshot("search_page_loaded")
@@ -835,7 +903,9 @@ def _run_jobserve_search_to_apply(
     debug.step("jobserve_search_submitted", jobserve_flow_diagnostics=flow)
     debug.screenshot("search_results_loaded")
 
+    match_started = time.perf_counter()
     selected = _select_jobserve_result(page, job_context, flow)
+    timing_diagnostics["result_matching_ms"] = int((time.perf_counter() - match_started) * 1000)
     if selected is None:
         debug.final_error = "No matching JobServe search result found."
         debug.html("no_matching_job_found", page)
@@ -850,10 +920,12 @@ def _run_jobserve_search_to_apply(
         debug.final_error = "Apply button missing after selecting JobServe search result."
         debug.html("apply_button_missing", page)
         raise RuntimeError(debug.final_error)
-    apply_target.click(timeout=8000)
+    modal_started = time.perf_counter()
+    _retry_step("apply button click", lambda: apply_target.click(timeout=settings.playwright_step_timeout_ms))
     flow["apply_button_clicked"] = True
     page.wait_for_timeout(1500)
-    context = _find_jobserve_form_context(page, browser)
+    context = _retry_step("modal open", lambda: _find_jobserve_form_context(page, browser))
+    timing_diagnostics["modal_open_ms"] = int((time.perf_counter() - modal_started) * 1000)
     flow["modal_opened"] = context is not None
     debug.step("jobserve_apply_modal_wait_complete", jobserve_flow_diagnostics=flow, target_context=_context_name(context) if context else None)
     debug.screenshot("apply_modal_wait_complete")
@@ -880,6 +952,7 @@ def _run_jobserve_search_to_apply(
         debug=debug,
     )
     uploaded_cv = fill_result["uploaded_cv"]
+    timing_diagnostics.update(fill_result.get("timing_diagnostics", {}))
     debug.step("jobserve_application_form_filled", jobserve_flow_diagnostics=flow, filled_fields=_dedupe(filled), unfilled_required_fields=_dedupe(unfilled_required))
     debug.screenshot("after_application_form_fill")
 
@@ -893,12 +966,14 @@ def _run_jobserve_search_to_apply(
             debug.final_error = "Submit button not found in JobServe apply form."
             debug.html("submit_button_not_found", context)
             raise RuntimeError(debug.final_error)
-        apply_button.click(timeout=8000)
+        submit_started = time.perf_counter()
+        apply_button.click(timeout=settings.playwright_step_timeout_ms)
         flow["final_apply_clicked"] = True
         debug.step("jobserve_final_apply_clicked", jobserve_flow_diagnostics=flow)
         success = page.get_by_text("Your application has been submitted.").first
         try:
-            success.wait_for(timeout=15000)
+            success.wait_for(timeout=settings.page_navigation_timeout_ms)
+            timing_diagnostics["submit_wait_ms"] = int((time.perf_counter() - submit_started) * 1000)
             flow["submitted_confirmation_detected"] = True
             submitted = True
             status = "submitted"
@@ -925,6 +1000,8 @@ def _run_jobserve_search_to_apply(
         screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
         profile_diagnostics=profile_diagnostics,
         jobserve_flow_diagnostics=flow,
+        timing_diagnostics={**timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
+        progress={"current_step": "submitted" if submitted else "review_required", "elapsed_ms": int((time.perf_counter() - flow_started) * 1000), "last_heartbeat_at": utcnow().isoformat()},
         upload_diagnostics=upload_diagnostics,
         select_diagnostics=select_diagnostics,
         exceptions=exceptions,
@@ -1183,10 +1260,11 @@ def _fill_jobserve_application_form(
     cv_path = _cv_upload_path(profile, upload_diagnostics)
     debug.step("before_cv_upload", upload_diagnostics=upload_diagnostics)
     uploaded_cv = False
+    upload_started = time.perf_counter()
     if cv_path and upload_diagnostics.get("path_exists") and upload_diagnostics["file_input_detected"]:
         try:
             file_input = context.locator("input[type=file], #filCV, input#filCV").first
-            file_input.set_input_files(cv_path, timeout=5000)
+            _retry_step("cv upload", lambda: file_input.set_input_files(cv_path, timeout=settings.playwright_step_timeout_ms))
             uploaded_cv = True
             filled.append("CV upload")
             upload_diagnostics["set_input_files_succeeded"] = True
@@ -1206,11 +1284,27 @@ def _fill_jobserve_application_form(
         unfilled_required.append("CV upload")
         debug.html("cv_upload_failed", context)
     debug.screenshot("after_cv_upload_attempt")
+    timing_diagnostics = {"cv_upload_ms": int((time.perf_counter() - upload_started) * 1000)}
 
     if mode == "review_only":
-        return {"uploaded_cv": uploaded_cv}
+        return {"uploaded_cv": uploaded_cv, "timing_diagnostics": timing_diagnostics}
 
-    return {"uploaded_cv": uploaded_cv}
+    return {"uploaded_cv": uploaded_cv, "timing_diagnostics": timing_diagnostics}
+
+
+def _retry_step(name: str, action: Callable[[], Any], *, attempts: int = 2, delay_ms: int = 1000) -> Any:
+    last_exc: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return action()
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.warning("jobserve_step_retryable_failure step=%s attempt=%s attempts=%s error=%s", name, attempt, attempts, exc)
+            if attempt < attempts:
+                time.sleep(delay_ms / 1000)
+    if last_exc is not None:
+        raise last_exc
+    return None
 
 
 def _handle_optional_dropdown_if_present(
@@ -1266,7 +1360,9 @@ def _run_jobserve_modal(
     keep_open_for_review: bool,
     debug_mode: bool = False,
     profile_diagnostics: dict[str, Any] | None = None,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> AssistApplyResult:
+    flow_started = time.perf_counter()
     filled: list[str] = []
     unfilled_required: list[str] = []
     unfilled: list[str] = []
@@ -1278,7 +1374,7 @@ def _run_jobserve_modal(
     upload_diagnostics: dict[str, Any] = {}
     select_diagnostics: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
-    debug = _ApplyDebugRecorder(page, browser, enabled=debug_mode)
+    debug = _ApplyDebugRecorder(page, browser, enabled=debug_mode, progress_callback=progress_callback)
     debug.step("initial_page_loaded")
     debug.screenshot("initial_page_loaded")
 
@@ -1297,6 +1393,7 @@ def _run_jobserve_modal(
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
             profile_diagnostics=profile_diagnostics,
+            timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
             upload_diagnostics=upload_diagnostics,
             select_diagnostics=select_diagnostics,
             exceptions=exceptions,
@@ -1337,6 +1434,7 @@ def _run_jobserve_modal(
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
             profile_diagnostics=profile_diagnostics,
+            timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
             upload_diagnostics=upload_diagnostics,
             select_diagnostics=select_diagnostics,
             exceptions=exceptions,
@@ -1366,6 +1464,7 @@ def _run_jobserve_modal(
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
             profile_diagnostics=profile_diagnostics,
+            timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
             upload_diagnostics=upload_diagnostics,
             select_diagnostics=select_diagnostics,
             exceptions=exceptions,
@@ -1551,6 +1650,8 @@ def _run_jobserve_modal(
         warnings=_dedupe(warnings),
         screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
         profile_diagnostics=profile_diagnostics,
+        timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
+        progress={"current_step": "submitted" if submitted else "review_required", "elapsed_ms": int((time.perf_counter() - flow_started) * 1000), "last_heartbeat_at": utcnow().isoformat()},
         upload_diagnostics=upload_diagnostics,
         select_diagnostics=select_diagnostics,
         exceptions=exceptions,
