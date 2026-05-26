@@ -8,7 +8,7 @@ import { AvailabilityBadge } from "@/components/AvailabilityBadge";
 import { RecommendationActionBadge } from "@/components/RecommendationActionBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyResult, JobScorecard } from "@/types/api";
 
 const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
@@ -181,7 +181,11 @@ export default function ApplicationsPage() {
         message: result.submitted ? "JobServe application submitted." : "Assisted apply started. Review the browser manually before taking any next action."
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to assist apply");
+      if (err instanceof ApiError && err.code === "worker_unavailable") {
+        setNotice({ type: "error", message: "Browser automation worker is offline" });
+      } else {
+        setError(err instanceof Error ? err.message : "Unable to assist apply");
+      }
     } finally {
       setActionLoading(null);
     }

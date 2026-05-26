@@ -58,10 +58,12 @@ if (typeof window !== "undefined") {
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -89,14 +91,20 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
 
     if (!response.ok) {
       let detail = `Request failed with status ${response.status}`;
+      let code: string | undefined;
       try {
         const body = await response.json();
-        detail = typeof body.detail === "string" ? body.detail : detail;
+        if (typeof body.detail === "string") {
+          detail = body.detail;
+        } else if (body.detail && typeof body.detail === "object") {
+          code = typeof body.detail.error === "string" ? body.detail.error : undefined;
+          detail = typeof body.detail.message === "string" ? body.detail.message : detail;
+        }
       } catch {
         // Keep the generic status message.
       }
-      const error = new ApiError(detail, response.status);
-      console.error("API request failed", { url, status: response.status, detail });
+      const error = new ApiError(detail, response.status, code);
+      console.error("API request failed", { url, status: response.status, detail, code });
       throw error;
     }
 

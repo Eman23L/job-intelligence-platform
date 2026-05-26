@@ -715,6 +715,14 @@ class AssistApplyRequest(BaseModel):
     mode: str = "review_only"
 
 
+class BrowserStatus(BaseModel):
+    queue_enabled: bool
+    redis_connected: bool
+    playwright_installed: bool
+    chromium_available: bool
+    worker_running: bool
+
+
 class ApplicationsPrepareResult(BaseModel):
     queued: int
     job_ids: list[int]

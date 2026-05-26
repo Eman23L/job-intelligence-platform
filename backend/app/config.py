@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     queue_enabled: bool = Field(default=False, alias="QUEUE_ENABLED")
     queue_name: str = Field(default="default", alias="QUEUE_NAME")
+    playwright_enabled: bool = Field(default=False, alias="PLAYWRIGHT_ENABLED")
 
     @field_validator("database_url", mode="before")
     @classmethod

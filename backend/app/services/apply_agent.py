@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Job, JobScore, User
 from app.schemas.database import AssistApplyResult
+from app.services.browser_automation import validate_browser_automation_availability
 from app.services.job_availability import check_job_availability
 from app.services.profile import get_profile
 from app.services.run_tracking import utcnow
@@ -22,6 +23,13 @@ ASSIST_MODES = {"review_only", "submit_with_confirmation"}
 LEGAL_FIELD_PATTERN = re.compile(r"\b(visa|sponsor|sponsorship|authorized|authorised|eligibility|criminal|disability|veteran)\b", re.I)
 SUBMIT_PATTERN = re.compile(r"\b(submit|send application|apply now|final)\b", re.I)
 _OPEN_REVIEW_BROWSERS: list[Any] = []
+
+
+class BrowserAutomationError(RuntimeError):
+    def __init__(self, error: str, message: str) -> None:
+        super().__init__(message)
+        self.error = error
+        self.message = message
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,8 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
             if browser_runner
             else run_playwright_assist(job.canonical_url, candidates, profile=profile, mode=mode, apply_strategy=job.apply_strategy)
         )
+    except BrowserAutomationError:
+        raise
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
 
@@ -126,11 +136,14 @@ def classify_form_field(label_text: str, input_type: str = "", autocomplete: str
 
 
 def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate], *, profile=None, mode: str = "review_only", apply_strategy: str = "unknown") -> AssistApplyResult:
+    availability = validate_browser_automation_availability(require_worker=settings.queue_enabled)
+    if not availability.available:
+        raise BrowserAutomationError(availability.error or "worker_unavailable", availability.message or "Browser automation worker is offline.")
     try:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("Browser automation worker not available in this environment.") from exc
+        raise BrowserAutomationError("playwright_not_installed", "Playwright is not installed in this environment.") from exc
 
     headless = settings.app_env.lower() in {"production", "prod", "render"}
     filled: list[str] = []
@@ -194,7 +207,10 @@ def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate], *, pr
                     browser.close()
     except PlaywrightError as exc:
         logger.exception("apply_agent_browser_failed url=%s error=%s", url, exc)
-        raise RuntimeError("Browser automation worker not available in this environment.") from exc
+        message = str(exc)
+        if "Executable doesn't exist" in message or "playwright install" in message:
+            raise BrowserAutomationError("chromium_not_installed", "Playwright Chromium is not installed in this environment.") from exc
+        raise BrowserAutomationError("worker_unavailable", "Browser automation worker is offline.") from exc
 
 
 def _validate_application(job: Job) -> None:
