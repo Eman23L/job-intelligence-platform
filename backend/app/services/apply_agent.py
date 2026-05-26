@@ -1044,6 +1044,8 @@ def _run_jobserve_search_to_apply(
         raise RuntimeError(debug.final_error)
     modal_identity = _jobserve_modal_identity(context)
     flow["modal_identity"] = modal_identity
+    debug.step("jobserve_application_modal_opened", jobserve_flow_diagnostics=flow, modal_identity=modal_identity)
+    debug.screenshot("application_modal_opened")
     if _jobserve_identity_clear_mismatch(modal_identity, verified_identity):
         flow["blocked_reason"] = "JobServe application modal does not match intended job"
         warnings.append(flow["blocked_reason"])
@@ -1136,6 +1138,7 @@ def _run_jobserve_search_to_apply(
                 "intended_job": job_context,
                 "verified_job": verified_identity,
                 "modal_job": modal_identity,
+                "modal_title": modal_identity.get("title") or "",
             },
         )
         _click_locator_resilient(page, apply_button)
@@ -2231,7 +2234,8 @@ def _fill_jobserve_application_form(
         flow["email_filled"] = True
         flow["email_value"] = email.value if email else None
         profile_diagnostics["mapped_fields"]["email"] = {"mapped": True, "label": email_label}
-        _report_jobserve_step(step_callback, "jobserve_apply_email_filled", succeeded=True, label=email_label)
+        _report_jobserve_step(step_callback, "jobserve_apply_email_filled", succeeded=True, label=email_label, email_value=email.value if email else None)
+        debug.screenshot("application_email_filled")
     else:
         unfilled_required.append("Email Address")
         profile_diagnostics["mapped_fields"]["email"] = {"mapped": False, "reason": "email field missing or profile email missing"}
@@ -2240,6 +2244,7 @@ def _fill_jobserve_application_form(
 
     _ensure_confirmation_email_checked(context, flow)
     _report_jobserve_step(step_callback, "jobserve_apply_confirmation_email_checked", succeeded=flow.get("confirmation_email_checked"))
+    debug.screenshot("application_confirmation_checkbox_checked")
 
     working_status = candidates.get("work_authorization")
     working_status_value = working_status.value if working_status else JOBSERVE_DEFAULTS["working_status"]
@@ -2249,6 +2254,7 @@ def _fill_jobserve_application_form(
         flow["uk_status_value"] = working_status_value
         profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": True, "label": "Working status in UK", "value": working_status_value}
         _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=True, value=working_status_value)
+        debug.screenshot("application_working_status_selected")
     else:
         unfilled_required.append("Working status in UK")
         profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": False, "reason": "working status dropdown missing or configured value missing"}
@@ -2311,7 +2317,7 @@ def _fill_jobserve_application_form(
             upload_diagnostics["set_input_files_succeeded"] = True
             upload_diagnostics["displayed_file_name"] = _uploaded_cv_display_name(context, Path(cv_path).name)
             flow["cv_upload_succeeded"] = True
-            _report_jobserve_step(step_callback, "jobserve_apply_cv_uploaded", succeeded=True, path=cv_path)
+            _report_jobserve_step(step_callback, "jobserve_apply_cv_uploaded", succeeded=True, path=cv_path, file_name=Path(cv_path).name, displayed_file_name=upload_diagnostics["displayed_file_name"])
         except Exception as exc:  # noqa: BLE001
             payload = _exception_payload("cv_upload", exc, upload_diagnostics=dict(upload_diagnostics))
             exceptions.append(payload)

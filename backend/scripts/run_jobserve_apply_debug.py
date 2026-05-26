@@ -88,6 +88,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--submit", action="store_true", help="Click the final JobServe Apply button. Defaults to review-only.")
     parser.add_argument("--auto-submit", action="store_true", help="Alias for --submit.")
     parser.add_argument("--pause-each-step", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--pause-application-steps", action="store_true", help="Pause after each JobServe application modal action.")
     parser.add_argument("--slow-mo-ms", type=int, default=500)
     parser.add_argument("--devtools", action="store_true")
     return parser.parse_args(argv)
@@ -331,10 +332,26 @@ def validate_local_submit_identity(args: argparse.Namespace) -> None:
     raise LocalSubmitIdentityError("Submit mode needs intended job identity. Pass --use-current-selected-job or --intended-title/--intended-company.")
 
 
+APPLICATION_STEPS = {
+    "jobserve_apply_modal_wait_complete",
+    "jobserve_apply_email_filled",
+    "jobserve_apply_confirmation_email_checked",
+    "jobserve_apply_working_status_selected",
+    "jobserve_apply_cv_uploaded",
+    "jobserve_application_form_filled",
+    "jobserve_about_to_submit",
+    "jobserve_final_apply_clicked",
+    "jobserve_submitted_message_seen",
+    "jobserve_registration_toggle_disabled",
+    "jobserve_modal_closed",
+}
+
+
 class TerminalProgress:
-    def __init__(self, *, pause_each_step: bool, submit_enabled: bool = False) -> None:
+    def __init__(self, *, pause_each_step: bool, submit_enabled: bool = False, pause_application_steps: bool = False) -> None:
         self.pause_each_step = pause_each_step
         self.submit_enabled = submit_enabled
+        self.pause_application_steps = pause_application_steps
         self.seen: set[str] = set()
 
     def __call__(self, step: str, payload: dict[str, Any]) -> None:
@@ -365,6 +382,31 @@ class TerminalProgress:
                 f" intended={guard.get('intended_job')} verified={guard.get('verified_job')} modal={guard.get('modal_job')} "
                 f"email={guard.get('email_filled')} cv={guard.get('cv_uploaded')} status={guard.get('working_status_selected')}"
             )
+        elif step == "jobserve_apply_modal_wait_complete":
+            flow = payload.get("jobserve_flow_diagnostics") or {}
+            modal = flow.get("modal_identity") or {}
+            message = "application modal opened"
+            suffix = f" modal_title={modal.get('title') or '(unknown)'}"
+        elif step == "jobserve_apply_email_filled" and payload.get("succeeded"):
+            message = f"email filled: {payload.get('email_value') or '(unknown)'}"
+            suffix = ""
+        elif step == "jobserve_apply_confirmation_email_checked" and payload.get("succeeded"):
+            message = "confirmation checkbox ticked"
+            suffix = ""
+        elif step == "jobserve_apply_working_status_selected" and payload.get("succeeded"):
+            message = f"working status selected: {payload.get('value') or 'UK Citizen'}"
+            suffix = ""
+        elif step == "jobserve_apply_cv_uploaded" and payload.get("succeeded"):
+            message = f"CV uploaded: {payload.get('file_name') or payload.get('path') or '(unknown)'}"
+            suffix = ""
+        elif step == "jobserve_final_apply_clicked":
+            message = "final Apply clicked"
+        elif step == "jobserve_submitted_message_seen":
+            message = "submitted message seen"
+        elif step == "jobserve_registration_toggle_disabled":
+            message = "job seeker account toggle turned off"
+        elif step == "jobserve_modal_closed":
+            message = "application modal closed"
         elif "jobserve_flow_diagnostics" in payload:
             flow = payload["jobserve_flow_diagnostics"]
             selected = flow.get("selected_job") if isinstance(flow, dict) else None
@@ -384,13 +426,14 @@ class TerminalProgress:
             elif selected:
                 suffix = f" selected={selected.get('title') or selected.get('text') or selected.get('href')}"
         print(f"[jobserve-debug] {message}{suffix}", flush=True)
-        if self.pause_each_step and self.submit_enabled and step == "jobserve_application_form_filled":
+        should_pause = self.pause_each_step or (self.pause_application_steps and step in APPLICATION_STEPS)
+        if should_pause and self.submit_enabled and step == "jobserve_application_form_filled":
             return
-        if self.pause_each_step and self.submit_enabled and step == "jobserve_about_to_submit" and step not in self.seen:
+        if should_pause and self.submit_enabled and step == "jobserve_about_to_submit" and step not in self.seen:
             self.seen.add(step)
-            input("Ready to submit verified JobServe application. Press Enter to submit.")
+            input("Ready to click JobServe modal Apply. Press Enter to continue.")
             return
-        if self.pause_each_step and step not in self.seen:
+        if should_pause and step not in self.seen:
             self.seen.add(step)
             input("Press Enter to continue...")
 
@@ -413,7 +456,7 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
         page = context.new_page()
         try:
-            result = run_shared_jobserve_flow(page, browser, args, TerminalProgress(pause_each_step=args.pause_each_step, submit_enabled=submit_requested(args)))
+            result = run_shared_jobserve_flow(page, browser, args, TerminalProgress(pause_each_step=args.pause_each_step, submit_enabled=submit_requested(args), pause_application_steps=args.pause_application_steps))
             if result.submitted:
                 print("[jobserve-debug] submitted successfully", flush=True)
                 print(f"[jobserve-debug] confirmation text: {result.confirmation_text or '(not captured)'}", flush=True)

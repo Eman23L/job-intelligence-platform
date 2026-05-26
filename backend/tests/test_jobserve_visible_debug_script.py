@@ -43,6 +43,7 @@ def test_jobserve_visible_debug_cli_args_parse_and_submit_defaults_false(tmp_pat
     assert args.submit is False
     assert args.auto_submit is False
     assert args.pause_each_step is False
+    assert args.pause_application_steps is False
     assert args.slow_mo_ms == 500
 
 
@@ -375,7 +376,48 @@ def test_jobserve_visible_debug_submit_checkpoint_waits_for_enter_before_final_c
         },
     )
 
-    assert prompts == ["Ready to submit verified JobServe application. Press Enter to submit."]
+    assert prompts == ["Ready to click JobServe modal Apply. Press Enter to continue."]
+
+
+def test_jobserve_visible_debug_pause_application_steps_only_pauses_modal_steps(monkeypatch) -> None:
+    module = _load_script_module()
+    prompts = []
+    progress = module.TerminalProgress(pause_each_step=False, submit_enabled=True, pause_application_steps=True)
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "")
+
+    progress("jobserve_search_form_filled", {})
+    progress("jobserve_apply_email_filled", {"succeeded": True, "email_value": "me@example.com"})
+
+    assert prompts == ["Press Enter to continue..."]
+
+
+def test_jobserve_visible_debug_pause_application_steps_submit_prompt(monkeypatch) -> None:
+    module = _load_script_module()
+    prompts = []
+    progress = module.TerminalProgress(pause_each_step=False, submit_enabled=True, pause_application_steps=True)
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "")
+
+    progress(
+        "jobserve_about_to_submit",
+        {
+            "submit_guard": {
+                "email_filled": True,
+                "email_value": "me@example.com",
+                "working_status_selected": True,
+                "working_status_value": "UK Citizen",
+                "cv_uploaded": True,
+                "identity_verified": True,
+                "final_apply_click_enabled": True,
+                "intended_job": {"title": "AI Engineer", "company_name": "Example Ltd"},
+                "verified_job": {"title": "AI Engineer", "company": "Example Ltd"},
+                "modal_job": {"title": "AI Engineer", "company": "Example Ltd"},
+            }
+        },
+    )
+
+    assert prompts == ["Ready to click JobServe modal Apply. Press Enter to continue."]
 
 
 def test_jobserve_visible_debug_review_only_checkpoint_uses_safe_prompt(monkeypatch) -> None:
