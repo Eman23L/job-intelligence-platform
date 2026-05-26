@@ -186,6 +186,15 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
                 print("[jobserve-debug] ready to submit; review-only mode did not click final Apply", flush=True)
             input("Press Enter to close the visible browser...")
             return result
+        except Exception:
+            print("[jobserve-debug] flow failed; browser is being kept open for inspection", flush=True)
+            try:
+                page.screenshot(path=str(DEBUG_ROOT / "search-failure-before-close.jpg"), full_page=False, type="jpeg", quality=80)
+                print(f"[jobserve-debug] failure screenshot: {DEBUG_ROOT / 'search-failure-before-close.jpg'}", flush=True)
+            except Exception:
+                pass
+            input("Press Enter to close the visible browser...")
+            raise
         finally:
             context.tracing.stop(path=str(trace_path))
             context.close()

@@ -379,6 +379,76 @@ def test_jobserve_dropdown_helper_clicks_visible_custom_option() -> None:
         assert diagnostics[-1]["fallback_used"] == "visible_text"
 
 
+def test_jobserve_search_clicks_button_element() -> None:
+    diagnostics: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <button onclick="document.body.innerHTML = '<article data-jobid=&quot;1&quot;>AI Engineer</article>'">Search</button>
+            """
+        )
+
+        assert apply_agent._click_jobserve_search(page, diagnostics) is True
+
+        assert diagnostics["selector_used"] == "role_button_search"
+        assert diagnostics["click_strategy"]
+        assert diagnostics["results_wait"]["job_entries"] is True
+
+
+def test_jobserve_search_clicks_input_submit() -> None:
+    diagnostics: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <input type="submit" value="Search" onclick="document.body.innerHTML = '<div class=&quot;job-result&quot;>AI Engineer</div>'" />
+            """
+        )
+
+        assert apply_agent._click_jobserve_search(page, diagnostics) is True
+
+        assert diagnostics["selector_used"] in {"input_submit_value_search", "role_button_search"}
+        assert diagnostics["input_submit_buttons"][0]["value"] == "Search"
+
+
+def test_jobserve_search_enter_key_fallback() -> None:
+    diagnostics: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <input name="keywords" onkeydown="if (event.key === 'Enter') document.body.innerHTML = '<article data-jobid=&quot;2&quot;>AI Engineer</article>'" />
+            """
+        )
+
+        assert apply_agent._click_jobserve_search(page, diagnostics) is True
+
+        assert diagnostics["selector_used"] == "enter_key_fallback"
+        assert diagnostics["results_wait"]["job_entries"] is True
+
+
+def test_jobserve_results_wait_detection() -> None:
+    diagnostics: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content("<div>42 jobs found</div><div class='job-result'>AI Engineer</div>")
+
+        assert apply_agent._wait_for_jobserve_results(page, page.url, diagnostics) is True
+
+        assert diagnostics["result_count_text"] is True
+        assert diagnostics["job_entries"] is True
+
+
+def test_jobserve_search_click_failure_returns_diagnostic() -> None:
+    diagnostics: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content("<div>No search control</div>")
+
+        assert apply_agent._click_jobserve_search(page, diagnostics) is False
+
+        assert diagnostics["failure_reason"]
+        assert "visible_buttons" in diagnostics
+        assert "input_submit_buttons" in diagnostics
+        assert "search_links" in diagnostics
+
+
 def test_submit_validation_allows_optional_salary_travel_defaults(db_session) -> None:
     user, job = _seed_application(db_session, jobserve=True)
     profile = UserProfile(user_id=user.id, cv_text="CV", email="apply-agent@example.invalid", cv_file_bytes=b"cv", cv_file_name="cv.pdf")

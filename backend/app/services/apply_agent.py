@@ -893,12 +893,19 @@ def _run_jobserve_search_to_apply(
         raise RuntimeError(debug.final_error)
     debug.step("jobserve_search_form_filled", jobserve_flow_diagnostics=flow)
 
-    if not _click_jobserve_search(page):
+    search_click_diagnostics: dict[str, Any] = {}
+    if not _click_jobserve_search(page, search_click_diagnostics):
+        flow["search_click_diagnostics"] = search_click_diagnostics
         debug.final_error = "JobServe search button could not be clicked."
+        debug.screenshot("search_button_click_failed")
         debug.html("search_form_failed", page)
         raise RuntimeError(debug.final_error)
     flow["search_button_clicked"] = True
-    page.wait_for_load_state("domcontentloaded", timeout=20000)
+    flow["search_click_diagnostics"] = search_click_diagnostics
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=20000)
+    except Exception:  # noqa: BLE001
+        pass
     page.wait_for_timeout(1200)
     debug.step("jobserve_search_submitted", jobserve_flow_diagnostics=flow)
     debug.screenshot("search_results_loaded")
@@ -1529,18 +1536,196 @@ def _select_all_jobserve_industries(
     )
 
 
-def _click_jobserve_search(page) -> bool:
-    for locator in [
-        page.get_by_role("button", name=re.compile(r"search", re.I)).first,
-        page.locator("input[type=submit], button[type=submit]").first,
-        page.get_by_text(re.compile(r"^search$", re.I)).first,
+def _click_jobserve_search(page, diagnostics: dict[str, Any] | None = None) -> bool:
+    details: dict[str, Any] = {
+        "current_url": _safe_url(page),
+        "page_title": _safe_title(page),
+        "visible_buttons": _visible_button_inventory(page),
+        "input_submit_buttons": _input_submit_inventory(page),
+        "search_links": _search_link_inventory(page),
+        "selector_used": None,
+        "button_bounding_box": None,
+        "button_enabled": None,
+        "button_visible": None,
+        "click_strategy": None,
+        "click_error": None,
+        "results_wait": {},
+        "final_url": None,
+        "final_title": None,
+    }
+    start_url = _safe_url(page)
+    candidates = [
+        ("role_button_search", page.get_by_role("button", name=re.compile(r"^\\s*search\\s*$", re.I)).first),
+        ("input_submit_value_search", page.locator('input[type="submit" i][value="Search" i], input[type="button" i][value="Search" i]').first),
+        ("button_text_search", page.locator('button:has-text("Search"), input:has-text("Search")').first),
+        ("search_button_near_reset", page.locator('form:has-text("Reset") button:has-text("Search"), form:has-text("Reset") input[value="Search" i]').first),
+        ("blue_search_button", page.locator('form button[class*="blue" i], form input[class*="blue" i], form .btn-primary, form [class*="search" i]').first),
+        ("text_search", page.get_by_text(re.compile(r"^\\s*search\\s*$", re.I)).last),
+    ]
+    errors: list[str] = []
+    for name, locator in candidates:
+        clicked, state = _click_jobserve_search_candidate(page, locator)
+        details["selector_used"] = name
+        details["button_bounding_box"] = state.get("bounding_box")
+        details["button_enabled"] = state.get("enabled")
+        details["button_visible"] = state.get("visible")
+        details["click_strategy"] = state.get("strategy")
+        details["click_error"] = state.get("error")
+        if clicked:
+            if _wait_for_jobserve_results(page, start_url, details["results_wait"]):
+                details["final_url"] = _safe_url(page)
+                details["final_title"] = _safe_title(page)
+                if diagnostics is not None:
+                    diagnostics.update(details)
+                return True
+            errors.append(f"{name}: clicked but results did not load")
+        else:
+            errors.append(f"{name}: {state.get('error') or 'not clickable'}")
+
+    enter_clicked, enter_error = _press_enter_to_submit_jobserve_search(page)
+    details["selector_used"] = "enter_key_fallback"
+    details["click_strategy"] = "press_enter"
+    details["click_error"] = enter_error
+    if enter_clicked and _wait_for_jobserve_results(page, start_url, details["results_wait"]):
+        details["final_url"] = _safe_url(page)
+        details["final_title"] = _safe_title(page)
+        if diagnostics is not None:
+            diagnostics.update(details)
+        return True
+    errors.append(f"enter_key_fallback: {enter_error or 'results did not load'}")
+    details["failure_reason"] = "; ".join(errors[-8:])
+    details["final_url"] = _safe_url(page)
+    details["final_title"] = _safe_title(page)
+    if diagnostics is not None:
+        diagnostics.update(details)
+    return False
+
+
+def _click_jobserve_search_candidate(page, locator) -> tuple[bool, dict[str, Any]]:
+    state: dict[str, Any] = {"visible": None, "enabled": None, "bounding_box": None, "strategy": None, "error": None}
+    try:
+        state["visible"] = locator.is_visible(timeout=800)
+        state["enabled"] = locator.is_enabled(timeout=800)
+        state["bounding_box"] = locator.bounding_box(timeout=800)
+    except Exception as exc:  # noqa: BLE001
+        state["error"] = f"inspect failed: {exc}"
+        return False, state
+    for strategy, action in [
+        ("normal_click", lambda: locator.click(timeout=2500)),
+        ("force_click", lambda: locator.click(timeout=2500, force=True)),
+        ("js_click", lambda: locator.evaluate("element => element.click()", timeout=1000)),
+        ("coordinate_click", lambda: _click_locator_center(page, locator)),
     ]:
         try:
-            locator.click(timeout=3000)
-            return True
-        except Exception:  # noqa: BLE001
+            action()
+            state["strategy"] = strategy
+            state["error"] = None
+            return True, state
+        except Exception as exc:  # noqa: BLE001
+            state["error"] = f"{strategy}: {exc}"
+    return False, state
+
+
+def _click_locator_center(page, locator) -> None:
+    box = locator.bounding_box(timeout=1000)
+    if not box:
+        raise RuntimeError("No bounding box for coordinate click")
+    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+
+
+def _press_enter_to_submit_jobserve_search(page) -> tuple[bool, str | None]:
+    for locator in [
+        page.locator('input[name*="keyword" i], input[id*="keyword" i], input[type=search]').first,
+        page.locator('input[name*="location" i], input[id*="location" i]').first,
+        page.locator("form input").first,
+    ]:
+        try:
+            locator.press("Enter", timeout=1500)
+            return True, None
+        except Exception as exc:  # noqa: BLE001
+            last = str(exc)
             continue
-    return False
+    return False, last if "last" in locals() else "No searchable input accepted Enter"
+
+
+def _wait_for_jobserve_results(page, start_url: str | None, diagnostics: dict[str, Any]) -> bool:
+    checks = {
+        "url_changed": False,
+        "jobsearch_url": False,
+        "result_count_text": False,
+        "job_entries": False,
+        "job_list_column": False,
+    }
+    try:
+        page.wait_for_load_state("networkidle", timeout=12000)
+    except Exception as exc:  # noqa: BLE001
+        diagnostics["networkidle_error"] = str(exc)
+    try:
+        page.wait_for_timeout(800)
+    except Exception:  # noqa: BLE001
+        pass
+    current_url = _safe_url(page)
+    checks["url_changed"] = bool(start_url and current_url and current_url != start_url)
+    checks["jobsearch_url"] = bool(current_url and re.search(r"JobSearch|Job-Search|shid=", current_url, re.I))
+    try:
+        body_text = page.locator("body").inner_text(timeout=1500)
+        checks["result_count_text"] = bool(re.search(r"\\b\\d+\\s+(jobs?|results?)\\b|jobs? found|results? found", body_text, re.I))
+    except Exception as exc:  # noqa: BLE001
+        diagnostics["body_text_error"] = str(exc)
+    try:
+        checks["job_entries"] = page.locator('a[href*="/job/"], a[href*="/gb/en/job"], article, .job, .job-result, .JobResult, [data-jobid]').count() > 0
+    except Exception as exc:  # noqa: BLE001
+        diagnostics["job_entries_error"] = str(exc)
+    try:
+        checks["job_list_column"] = page.locator('[id*="job" i], [class*="job" i], [id*="result" i], [class*="result" i]').count() > 0
+    except Exception as exc:  # noqa: BLE001
+        diagnostics["job_list_error"] = str(exc)
+    diagnostics.update(checks)
+    diagnostics["final_url"] = current_url
+    diagnostics["final_title"] = _safe_title(page)
+    return any(checks.values())
+
+
+def _visible_button_inventory(page) -> list[dict[str, Any]]:
+    try:
+        return page.evaluate(
+            """() => Array.from(document.querySelectorAll('button, input[type=button], input[type=submit], [role=button]'))
+                .filter((el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                })
+                .map((el, index) => ({ index, tag: el.tagName, text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim(), id: el.id || '', name: el.getAttribute('name') || '', type: el.getAttribute('type') || '', className: String(el.className || ''), rect: (() => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })() }))
+                .slice(0, 60)""",
+            timeout=1000,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _input_submit_inventory(page) -> list[dict[str, Any]]:
+    try:
+        return page.evaluate(
+            """() => Array.from(document.querySelectorAll('input[type=submit], input[type=button]'))
+                .map((el, index) => ({ index, value: el.value || '', id: el.id || '', name: el.name || '', className: String(el.className || ''), disabled: Boolean(el.disabled) }))
+                .slice(0, 40)""",
+            timeout=1000,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _search_link_inventory(page) -> list[dict[str, Any]]:
+    try:
+        return page.evaluate(
+            """() => Array.from(document.querySelectorAll('a[href]'))
+                .filter((el) => /search/i.test((el.innerText || el.textContent || '').trim()))
+                .map((el, index) => ({ index, text: (el.innerText || el.textContent || '').trim(), href: el.href || '', id: el.id || '', className: String(el.className || '') }))
+                .slice(0, 30)""",
+            timeout=1000,
+        )
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _select_jobserve_result(page, job_context: dict[str, Any], flow: dict[str, Any]) -> dict[str, Any] | None:
