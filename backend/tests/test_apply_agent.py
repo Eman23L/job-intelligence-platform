@@ -330,6 +330,35 @@ def test_jobserve_dropdown_helper_falls_back_to_native_select() -> None:
         assert diagnostics[-1]["selected_option"] == "Within 50 miles"
 
 
+def test_jobserve_dropdown_helper_already_selected_distance_passes() -> None:
+    diagnostics: list[dict] = []
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Distance
+              <select name="selRad">
+                <option value="10">Within 10 miles</option>
+                <option value="50" selected>Within 50 miles</option>
+              </select>
+            </label>
+            """
+        )
+
+        selected = apply_agent.jobserve_click_dropdown_option(
+            page,
+            {"labels": [r"distance"], "selectors": ['select[name*="rad" i]']},
+            "Within 50 miles",
+            field_name="Search distance",
+            diagnostics=diagnostics,
+        )
+
+        assert selected is True
+        assert diagnostics[-1]["fallback_used"] == "already_selected"
+        assert diagnostics[-1]["initial_selected_text"] == "Within 50 miles"
+        assert diagnostics[-1]["final_selected_text"] == "Within 50 miles"
+        assert diagnostics[-1]["detected_selects"][0]["name"] == "selRad"
+
+
 def test_jobserve_dropdown_helper_clicks_visible_custom_option() -> None:
     diagnostics: list[dict] = []
     with _playwright_page() as (page, _browser):

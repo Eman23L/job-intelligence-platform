@@ -31,6 +31,7 @@ STEP_MESSAGES = {
     "jobserve_search_distance_selected": "selecting distance dropdown",
     "jobserve_search_distance_dropdown_opened": "distance dropdown opened",
     "jobserve_search_distance_option_clicked": "clicked option Within 50 miles",
+    "jobserve_search_distance_already_selected": "distance already selected",
     "jobserve_search_industries_selected": "selecting industries",
     "jobserve_search_industries_dropdown_opened": "industries dropdown opened",
     "jobserve_search_industries_option_clicked": "clicked option Select All",
