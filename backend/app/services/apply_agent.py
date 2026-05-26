@@ -854,6 +854,8 @@ def _run_jobserve_search_to_apply(
         "search_page_loaded": False,
         "search_controls": {},
         "search_button_clicked": False,
+        "results_loaded": False,
+        "first_job_selected": False,
         "target_job_match_candidates": [],
         "selected_job": None,
         "apply_button_clicked": False,
@@ -909,9 +911,16 @@ def _run_jobserve_search_to_apply(
     page.wait_for_timeout(1200)
     debug.step("jobserve_search_submitted", jobserve_flow_diagnostics=flow)
     debug.screenshot("search_results_loaded")
+    flow["results_loaded"] = True
+    debug.step("jobserve_results_loaded", jobserve_flow_diagnostics=flow)
 
     match_started = time.perf_counter()
-    selected = _select_jobserve_result(page, job_context, flow)
+    apply_target = _find_apply_target(page, browser)
+    if apply_target is not None:
+        selected = {"selection": "first_job_already_opened", "score": 1}
+        flow["first_job_selected"] = True
+    else:
+        selected = _select_jobserve_result(page, job_context, flow)
     timing_diagnostics["result_matching_ms"] = int((time.perf_counter() - match_started) * 1000)
     if selected is None:
         debug.final_error = "No matching JobServe search result found."
@@ -922,14 +931,16 @@ def _run_jobserve_search_to_apply(
 
     page.wait_for_timeout(1200)
     debug.screenshot("job_details_loaded")
-    apply_target = _find_apply_target(page, browser)
+    apply_target = apply_target or _find_apply_target(page, browser)
     if apply_target is None:
         debug.final_error = "Apply button missing after selecting JobServe search result."
         debug.html("apply_button_missing", page)
         raise RuntimeError(debug.final_error)
     modal_started = time.perf_counter()
-    _retry_step("apply button click", lambda: apply_target.click(timeout=settings.playwright_step_timeout_ms))
+    _retry_step("apply button click", lambda: _click_locator_resilient(page, apply_target))
     flow["apply_button_clicked"] = True
+    debug.step("jobserve_apply_button_clicked", jobserve_flow_diagnostics=flow)
+    debug.screenshot("after_apply_button_clicked")
     page.wait_for_timeout(1500)
     context = _retry_step("modal open", lambda: _find_jobserve_form_context(page, browser))
     timing_diagnostics["modal_open_ms"] = int((time.perf_counter() - modal_started) * 1000)
@@ -975,23 +986,29 @@ def _run_jobserve_search_to_apply(
             debug.html("submit_button_not_found", context)
             raise RuntimeError(debug.final_error)
         submit_started = time.perf_counter()
-        apply_button.click(timeout=settings.playwright_step_timeout_ms)
+        _click_locator_resilient(page, apply_button)
         flow["final_apply_clicked"] = True
+        flow["first_apply_clicked"] = True
         debug.step("jobserve_final_apply_clicked", jobserve_flow_diagnostics=flow)
-        success = page.get_by_text("Your application has been submitted.").first
+        debug.step("jobserve_first_apply_clicked", jobserve_flow_diagnostics=flow)
         try:
-            success.wait_for(timeout=settings.page_navigation_timeout_ms)
+            _wait_for_jobserve_submission_success(page, browser)
             timing_diagnostics["submit_wait_ms"] = int((time.perf_counter() - submit_started) * 1000)
             flow["submitted_confirmation_detected"] = True
             submitted = True
             status = "submitted"
+            debug.step("jobserve_submitted_message_seen", jobserve_flow_diagnostics=flow)
+            debug.screenshot("submission_confirmation_seen")
         except Exception as exc:  # noqa: BLE001
             debug.final_error = "JobServe submission confirmation not detected."
             exceptions.append(_exception_payload("confirmation_detection", exc, jobserve_flow_diagnostics=dict(flow)))
             debug.html("confirmation_not_detected", page)
             raise RuntimeError(debug.final_error) from exc
-        flow["account_toggles_turned_off"] = _disable_jobserve_account_options(context, warnings)
+        flow["account_toggles_turned_off"] = _disable_jobserve_account_options(page, warnings)
+        debug.step("jobserve_registration_toggle_disabled", jobserve_flow_diagnostics=flow)
+        debug.screenshot("registration_toggles_disabled")
         flow["modal_closed"] = _close_modal(page)
+        debug.step("jobserve_modal_closed", jobserve_flow_diagnostics=flow)
     else:
         warnings.append("Review-only mode: JobServe search-to-apply flow stopped before final Apply.")
         if keep_open_for_review:
@@ -1417,7 +1434,7 @@ def _select_first_label_or_selector(page, labels: list[str], selectors: list[str
     return False
 
 
-def _set_checkbox_by_label(page, labels: list[str], *, checked: bool, diagnostic: dict[str, Any] | None = None) -> bool:
+def _set_checkbox_by_label(page, labels: list[str], *, checked: bool, diagnostic: dict[str, Any] | None = None, click_unknown: bool = False) -> bool:
     details: dict[str, Any] = {
         "checkbox_found": False,
         "initial_checked": None,
@@ -1431,6 +1448,15 @@ def _set_checkbox_by_label(page, labels: list[str], *, checked: bool, diagnostic
             try:
                 current = _checkbox_checked_state(control)
                 if current is None:
+                    if click_unknown:
+                        details["checkbox_found"] = True
+                        _click_checkbox_box(control)
+                        details["clicked"] = True
+                        details["result"] = "unknown_clicked_once"
+                        details["final_checked"] = _checkbox_checked_state(control)
+                        if diagnostic is not None:
+                            diagnostic.update(details)
+                        return True
                     failures.append(f"{pattern}: state unknown")
                     continue
                 details["checkbox_found"] = True
@@ -1475,14 +1501,21 @@ def _checkbox_candidates_by_label(page, pattern: str) -> list[Any]:
         candidates.append(label.locator("xpath=ancestor-or-self::*[self::label or @role='checkbox' or contains(@class, 'checkbox')][1]").first)
     except Exception:  # noqa: BLE001
         pass
-    candidates.append(page.locator('input[type=checkbox][name*="remote" i], input[type=checkbox][id*="remote" i]').first)
-    candidates.append(page.locator('[role=checkbox][aria-label*="remote" i], [class*="checkbox" i][class*="remote" i], [id*="remote" i][class*="checkbox" i]').first)
+    try:
+        candidates.append(page.locator('input[type=checkbox][name*="remote" i], input[type=checkbox][id*="remote" i]').first)
+        candidates.append(page.locator('[role=checkbox][aria-label*="remote" i], [class*="checkbox" i][class*="remote" i], [id*="remote" i][class*="checkbox" i]').first)
+    except Exception:  # noqa: BLE001
+        pass
     return candidates
 
 
 def _checkbox_checked_state(locator) -> bool | None:
     try:
         return bool(locator.is_checked(timeout=500))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return bool(locator.is_checked())
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -1510,6 +1543,11 @@ def _checkbox_checked_state(locator) -> bool | None:
 
 
 def _click_checkbox_box(locator) -> None:
+    try:
+        locator.uncheck()
+        return
+    except Exception:  # noqa: BLE001
+        pass
     try:
         box = locator.locator("input[type=checkbox]").first
         box.click(timeout=1000, position={"x": 6, "y": 6})
@@ -1631,6 +1669,22 @@ def _click_locator_center(page, locator) -> None:
     if not box:
         raise RuntimeError("No bounding box for coordinate click")
     page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+
+
+def _click_locator_resilient(page, locator) -> None:
+    failures: list[str] = []
+    for action in [
+        lambda: locator.click(timeout=settings.playwright_step_timeout_ms),
+        lambda: locator.click(timeout=settings.playwright_step_timeout_ms, force=True),
+        lambda: locator.evaluate("element => element.click()", timeout=1000),
+        lambda: _click_locator_center(page, locator),
+    ]:
+        try:
+            action()
+            return
+        except Exception as exc:  # noqa: BLE001
+            failures.append(str(exc))
+    raise RuntimeError("; ".join(failures[-3:]))
 
 
 def _press_enter_to_submit_jobserve_search(page) -> tuple[bool, str | None]:
@@ -1827,16 +1881,17 @@ def _fill_jobserve_application_form(
     _report_jobserve_step(step_callback, "jobserve_apply_confirmation_email_checked", succeeded=flow.get("confirmation_email_checked"))
 
     working_status = candidates.get("work_authorization")
-    if working_status and _select_work_status(context, working_status.value, select_diagnostics):
+    working_status_value = working_status.value if working_status else JOBSERVE_DEFAULTS["working_status"]
+    if _select_work_status(context, working_status_value, select_diagnostics):
         filled.append("Working status in UK")
         flow["uk_status_selected"] = True
-        profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": True, "label": "Working status in UK", "value": working_status.value}
-        _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=True, value=working_status.value)
+        profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": True, "label": "Working status in UK", "value": working_status_value}
+        _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=True, value=working_status_value)
     else:
         unfilled_required.append("Working status in UK")
         profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": False, "reason": "working status dropdown missing or configured value missing"}
         exceptions.append({"stage": "working_status", "type": "SelectOptionError", "message": "Working status dropdown missing or could not be selected", "traceback": None})
-        _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=False, value=working_status.value if working_status else None)
+        _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=False, value=working_status_value)
         debug.html("working_status_dropdown_missing", context)
 
     _handle_optional_dropdown_if_present(
@@ -1880,14 +1935,14 @@ def _fill_jobserve_application_form(
     )
 
     upload_diagnostics["detected_file_inputs"] = form_inventory["file_inputs"]
-    upload_diagnostics["file_input_detected"] = bool(context.locator("input[type=file], #filCV").count())
+    upload_diagnostics["file_input_detected"] = bool(_jobserve_cv_file_input(context).count())
     cv_path = _cv_upload_path(profile, upload_diagnostics)
     debug.step("before_cv_upload", upload_diagnostics=upload_diagnostics)
     uploaded_cv = False
     upload_started = time.perf_counter()
     if cv_path and upload_diagnostics.get("path_exists") and upload_diagnostics["file_input_detected"]:
         try:
-            file_input = context.locator("input[type=file], #filCV, input#filCV").first
+            file_input = _jobserve_cv_file_input(context).first
             _retry_step("cv upload", lambda: file_input.set_input_files(cv_path, timeout=settings.playwright_step_timeout_ms))
             uploaded_cv = True
             filled.append("CV upload")
@@ -1966,7 +2021,9 @@ def _handle_optional_dropdown_if_present(
 
 
 def _ensure_confirmation_email_checked(page, flow: dict[str, Any]) -> None:
-    flow["confirmation_email_checked"] = _set_checkbox_by_label(page, [r"send confirmation.*email", r"confirmation.*email"], checked=True)
+    diagnostic: dict[str, Any] = {}
+    flow["confirmation_email_checked"] = _set_checkbox_by_label(page, [r"send confirmation.*email", r"confirmation.*email"], checked=True, diagnostic=diagnostic)
+    flow["confirmation_checkbox_diagnostic"] = diagnostic
 
 
 def _uploaded_cv_display_name(page, file_name: str) -> str | None:
@@ -1975,6 +2032,12 @@ def _uploaded_cv_display_name(page, file_name: str) -> str | None:
     except Exception:  # noqa: BLE001
         return None
     return file_name if file_name in text else None
+
+
+def _jobserve_cv_file_input(context):
+    return context.locator(
+        "#filCV, input#filCV, input[type=file][name*='CV' i], input[type=file][id*='CV' i], input[type=file]"
+    )
 
 
 def _run_jobserve_modal(
@@ -2300,19 +2363,22 @@ def _fill_by_label_patterns(page, patterns: list[str], candidate: FieldCandidate
 
 
 def _select_work_status(page, value: str, select_diagnostics: list[dict[str, Any]] | None = None) -> bool:
+    target = "UK Citizen" if _normalize_select_text(value) in {"uk", "uk citizen", "citizen"} else value
+    if jobserve_click_dropdown_option(
+        page,
+        {"labels": [r"working status", r"work status", r"status in uk", r"eligible.*uk"], "selectors": ['select[name*="status" i]', 'select[id*="status" i]', 'select[name*="work" i]', 'select[id*="work" i]']},
+        target,
+        field_name="Working status in UK",
+        diagnostics=select_diagnostics,
+    ):
+        return True
     for pattern in [r"working status", r"work status", r"status in uk", r"eligible.*uk"]:
         locator = page.get_by_label(re.compile(pattern, re.I)).first
         try:
-            if _select_locator_option(locator, "UK", field_name="Working status in UK", label_pattern=pattern, diagnostics=select_diagnostics):
-                return True
-            locator.select_option(label=re.compile("Citizen|Permanent|Eligible|No sponsorship|UK", re.I), timeout=1500)
+            locator.fill(target, timeout=1500)
             return True
         except Exception:  # noqa: BLE001
-            try:
-                locator.fill(value, timeout=1500)
-                return True
-            except Exception:  # noqa: BLE001
-                continue
+            continue
     return False
 
 
@@ -2535,17 +2601,23 @@ def _int_value(value: str) -> int | None:
 
 def _disable_jobserve_account_options(page, warnings: list[str]) -> list[str]:
     disabled: list[str] = []
-    for text in ["register a Job Seeker account", "make my CV searchable", "job alerts", "create an account"]:
-        controls = page.get_by_label(re.compile(text, re.I)).all()
-        for control in controls:
-            try:
-                if control.is_checked():
-                    control.uncheck()
+    for context in _page_and_frame_contexts(page):
+        for text in ["I would like to register a Job Seeker account", "register a Job Seeker account", "make my CV searchable", "CV searchable", "job alerts", "create an account"]:
+            diagnostic: dict[str, Any] = {}
+            if _set_checkbox_by_label(context, [re.escape(text)], checked=False, diagnostic=diagnostic, click_unknown=True):
+                if diagnostic.get("clicked") or diagnostic.get("result") in {"unchecked_after_click", "unknown_clicked_once"}:
                     warnings.append(f"Disabled option: {text}.")
                     disabled.append(text)
-            except Exception:  # noqa: BLE001
-                continue
     return disabled
+
+
+def _page_and_frame_contexts(page) -> list[Any]:
+    contexts = [page]
+    try:
+        contexts.extend(frame for frame in page.frames if frame is not page.main_frame)
+    except Exception:  # noqa: BLE001
+        pass
+    return contexts
 
 
 def _jobserve_apply_button(page):
@@ -2553,6 +2625,21 @@ def _jobserve_apply_button(page):
     if buttons:
         return buttons[-1]
     return page.locator("input[type=submit], button[type=submit]").last
+
+
+def _wait_for_jobserve_submission_success(page, browser) -> None:
+    deadline = time.time() + (settings.page_navigation_timeout_ms / 1000)
+    last_exc: Exception | None = None
+    while time.time() < deadline:
+        for context in _all_contexts(page, browser):
+            try:
+                context.get_by_text("Your application has been submitted.").first.wait_for(timeout=1000)
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                continue
+        page.wait_for_timeout(500)
+    raise RuntimeError("JobServe submission confirmation not detected.") from last_exc
 
 
 def _close_modal(page) -> bool:

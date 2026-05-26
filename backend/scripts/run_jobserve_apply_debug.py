@@ -44,14 +44,20 @@ STEP_MESSAGES = {
     "jobserve_search_remote_only_unchecked": "unchecking remote only",
     "jobserve_search_form_filled": "search form filled",
     "jobserve_search_submitted": "clicking search",
+    "jobserve_results_loaded": "results loaded",
     "jobserve_target_job_selected": "matching job",
+    "jobserve_apply_button_clicked": "apply button clicked",
     "jobserve_apply_modal_wait_complete": "opening modal",
     "jobserve_apply_email_filled": "filling email",
     "jobserve_apply_confirmation_email_checked": "keeping confirmation email checked",
     "jobserve_apply_working_status_selected": "selecting UK Citizen",
     "jobserve_apply_cv_uploaded": "uploading CV",
     "jobserve_application_form_filled": "ready to submit",
+    "jobserve_first_apply_clicked": "first Apply clicked",
     "jobserve_final_apply_clicked": "clicking final Apply",
+    "jobserve_submitted_message_seen": "submitted message seen",
+    "jobserve_registration_toggle_disabled": "registration toggle disabled",
+    "jobserve_modal_closed": "modal closed",
 }
 
 

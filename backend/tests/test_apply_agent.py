@@ -449,6 +449,103 @@ def test_jobserve_search_click_failure_returns_diagnostic() -> None:
         assert "search_links" in diagnostics
 
 
+def test_jobserve_results_page_first_job_apply_button_detection() -> None:
+    with _playwright_page() as (page, browser):
+        page.set_content(
+            """
+            <div class="job-result selected">AI Engineer</div>
+            <section id="detail"><button>Apply</button></section>
+            """
+        )
+
+        target = apply_agent._find_apply_target(page, browser)
+
+        assert target is not None
+        assert target.inner_text() == "Apply"
+
+
+def test_jobserve_confirmation_checkbox_already_ticked_passes() -> None:
+    flow: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Send confirmation of my application to this Email Address
+              <input type="checkbox" checked onclick="window.clicked = true" />
+            </label>
+            """
+        )
+
+        apply_agent._ensure_confirmation_email_checked(page, flow)
+
+        assert flow["confirmation_email_checked"] is True
+        assert flow["confirmation_checkbox_diagnostic"]["result"] == "already_checked"
+        assert page.evaluate("window.clicked") is None
+
+
+def test_jobserve_confirmation_checkbox_unticked_gets_ticked() -> None:
+    flow: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Send confirmation of my application to this Email Address
+              <input type="checkbox" onclick="window.clicked = true" />
+            </label>
+            """
+        )
+
+        apply_agent._ensure_confirmation_email_checked(page, flow)
+
+        assert flow["confirmation_email_checked"] is True
+        assert flow["confirmation_checkbox_diagnostic"]["result"] == "checked_after_click"
+        assert page.evaluate("window.clicked") is True
+
+
+def test_jobserve_working_status_selects_uk_citizen() -> None:
+    diagnostics: list[dict] = []
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Working status in UK
+              <select name="status"><option></option><option>UK Citizen</option></select>
+            </label>
+            """
+        )
+
+        assert apply_agent._select_work_status(page, "UK Citizen", diagnostics) is True
+
+        assert page.locator("select[name=status]").input_value() == "UK Citizen"
+
+
+def test_jobserve_filcv_upload_detection() -> None:
+    with _playwright_page() as (page, _browser):
+        page.set_content('<input id="filCV" type="file" />')
+
+        assert apply_agent._jobserve_cv_file_input(page).count() == 1
+
+
+def test_jobserve_submit_success_message_detection() -> None:
+    with _playwright_page() as (page, browser):
+        page.set_content("<div>Your application has been submitted.</div>")
+
+        apply_agent._wait_for_jobserve_submission_success(page, browser)
+
+
+def test_jobserve_registration_toggle_unknown_defaults_clicked_off() -> None:
+    warnings: list[str] = []
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <div role="checkbox" aria-label="I would like to register a Job Seeker account"
+                 onclick="window.clicked = true"></div>
+            """
+        )
+
+        disabled = apply_agent._disable_jobserve_account_options(page, warnings)
+
+        assert "I would like to register a Job Seeker account" in disabled
+        assert page.evaluate("window.clicked") is True
+
+
 def test_submit_validation_allows_optional_salary_travel_defaults(db_session) -> None:
     user, job = _seed_application(db_session, jobserve=True)
     profile = UserProfile(user_id=user.id, cv_text="CV", email="apply-agent@example.invalid", cv_file_bytes=b"cv", cv_file_name="cv.pdf")
