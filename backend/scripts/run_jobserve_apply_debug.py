@@ -124,7 +124,7 @@ def run_shared_jobserve_flow(page, browser, args: argparse.Namespace, progress_c
     profile = build_local_profile(args)
     user = SimpleNamespace(email=args.email)
     candidates = apply_agent.profile_field_candidates(user, profile)
-    mode = "submit_with_confirmation" if args.submit else "review_only"
+    mode = mode_from_args(args)
     return apply_agent._run_jobserve_search_to_apply(
         page,
         browser,
@@ -137,6 +137,10 @@ def run_shared_jobserve_flow(page, browser, args: argparse.Namespace, progress_c
         profile_diagnostics=apply_agent.profile_debug_payload(user, profile, candidates),
         progress_callback=progress_callback,
     )
+
+
+def mode_from_args(args: argparse.Namespace) -> str:
+    return "submit_with_confirmation" if args.submit else "review_only"
 
 
 class TerminalProgress:
@@ -154,6 +158,16 @@ class TerminalProgress:
             suffix = ""
         elif step == "jobserve_about_to_submit":
             guard = payload.get("submit_guard") or {}
+            intended = guard.get("intended_job") or {}
+            verified = guard.get("verified_job") or {}
+            modal = guard.get("modal_job") or {}
+            print("[jobserve-debug] SUBMIT MODE ENABLED. About to submit this JobServe application.", flush=True)
+            print(f"[jobserve-debug] intended job: {intended.get('title') or intended.get('original_title')} / {intended.get('company_name') or intended.get('original_company')}", flush=True)
+            print(f"[jobserve-debug] selected/detail job: {verified.get('title')} / {verified.get('company')}", flush=True)
+            print(f"[jobserve-debug] modal job: {modal.get('title')} / {modal.get('company')}", flush=True)
+            print(f"[jobserve-debug] email value: {guard.get('email_value') or '(missing)'}", flush=True)
+            print(f"[jobserve-debug] CV attachment detected: {'yes' if guard.get('cv_uploaded') else 'no'}", flush=True)
+            print(f"[jobserve-debug] working status selected: {guard.get('working_status_value') or guard.get('working_status_selected')}", flush=True)
             suffix = (
                 f" intended={guard.get('intended_job')} verified={guard.get('verified_job')} modal={guard.get('modal_job')} "
                 f"email={guard.get('email_filled')} cv={guard.get('cv_uploaded')} status={guard.get('working_status_selected')}"
@@ -184,8 +198,13 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
     TRACE_DIR.mkdir(parents=True, exist_ok=True)
     trace_path = TRACE_DIR / f"jobserve-visible-{int(time.time())}.zip"
 
+    mode = mode_from_args(args)
     print("[jobserve-debug] opening search page", flush=True)
-    print(f"[jobserve-debug] mode={'submit' if args.submit else 'review_only'}", flush=True)
+    print(f"[jobserve-debug] mode={mode}", flush=True)
+    if args.submit:
+        print("[jobserve-debug] --submit enabled: final JobServe Apply will be clicked only after safety checks pass", flush=True)
+    else:
+        print("[jobserve-debug] --submit not provided: running review-only and stopping before final Apply", flush=True)
     print(f"[jobserve-debug] video directory: {VIDEO_DIR}", flush=True)
     print(f"[jobserve-debug] trace path: {trace_path}", flush=True)
 
@@ -200,7 +219,16 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
         try:
             result = run_shared_jobserve_flow(page, browser, args, TerminalProgress(pause_each_step=args.pause_each_step))
             if result.submitted:
-                print("[jobserve-debug] submitted confirmation detected", flush=True)
+                print("[jobserve-debug] submitted successfully", flush=True)
+                print(f"[jobserve-debug] confirmation text: {result.confirmation_text or '(not captured)'}", flush=True)
+                print(f"[jobserve-debug] registration toggle disabled: {result.registration_toggle_disabled}", flush=True)
+                print(f"[jobserve-debug] modal closed: {result.modal_closed}", flush=True)
+            elif args.submit:
+                reason = None
+                if isinstance(result.jobserve_flow_diagnostics, dict):
+                    reason = result.jobserve_flow_diagnostics.get("blocked_reason")
+                warnings = "; ".join(result.warnings or [])
+                print(f"[jobserve-debug] submit mode did not submit; status={result.status}; reason={reason or warnings or 'unknown'}", flush=True)
             else:
                 print("[jobserve-debug] ready to submit; review-only mode did not click final Apply", flush=True)
             input("Press Enter to close the visible browser...")

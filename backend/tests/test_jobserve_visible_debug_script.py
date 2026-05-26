@@ -44,6 +44,17 @@ def test_jobserve_visible_debug_cli_args_parse_and_submit_defaults_false(tmp_pat
     assert args.slow_mo_ms == 500
 
 
+def test_jobserve_visible_debug_cli_submit_sets_explicit_submit_mode(tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit"])
+
+    assert args.submit is True
+    assert module.mode_from_args(args) == "submit_with_confirmation"
+
+
 def test_jobserve_visible_debug_shared_flow_called_in_review_only(monkeypatch, tmp_path) -> None:
     module = _load_script_module()
     cv_path = tmp_path / "cv.pdf"
@@ -86,6 +97,58 @@ def test_jobserve_visible_debug_shared_flow_called_in_review_only(monkeypatch, t
     assert result.submitted is False
     assert captured["mode"] == "review_only"
     assert captured["keep_open_for_review"] is True
+    assert captured["email"] == "me@example.com"
+    assert captured["cv_file_path"] == str(cv_path.resolve())
+    assert captured["job_context"]["title"] == "AI Engineer"
+    assert captured["job_context"]["company_name"] == "Example Ltd"
+
+
+def test_jobserve_visible_debug_shared_flow_called_in_submit_mode(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(
+        [
+            "--email",
+            "me@example.com",
+            "--cv-path",
+            str(cv_path),
+            "--target-title",
+            "AI Engineer",
+            "--target-company",
+            "Example Ltd",
+            "--submit",
+        ]
+    )
+    captured = {}
+
+    def fake_run(page, browser, candidates, profile, job_context, **kwargs):
+        captured["mode"] = kwargs["mode"]
+        captured["keep_open_for_review"] = kwargs["keep_open_for_review"]
+        captured["email"] = candidates["email"].value
+        captured["cv_file_path"] = profile.cv_file_path
+        captured["job_context"] = job_context
+        return AssistApplyResult(
+            status="submitted",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=True,
+            submitted=True,
+            warnings=[],
+            screenshot_path=None,
+            confirmation_text="Your application has been submitted.",
+            registration_toggle_disabled=True,
+            modal_closed=True,
+        )
+
+    monkeypatch.setattr(module.apply_agent, "_run_jobserve_search_to_apply", fake_run)
+
+    result = module.run_shared_jobserve_flow(object(), object(), args)
+
+    assert result.submitted is True
+    assert captured["mode"] == "submit_with_confirmation"
+    assert captured["keep_open_for_review"] is False
     assert captured["email"] == "me@example.com"
     assert captured["cv_file_path"] == str(cv_path.resolve())
     assert captured["job_context"]["title"] == "AI Engineer"

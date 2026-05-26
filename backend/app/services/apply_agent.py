@@ -1055,7 +1055,21 @@ def _run_jobserve_search_to_apply(
             debug.html("submit_button_not_found", context)
             raise RuntimeError(debug.final_error)
         submit_started = time.perf_counter()
-        debug.step("jobserve_about_to_submit", jobserve_flow_diagnostics=flow, submit_guard={"email_filled": flow.get("email_filled"), "confirmation_checkbox_checked": flow.get("confirmation_email_checked"), "working_status_selected": flow.get("uk_status_selected"), "cv_uploaded": uploaded_cv, "intended_job": job_context, "verified_job": verified_identity, "modal_job": modal_identity})
+        debug.step(
+            "jobserve_about_to_submit",
+            jobserve_flow_diagnostics=flow,
+            submit_guard={
+                "email_filled": flow.get("email_filled"),
+                "email_value": _jobserve_email_field_value(context) or flow.get("email_value"),
+                "confirmation_checkbox_checked": flow.get("confirmation_email_checked"),
+                "working_status_selected": flow.get("uk_status_selected"),
+                "working_status_value": flow.get("uk_status_value"),
+                "cv_uploaded": uploaded_cv,
+                "intended_job": job_context,
+                "verified_job": verified_identity,
+                "modal_job": modal_identity,
+            },
+        )
         _click_locator_resilient(page, apply_button)
         flow["final_apply_clicked"] = True
         flow["first_apply_clicked"] = True
@@ -2049,18 +2063,23 @@ def _jobserve_submit_guard(flow: dict[str, Any], verified_identity: dict[str, An
 
 
 def _jobserve_email_field_has_value(context) -> bool:
+    value = _jobserve_email_field_value(context)
+    return bool(value and "@" in value)
+
+
+def _jobserve_email_field_value(context) -> str | None:
     for pattern in [r"email address", r"email"]:
         try:
             value = context.get_by_label(re.compile(pattern, re.I)).first.input_value(timeout=500)
-            if value and "@" in value:
-                return True
+            if value:
+                return str(value)
         except Exception:  # noqa: BLE001
             continue
     try:
         value = context.locator('input[type="email"], input[name*="email" i], input[id*="email" i]').first.input_value(timeout=500)
-        return bool(value and "@" in value)
+        return str(value) if value else None
     except Exception:  # noqa: BLE001
-        return False
+        return None
 
 
 def _fill_jobserve_application_form(
@@ -2089,6 +2108,7 @@ def _fill_jobserve_application_form(
     if email_label:
         filled.append("Email Address")
         flow["email_filled"] = True
+        flow["email_value"] = email.value if email else None
         profile_diagnostics["mapped_fields"]["email"] = {"mapped": True, "label": email_label}
         _report_jobserve_step(step_callback, "jobserve_apply_email_filled", succeeded=True, label=email_label)
     else:
@@ -2105,6 +2125,7 @@ def _fill_jobserve_application_form(
     if _select_work_status(context, working_status_value, select_diagnostics):
         filled.append("Working status in UK")
         flow["uk_status_selected"] = True
+        flow["uk_status_value"] = working_status_value
         profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": True, "label": "Working status in UK", "value": working_status_value}
         _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=True, value=working_status_value)
     else:
