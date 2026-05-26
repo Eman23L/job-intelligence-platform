@@ -1036,7 +1036,7 @@ def _normalise_jobserve_record(source: JobSource, record: JobRecord) -> dict[str
         description = f"{description}\n\nSkills: {', '.join(record.skills)}".strip()
     title = record.title or "Untitled JobServe job"
     apply_link = record.apply_link if record.apply_link and not record.apply_link.lower().startswith("javascript:") else None
-    canonical_url = apply_link or record.url or f"https://www.jobserve.com/gb/en/job/{record.source_job_id or content_hash(title)}"
+    canonical_url = record.url or apply_link or f"https://www.jobserve.com/gb/en/job/{record.source_job_id or content_hash(title)}"
     normalised = normalise_job_fields(
         title=title,
         company_name=record.recruiter,

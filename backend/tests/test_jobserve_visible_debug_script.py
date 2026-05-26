@@ -350,6 +350,49 @@ def test_jobserve_visible_debug_use_current_selected_job_flag_is_passed(monkeypa
     assert captured["job_context"]["identity_source"] == "current_selected_job"
 
 
+def test_jobserve_visible_debug_job_url_uses_direct_modal_flow(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(
+        [
+            "--email",
+            "me@example.com",
+            "--cv-path",
+            str(cv_path),
+            "--submit",
+            "--job-url",
+            "https://www.jobserve.com/gb/en/job/D8DF",
+            "--intended-title",
+            "AI Engineer",
+            "--intended-company",
+            "Example Ltd",
+        ]
+    )
+    captured = {}
+
+    def fake_modal(page, browser, candidates, profile, **kwargs):
+        captured.update(kwargs)
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=False,
+            submitted=False,
+            warnings=[],
+            screenshot_path=None,
+        )
+
+    monkeypatch.setattr(module.apply_agent, "_run_jobserve_modal", fake_modal)
+
+    module.run_shared_jobserve_flow(SimpleNamespace(), SimpleNamespace(), args)
+
+    assert captured["direct_url"] == "https://www.jobserve.com/gb/en/job/D8DF"
+    assert captured["job_context"]["canonical_url"] == "https://www.jobserve.com/gb/en/job/D8DF"
+    assert captured["job_context"]["title"] == "AI Engineer"
+
+
 def test_jobserve_visible_debug_submit_checkpoint_waits_for_enter_before_final_click(monkeypatch) -> None:
     module = _load_script_module()
     prompts = []

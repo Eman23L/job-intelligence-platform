@@ -247,7 +247,7 @@ def test_jobserve_scrape_now_fetches_details_and_creates_jobs(monkeypatch) -> No
             jobs = db.scalars(select(Job).where(Job.source_id == source_id)).all()
             assert len(jobs) == 2
             assert {job.source_job_id for job in jobs} == {"D8DF", "A12345"}
-            assert all(job.canonical_url.startswith("https://www.jobserve.com/apply/") for job in jobs)
+            assert all(job.canonical_url.startswith("https://www.jobserve.com/job/") for job in jobs)
 
 
 def test_jobserve_scrape_now_rejects_non_job_detail_records(monkeypatch) -> None:
@@ -451,6 +451,8 @@ def test_jobserve_search_scrape_summary_dedupe_and_fingerprints(monkeypatch) -> 
             assert all(job.original_location == "London" for job in jobs)
             assert all(job.original_salary == "GBP 600 per day" for job in jobs)
             assert all(job.original_external_id in {"D8DF", "A12345", "B67890"} for job in jobs)
+            assert all("/job/" in job.canonical_url for job in jobs)
+            assert all("/apply/" not in job.canonical_url for job in jobs)
             assert all(job.content_hash for job in jobs)
 
 

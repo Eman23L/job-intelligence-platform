@@ -117,6 +117,42 @@ def test_assist_apply_endpoint_never_submits(monkeypatch) -> None:
     assert any("intentionally not clicked" in warning for warning in response.json()["warnings"])
 
 
+def test_assist_apply_uses_saved_job_url(monkeypatch) -> None:
+    seen: dict[str, str] = {}
+
+    def fake_runner(url, candidates, *, profile=None, mode="review_only", apply_strategy="unknown", **kwargs):
+        seen["url"] = url
+        seen["strategy"] = apply_strategy
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=False,
+            submitted=False,
+            warnings=[],
+            screenshot_path=None,
+        )
+
+    monkeypatch.setattr(
+        apply_agent,
+        "check_job_availability",
+        lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"),
+    )
+    monkeypatch.setattr(apply_agent, "run_playwright_assist", fake_runner)
+    with apply_client(jobserve=True) as (client, ids):
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+            job.canonical_url = "https://www.jobserve.com/gb/en/job/D8DF"
+            db.commit()
+        response = client.post(f"/applications/{ids['job']}/assist-apply")
+
+    assert response.status_code == 200
+    assert seen["url"] == "https://www.jobserve.com/gb/en/job/D8DF"
+    assert seen["strategy"] == "jobserve_apply_easy"
+    assert "Job-Search" not in seen["url"]
+
+
 def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:
     enqueued = []
     monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)

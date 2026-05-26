@@ -412,12 +412,23 @@ def run_playwright_assist(
                                 job_context=job_context or {"canonical_url": url},
                                 direct_url=url,
                             )
-                            if result.submitted or result.final_error not in {"Direct JobServe detail did not match intended job.", "No visible JobServe Apply button/link found.", "JobServe direct URL could not be opened."}:
-                                result.timing_diagnostics = {**result.timing_diagnostics, **timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)}
-                                return result
-                            logger.warning("jobserve_direct_apply_falling_back final_error=%s", result.final_error)
+                            result.timing_diagnostics = {**result.timing_diagnostics, **timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)}
+                            return result
                         except RuntimeError as exc:
-                            logger.warning("jobserve_direct_apply_falling_back error=%s", exc)
+                            logger.warning("jobserve_direct_apply_failed_no_search_fallback error=%s", exc)
+                            return AssistApplyResult(
+                                status="review_required",
+                                filled_fields=[],
+                                unfilled_fields=[],
+                                unfilled_required_fields=[],
+                                uploaded_cv=False,
+                                submitted=False,
+                                warnings=[str(exc)],
+                                screenshot_path=None,
+                                final_error=str(exc),
+                                jobserve_flow_diagnostics={"mode": "direct_job_url", "direct_url": url, "target": job_context or {"canonical_url": url}, "blocked_reason": str(exc)},
+                                timing_diagnostics={**timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)},
+                            )
 
                     try:
                         result = _run_jobserve_search_to_apply(

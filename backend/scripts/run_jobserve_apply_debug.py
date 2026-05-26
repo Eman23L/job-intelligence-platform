@@ -80,6 +80,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-title")
     parser.add_argument("--target-company")
     parser.add_argument("--target-reference")
+    parser.add_argument("--job-url", help="Saved JobServe job/apply URL to open directly, matching production apply behavior.")
     parser.add_argument("--intended-title", help="Intended JobServe job title for local submit safety checks.")
     parser.add_argument("--intended-company", help="Intended JobServe company for local submit safety checks.")
     parser.add_argument("--intended-reference", help="Intended JobServe reference/external id for local submit safety checks.")
@@ -280,7 +281,8 @@ def build_job_context(args: argparse.Namespace) -> dict[str, Any]:
     title = args.intended_title or args.target_title
     company = args.intended_company or args.target_company
     reference = args.intended_reference or args.target_reference
-    identity_source = "current_selected_job" if args.use_current_selected_job else ("manual_args" if any([title, company, reference, args.intended_url]) else "missing")
+    intended_url = args.intended_url or args.job_url
+    identity_source = "current_selected_job" if args.use_current_selected_job else ("manual_args" if any([title, company, reference, intended_url]) else "missing")
     return {
         "job_id": None,
         "title": title,
@@ -289,7 +291,7 @@ def build_job_context(args: argparse.Namespace) -> dict[str, Any]:
         "original_company": company,
         "source_job_id": reference,
         "original_external_id": reference,
-        "canonical_url": args.intended_url,
+        "canonical_url": intended_url,
         "identity_source": identity_source,
     }
 
@@ -299,6 +301,20 @@ def run_shared_jobserve_flow(page, browser, args: argparse.Namespace, progress_c
     user = SimpleNamespace(email=args.email)
     candidates = apply_agent.profile_field_candidates(user, profile)
     mode = mode_from_args(args)
+    if args.job_url:
+        return apply_agent._run_jobserve_modal(
+            page,
+            browser,
+            candidates,
+            profile,
+            mode=mode,
+            keep_open_for_review=not submit_requested(args),
+            debug_mode=True,
+            profile_diagnostics=apply_agent.profile_debug_payload(user, profile, candidates),
+            progress_callback=progress_callback,
+            job_context=build_job_context(args),
+            direct_url=args.job_url,
+        )
     return apply_agent._run_jobserve_search_to_apply(
         page,
         browser,
@@ -502,6 +518,7 @@ def print_startup_config(args: argparse.Namespace, trace_path: Path, cv_path: Pa
     print(f"[jobserve-debug] use_current_selected_job flag received: {str(args.use_current_selected_job).lower()}", flush=True)
     print(f"[jobserve-debug] mode selected: {mode_from_args(args)}", flush=True)
     print(f"[jobserve-debug] identity source: {job_context.get('identity_source')}", flush=True)
+    print(f"[jobserve-debug] job URL: {args.job_url or '(none; using search flow)'}", flush=True)
     print(f"[jobserve-debug] intended title: {job_context.get('title') or '(missing)'}", flush=True)
     print(f"[jobserve-debug] intended company: {job_context.get('company_name') or '(missing)'}", flush=True)
     print(f"[jobserve-debug] intended reference: {job_context.get('source_job_id') or '(missing)'}", flush=True)
