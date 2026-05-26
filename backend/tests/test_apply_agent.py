@@ -304,6 +304,52 @@ def test_jobserve_results_target_matching_prefers_reference_title_and_company() 
     assert ranked[0]["score"] > ranked[1]["score"]
 
 
+def test_jobserve_dropdown_helper_normalizes_visible_option_text() -> None:
+    assert apply_agent._normalize_select_text("  Within   50 miles ") == apply_agent._normalize_select_text("within-50-miles")
+
+
+def test_jobserve_dropdown_helper_falls_back_to_native_select() -> None:
+    diagnostics: list[dict] = []
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Distance
+              <select name="distance">
+                <option>Within 10 miles</option>
+                <option>Within 50 miles</option>
+              </select>
+            </label>
+            """
+        )
+
+        selected = apply_agent.jobserve_click_dropdown_option(page, {"labels": [r"distance"]}, "Within 50 miles", field_name="Search distance", diagnostics=diagnostics)
+
+        assert selected is True
+        assert page.locator("select[name=distance]").input_value() == "Within 50 miles"
+        assert diagnostics[-1]["success"] is True
+        assert diagnostics[-1]["selected_option"] == "Within 50 miles"
+
+
+def test_jobserve_dropdown_helper_clicks_visible_custom_option() -> None:
+    diagnostics: list[dict] = []
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <button id="distance" onclick="document.querySelector('#menu').style.display = 'block'">Distance</button>
+            <div id="menu" style="display:none">
+              <button onclick="window.selectedDistance = 'Within 50 miles'">Within 50 miles</button>
+            </div>
+            """
+        )
+
+        selected = apply_agent.jobserve_click_dropdown_option(page, page.locator("#distance"), "Within 50 miles", field_name="Search distance", diagnostics=diagnostics)
+
+        assert selected is True
+        assert page.evaluate("window.selectedDistance") == "Within 50 miles"
+        assert diagnostics[-1]["dropdown_clicked"] is True
+        assert diagnostics[-1]["fallback_used"] == "visible_text"
+
+
 def test_submit_validation_allows_optional_salary_travel_defaults(db_session) -> None:
     user, job = _seed_application(db_session, jobserve=True)
     profile = UserProfile(user_id=user.id, cv_text="CV", email="apply-agent@example.invalid", cv_file_bytes=b"cv", cv_file_name="cv.pdf")
@@ -581,14 +627,16 @@ def test_jobserve_search_form_fill_select_all_industries() -> None:
             <button type="button">Industries</button><button type="button" onclick="window.selectedAll = true">Select All</button>
             """
         )
+        diagnostics: list[dict] = []
         flow = {"search_defaults": apply_agent._jobserve_search_preferences(SimpleNamespace(preferences={})), "search_controls": {}}
 
-        assert apply_agent._fill_jobserve_search_form(page, flow, []) is True
+        assert apply_agent._fill_jobserve_search_form(page, flow, diagnostics) is True
 
         assert page.locator("input[name=keywords]").input_value() == "AI"
         assert page.locator("input[name=location]").input_value() == "London"
         assert page.get_by_label("Remote only").is_checked() is False
         assert page.evaluate("window.selectedAll") is True
+        assert {"Search distance", "Posted within", "Job type", "Industries"}.issubset({item["field"] for item in diagnostics})
 
 
 def test_jobserve_modal_fill_uploads_filcv_and_review_only_does_not_submit(tmp_path, monkeypatch) -> None:

@@ -887,7 +887,7 @@ def _run_jobserve_search_to_apply(
     debug.step("jobserve_search_page_loaded", jobserve_flow_diagnostics=flow)
     debug.screenshot("search_page_loaded")
 
-    if not _fill_jobserve_search_form(page, flow, select_diagnostics, step_callback=progress_callback):
+    if not _fill_jobserve_search_form(page, flow, select_diagnostics, step_callback=progress_callback, screenshot_callback=debug.screenshot):
         debug.final_error = "JobServe search form could not be filled."
         debug.html("search_form_failed", page)
         raise RuntimeError(debug.final_error)
@@ -1027,6 +1027,7 @@ def _fill_jobserve_search_form(
     flow: dict[str, Any],
     select_diagnostics: list[dict[str, Any]],
     step_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    screenshot_callback: Callable[[str], None] | None = None,
 ) -> bool:
     prefs = flow["search_defaults"]
     controls = flow["search_controls"]
@@ -1034,22 +1035,55 @@ def _fill_jobserve_search_form(
     _report_jobserve_step(step_callback, "jobserve_search_keyword_filled", value=prefs["keywords"], succeeded=controls["keywords"])
     controls["location"] = _fill_first_label_or_selector(page, [r"location", r"where"], ['input[name*="location" i]', 'input[id*="location" i]'], prefs["location"])
     _report_jobserve_step(step_callback, "jobserve_search_location_filled", value=prefs["location"], succeeded=controls["location"])
-    controls["distance"] = _select_first_label_or_selector(page, [r"distance", r"miles"], ['select[name*="distance" i]', 'select[id*="distance" i]'], prefs["distance"], "Search distance", select_diagnostics)
+    controls["distance"] = jobserve_click_dropdown_option(
+        page,
+        {"labels": [r"distance", r"miles"], "selectors": ['select[name*="distance" i]', 'select[id*="distance" i]']},
+        prefs["distance"],
+        field_name="Search distance",
+        diagnostics=select_diagnostics,
+        step_callback=step_callback,
+        step_prefix="jobserve_search_distance",
+    )
     _report_jobserve_step(step_callback, "jobserve_search_distance_selected", value=prefs["distance"], succeeded=controls["distance"])
-    controls["posted_within"] = _select_first_label_or_selector(page, [r"posted", r"date"], ['select[name*="posted" i]', 'select[id*="posted" i]', 'select[name*="age" i]'], prefs["posted_within"], "Posted within", select_diagnostics)
+    _jobserve_dropdown_screenshot(screenshot_callback, "after_distance_dropdown_selection")
+    controls["posted_within"] = jobserve_click_dropdown_option(
+        page,
+        {"labels": [r"posted", r"date"], "selectors": ['select[name*="posted" i]', 'select[id*="posted" i]', 'select[name*="age" i]']},
+        prefs["posted_within"],
+        field_name="Posted within",
+        diagnostics=select_diagnostics,
+        step_callback=step_callback,
+        step_prefix="jobserve_search_posted",
+    )
     _report_jobserve_step(step_callback, "jobserve_search_posted_selected", value=prefs["posted_within"], succeeded=controls["posted_within"])
-    controls["job_type"] = _select_first_label_or_selector(page, [r"job type", r"type"], ['select[name*="type" i]', 'select[id*="type" i]'], prefs["job_type"], "Job type", select_diagnostics)
+    _jobserve_dropdown_screenshot(screenshot_callback, "after_posted_dropdown_selection")
+    controls["job_type"] = jobserve_click_dropdown_option(
+        page,
+        {"labels": [r"job type", r"type"], "selectors": ['select[name*="type" i]', 'select[id*="type" i]']},
+        prefs["job_type"],
+        field_name="Job type",
+        diagnostics=select_diagnostics,
+        step_callback=step_callback,
+        step_prefix="jobserve_search_job_type",
+    )
     _report_jobserve_step(step_callback, "jobserve_search_job_type_selected", value=prefs["job_type"], succeeded=controls["job_type"])
+    _jobserve_dropdown_screenshot(screenshot_callback, "after_job_type_dropdown_selection")
     controls["remote_only_unchecked"] = _set_checkbox_by_label(page, [r"remote only"], checked=False)
     _report_jobserve_step(step_callback, "jobserve_search_remote_only_unchecked", succeeded=controls["remote_only_unchecked"])
-    controls["industries_select_all"] = _select_all_jobserve_industries(page)
+    controls["industries_select_all"] = _select_all_jobserve_industries(page, select_diagnostics, step_callback=step_callback)
     _report_jobserve_step(step_callback, "jobserve_search_industries_selected", value="Select All", succeeded=controls["industries_select_all"])
+    _jobserve_dropdown_screenshot(screenshot_callback, "after_industries_dropdown_selection")
     return bool(controls["keywords"] and controls["location"])
 
 
 def _report_jobserve_step(step_callback: Callable[[str, dict[str, Any]], None] | None, step: str, **payload: Any) -> None:
     if step_callback is not None:
         step_callback(step, payload)
+
+
+def _jobserve_dropdown_screenshot(screenshot_callback: Callable[[str], None] | None, name: str) -> None:
+    if screenshot_callback is not None:
+        screenshot_callback(name)
 
 
 def _fill_first_label_or_selector(page, labels: list[str], selectors: list[str], value: str) -> bool:
@@ -1068,6 +1102,216 @@ def _fill_first_label_or_selector(page, labels: list[str], selectors: list[str],
         except Exception:  # noqa: BLE001
             continue
     return False
+
+
+def jobserve_click_dropdown_option(
+    page_or_frame,
+    dropdown_label_or_locator,
+    option_text: str,
+    *,
+    field_name: str | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
+    step_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    step_prefix: str | None = None,
+) -> bool:
+    diagnostic: dict[str, Any] = {
+        "field": field_name or option_text,
+        "target": option_text,
+        "dropdown_clicked": False,
+        "visible_options_found": [],
+        "selected_option": None,
+        "fallback_used": None,
+        "success": False,
+        "failure_reason": None,
+    }
+    locators = _jobserve_dropdown_locators(page_or_frame, dropdown_label_or_locator)
+    failures: list[str] = []
+    normalized_target = _normalize_select_text(option_text)
+
+    for locator in locators:
+        try:
+            locator.click(timeout=1500)
+            diagnostic["dropdown_clicked"] = True
+            _report_jobserve_step(step_callback, f"{step_prefix}_dropdown_opened" if step_prefix else "jobserve_dropdown_opened", field=diagnostic["field"], target=option_text)
+            page_or_frame.wait_for_timeout(250)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"click failed: {exc}")
+            native_selected = _jobserve_native_select_fallback(locator, option_text, diagnostic)
+            if native_selected:
+                _jobserve_dropdown_success(diagnostic, diagnostics, option_text, "native_select_before_click")
+                return True
+            continue
+
+        visible_options = _jobserve_visible_option_texts(page_or_frame)
+        diagnostic["visible_options_found"] = visible_options[:80]
+        option_locator = _jobserve_visible_option_locator(page_or_frame, option_text)
+        if option_locator is not None:
+            try:
+                option_locator.click(timeout=2000)
+                _report_jobserve_step(step_callback, f"{step_prefix}_option_clicked" if step_prefix else "jobserve_dropdown_option_clicked", field=diagnostic["field"], option=option_text)
+                _jobserve_dropdown_success(diagnostic, diagnostics, option_text, "visible_text")
+                return True
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"visible option click failed: {exc}")
+
+        normalized_option = _jobserve_visible_option_locator(page_or_frame, normalized_target, normalized=True)
+        if normalized_option is not None:
+            try:
+                normalized_option.click(timeout=2000)
+                _report_jobserve_step(step_callback, f"{step_prefix}_option_clicked" if step_prefix else "jobserve_dropdown_option_clicked", field=diagnostic["field"], option=option_text)
+                _jobserve_dropdown_success(diagnostic, diagnostics, option_text, "normalized_visible_text")
+                return True
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"normalized visible option click failed: {exc}")
+
+        native_selected = _jobserve_native_select_fallback(locator, option_text, diagnostic)
+        if native_selected:
+            _jobserve_dropdown_success(diagnostic, diagnostics, option_text, "native_select")
+            return True
+
+        if _jobserve_keyboard_dropdown_fallback(locator, option_text, diagnostic):
+            _jobserve_dropdown_success(diagnostic, diagnostics, option_text, "keyboard")
+            return True
+
+        if _jobserve_js_dropdown_fallback(locator, option_text, diagnostic):
+            _jobserve_dropdown_success(diagnostic, diagnostics, option_text, "js_change")
+            return True
+
+    diagnostic["failure_reason"] = "; ".join(failures[-5:]) or "Dropdown option could not be selected."
+    if diagnostics is not None:
+        diagnostics.append(diagnostic)
+    return False
+
+
+def _jobserve_dropdown_success(diagnostic: dict[str, Any], diagnostics: list[dict[str, Any]] | None, option_text: str, fallback_used: str) -> None:
+    diagnostic["selected_option"] = option_text
+    diagnostic["fallback_used"] = fallback_used
+    diagnostic["success"] = True
+    diagnostic["failure_reason"] = None
+    if diagnostics is not None:
+        diagnostics.append(diagnostic)
+
+
+def _jobserve_dropdown_locators(page_or_frame, dropdown_label_or_locator) -> list[Any]:
+    if hasattr(dropdown_label_or_locator, "click"):
+        return [dropdown_label_or_locator]
+    labels: list[str] = []
+    selectors: list[str] = []
+    if isinstance(dropdown_label_or_locator, dict):
+        labels = list(dropdown_label_or_locator.get("labels") or [])
+        selectors = list(dropdown_label_or_locator.get("selectors") or [])
+    elif isinstance(dropdown_label_or_locator, str):
+        labels = [dropdown_label_or_locator]
+    elif isinstance(dropdown_label_or_locator, list):
+        labels = [str(item) for item in dropdown_label_or_locator]
+    locators = []
+    for pattern in labels:
+        locators.extend(
+            [
+                page_or_frame.get_by_label(re.compile(pattern, re.I)).first,
+                page_or_frame.get_by_text(re.compile(pattern, re.I)).first,
+            ]
+        )
+    locators.extend(page_or_frame.locator(selector).first for selector in selectors)
+    return locators
+
+
+def _jobserve_visible_option_texts(page_or_frame) -> list[str]:
+    try:
+        return page_or_frame.evaluate(
+            """() => Array.from(document.querySelectorAll('[role=option], [role=menuitem], li, a, button, option, .select2-results__option, .dropdown-item'))
+                .filter((el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                })
+                .map((el) => (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' '))
+                .filter(Boolean)
+                .slice(0, 120)"""
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _jobserve_visible_option_locator(page_or_frame, option_text: str, *, normalized: bool = False):
+    if not normalized:
+        for locator in [
+            page_or_frame.get_by_role("option", name=re.compile(f"^{re.escape(option_text)}$", re.I)).first,
+            page_or_frame.get_by_role("menuitem", name=re.compile(f"^{re.escape(option_text)}$", re.I)).first,
+            page_or_frame.get_by_text(option_text, exact=True).last,
+            page_or_frame.get_by_text(re.compile(f"^{re.escape(option_text)}$", re.I)).last,
+        ]:
+            try:
+                if locator.is_visible(timeout=500):
+                    return locator
+            except Exception:  # noqa: BLE001
+                continue
+    normalized_target = _normalize_select_text(option_text)
+    for text in _jobserve_visible_option_texts(page_or_frame):
+        if _normalize_select_text(text) == normalized_target:
+            locator = page_or_frame.get_by_text(text, exact=True).last
+            try:
+                if locator.is_visible(timeout=500):
+                    return locator
+            except Exception:  # noqa: BLE001
+                continue
+    return None
+
+
+def _jobserve_native_select_fallback(locator, option_text: str, diagnostic: dict[str, Any]) -> bool:
+    before = len(diagnostic.get("available_options") or [])
+    selected = _select_locator_option(locator, option_text, field_name=str(diagnostic["field"]), label_pattern="jobserve_dropdown_native", diagnostics=None)
+    if selected:
+        try:
+            options = locator.evaluate(
+                """element => Array.from(element.options || []).map((option, index) => ({
+                    index,
+                    label: option.label || option.textContent || '',
+                    text: option.textContent || '',
+                    value: option.value || ''
+                }))""",
+                timeout=1000,
+            )
+            if len(options) > before:
+                diagnostic["available_options"] = options
+        except Exception:  # noqa: BLE001
+            pass
+    return selected
+
+
+def _jobserve_keyboard_dropdown_fallback(locator, option_text: str, diagnostic: dict[str, Any]) -> bool:
+    try:
+        locator.click(timeout=1000)
+        locator.press_sequentially(option_text, timeout=1500)
+        locator.press("Enter", timeout=1000)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        diagnostic["failure_reason"] = f"keyboard fallback failed: {exc}"
+        return False
+
+
+def _jobserve_js_dropdown_fallback(locator, option_text: str, diagnostic: dict[str, Any]) -> bool:
+    try:
+        return bool(
+            locator.evaluate(
+                """(element, target) => {
+                    const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                    const options = Array.from(element.options || []);
+                    const wanted = normalize(target);
+                    const option = options.find((item) => item.textContent === target || normalize(item.textContent) === wanted || normalize(item.textContent).includes(wanted));
+                    if (!option) return false;
+                    element.value = option.value;
+                    element.dispatchEvent(new Event('input', { bubbles: true }));
+                    element.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }""",
+                option_text,
+                timeout=1000,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        diagnostic["failure_reason"] = f"js fallback failed: {exc}"
+        return False
 
 
 def _select_first_label_or_selector(page, labels: list[str], selectors: list[str], value: str, field_name: str, diagnostics: list[dict[str, Any]]) -> bool:
@@ -1101,23 +1345,21 @@ def _set_checkbox_by_label(page, labels: list[str], *, checked: bool) -> bool:
     return False
 
 
-def _select_all_jobserve_industries(page) -> bool:
-    for locator in [
-        page.get_by_text(re.compile(r"industr(y|ies)", re.I)).first,
-        page.locator('select[name*="industry" i], select[id*="industry" i]').first,
-    ]:
-        try:
-            locator.click(timeout=1000)
-            break
-        except Exception:  # noqa: BLE001
-            continue
-    for text in [r"select all", r"all industries"]:
-        try:
-            page.get_by_text(re.compile(text, re.I)).first.click(timeout=1500)
-            return True
-        except Exception:  # noqa: BLE001
-            continue
-    return False
+def _select_all_jobserve_industries(
+    page,
+    diagnostics: list[dict[str, Any]] | None = None,
+    *,
+    step_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> bool:
+    return jobserve_click_dropdown_option(
+        page,
+        {"labels": [r"industr(y|ies)", r"sector"], "selectors": ['select[name*="industry" i]', 'select[id*="industry" i]', 'select[name*="ind" i]', '[id*="industry" i]', '[class*="industry" i]']},
+        "Select All",
+        field_name="Industries",
+        diagnostics=diagnostics,
+        step_callback=step_callback,
+        step_prefix="jobserve_search_industries",
+    )
 
 
 def _click_jobserve_search(page) -> bool:
