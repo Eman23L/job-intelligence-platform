@@ -1,11 +1,14 @@
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.models import Job, User
 from app.db.session import get_db
 from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyRequest, AssistApplyResult
-from app.services.apply_agent import BrowserAutomationError, assist_apply_application
+from app.services.apply_agent import BrowserAutomationError, assist_apply_application, queued_assist_apply_result, run_assist_apply_background
 from app.services.applications import (
     get_prepare_applications_run_status,
     list_applications,
@@ -13,9 +16,10 @@ from app.services.applications import (
     run_prepare_applications_background,
     start_prepare_applications_run,
 )
-from app.services.queue import enqueue_or_background
+from app.services.queue import enqueue_or_background, queue_enabled
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+logger = logging.getLogger(__name__)
 
 
 def _default_user(db: Session) -> User:
@@ -49,12 +53,26 @@ def get_prepare_application_run(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{application_id}/assist-apply", response_model=AssistApplyResult)
-def assist_apply(application_id: int, payload: AssistApplyRequest | None = None, db: Session = Depends(get_db)):
+def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload: AssistApplyRequest | None = None, db: Session = Depends(get_db)):
     job = db.get(Job, application_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    user = _default_user(db)
+    mode = payload.mode if payload else "review_only"
+    if queue_enabled():
+        enqueue_or_background(background_tasks, run_assist_apply_background, application_id, user.id, mode)
+        logger.info(
+            "assist_apply_queued service_type=%s application_id=%s user_id=%s mode=%s",
+            settings.service_type,
+            application_id,
+            user.id,
+            mode,
+        )
+        return queued_assist_apply_result()
+
+    logger.info("assist_apply_running_inline service_type=%s application_id=%s mode=%s", settings.service_type, application_id, mode)
     try:
-        return assist_apply_application(db, job, _default_user(db), mode=(payload.mode if payload else "review_only"))
+        return assist_apply_application(db, job, user, mode=mode)
     except BrowserAutomationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"error": exc.error, "message": exc.message}) from exc
     except ValueError as exc:

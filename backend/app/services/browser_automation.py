@@ -32,11 +32,17 @@ class ChromiumDetection:
 def browser_status() -> dict[str, Any]:
     redis_ok = redis_connected()
     chromium = detect_chromium()
+    diagnostics = chromium_diagnostics(chromium)
     return {
+        "service_type": settings.service_type,
         "queue_enabled": settings.queue_enabled,
         "redis_connected": redis_ok,
         "playwright_installed": playwright_installed(),
         "chromium_available": chromium.exists and chromium.executable,
+        "playwright_browsers_path": diagnostics["playwright_browsers_path"],
+        "chromium_executable_path": diagnostics["chromium_executable_path"],
+        "chromium_file_exists": diagnostics["chromium_file_exists"],
+        "chromium_file_executable": diagnostics["chromium_file_executable"],
         "worker_running": worker_running(redis_ok=redis_ok),
     }
 
@@ -97,10 +103,11 @@ def detect_chromium() -> ChromiumDetection:
     return ChromiumDetection(executable_path=None, exists=False, executable=False)
 
 
-def chromium_diagnostics() -> dict[str, Any]:
-    detection = detect_chromium()
+def chromium_diagnostics(detection: ChromiumDetection | None = None) -> dict[str, Any]:
+    detection = detection or detect_chromium()
     cache_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
     return {
+        "service_type": settings.service_type,
         "playwright_browsers_path": cache_path,
         "chromium_executable_path": detection.executable_path,
         "chromium_path_source": detection.source,
@@ -122,14 +129,11 @@ def _playwright_chromium_executable_path() -> str | None:
 
 
 def _glob_chromium_executable_path() -> Path | None:
-    cache_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if not cache_path:
-        return None
-    root = Path(cache_path)
+    roots = _browser_search_roots()
     candidates = [
-        *root.glob("chromium-*/chrome-linux/chrome"),
-        *root.glob("chromium-*/chrome-win/chrome.exe"),
-        *root.glob("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
+        *[candidate for root in roots for candidate in root.glob("chromium-*/chrome-linux/chrome")],
+        *[candidate for root in roots for candidate in root.glob("chromium-*/chrome-win/chrome.exe")],
+        *[candidate for root in roots for candidate in root.glob("chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium")],
     ]
     usable = [candidate for candidate in candidates if candidate.exists() and _is_executable(candidate)]
     if usable:
@@ -137,6 +141,30 @@ def _glob_chromium_executable_path() -> Path | None:
     if candidates:
         return sorted(candidates)[-1]
     return None
+
+
+def _browser_search_roots() -> list[Path]:
+    cache_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if cache_path and cache_path != "0":
+        return [Path(cache_path)]
+    if cache_path == "0":
+        local = _hermetic_browser_root()
+        return [local] if local else []
+    roots: list[Path] = []
+    local = _hermetic_browser_root()
+    if local:
+        roots.append(local)
+    return roots
+
+
+def _hermetic_browser_root() -> Path | None:
+    try:
+        import playwright
+
+        return Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("playwright_hermetic_root_check_failed error=%s", exc)
+        return None
 
 
 def _detection_for_path(path: str, *, source: str) -> ChromiumDetection:
@@ -155,9 +183,9 @@ def _is_executable(path: Path) -> bool:
 
 
 def _browser_cache_listing(cache_path: str | None) -> list[str]:
-    if not cache_path:
+    root = _hermetic_browser_root() if cache_path == "0" else Path(cache_path) if cache_path else None
+    if root is None:
         return []
-    root = Path(cache_path)
     if not root.exists():
         return []
     try:

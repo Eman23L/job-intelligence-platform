@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import Job, JobScore, User
+from app.db.session import SessionLocal
 from app.schemas.database import AssistApplyResult
-from app.services.browser_automation import chromium_executable_path, validate_browser_automation_availability
+from app.services.browser_automation import chromium_diagnostics, chromium_executable_path, validate_browser_automation_availability
 from app.services.job_availability import check_job_availability
 from app.services.profile import get_profile
 from app.services.run_tracking import utcnow
@@ -81,6 +82,68 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     return result
 
 
+def run_assist_apply_background(application_id: int, user_id: int, mode: str = "review_only") -> None:
+    logger.info(
+        "assist_apply_worker_start service_type=%s application_id=%s user_id=%s mode=%s",
+        settings.service_type,
+        application_id,
+        user_id,
+        mode,
+    )
+    with SessionLocal() as db:
+        job = db.get(Job, application_id)
+        user = db.get(User, user_id)
+        if job is None or user is None:
+            logger.error("assist_apply_worker_missing_record service_type=%s application_id=%s user_id=%s", settings.service_type, application_id, user_id)
+            return
+        try:
+            assist_apply_application(db, job, user, mode=mode)
+        except BrowserAutomationError as exc:
+            _store_assist_failure(db, job, exc.message, error=exc.error)
+            logger.exception(
+                "assist_apply_worker_browser_error service_type=%s application_id=%s error_code=%s error=%s",
+                settings.service_type,
+                application_id,
+                exc.error,
+                exc.message,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _store_assist_failure(db, job, str(exc))
+            logger.exception("assist_apply_worker_failed service_type=%s application_id=%s error=%s", settings.service_type, application_id, exc)
+        else:
+            logger.info("assist_apply_worker_completed service_type=%s application_id=%s", settings.service_type, application_id)
+
+
+def queued_assist_apply_result() -> AssistApplyResult:
+    return AssistApplyResult(
+        status="queued",
+        filled_fields=[],
+        unfilled_fields=[],
+        unfilled_required_fields=[],
+        uploaded_cv=False,
+        submitted=False,
+        warnings=["Assisted apply queued on the browser automation worker."],
+        screenshot_path=None,
+    )
+
+
+def _store_assist_failure(db: Session, job: Job, message: str, *, error: str | None = None) -> None:
+    result = AssistApplyResult(
+        status="failed",
+        filled_fields=[],
+        unfilled_fields=[],
+        unfilled_required_fields=[],
+        uploaded_cv=False,
+        submitted=False,
+        warnings=[f"{error}: {message}" if error else message],
+        screenshot_path=None,
+    )
+    job.assisted_result = result.model_dump()
+    job.assisted_warnings = result.warnings
+    job.last_apply_attempt_at = utcnow()
+    db.commit()
+
+
 def profile_field_candidates(user: User, profile) -> dict[str, FieldCandidate]:
     preferences = profile.preferences if profile is not None and profile.preferences else {}
     raw_values = {
@@ -136,6 +199,15 @@ def classify_form_field(label_text: str, input_type: str = "", autocomplete: str
 
 
 def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate], *, profile=None, mode: str = "review_only", apply_strategy: str = "unknown") -> AssistApplyResult:
+    diagnostics = chromium_diagnostics()
+    logger.info(
+        "assist_apply_browser_preflight service_type=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_file_exists=%s chromium_file_executable=%s",
+        settings.service_type,
+        diagnostics["playwright_browsers_path"],
+        diagnostics["chromium_executable_path"],
+        diagnostics["chromium_file_exists"],
+        diagnostics["chromium_file_executable"],
+    )
     availability = validate_browser_automation_availability(require_worker=settings.queue_enabled)
     if not availability.available:
         raise BrowserAutomationError(availability.error or "worker_unavailable", availability.message or "Browser automation worker is offline.")

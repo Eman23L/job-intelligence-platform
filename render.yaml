@@ -3,7 +3,7 @@ services:
     name: job-intelligence-backend
     env: python
     rootDir: .
-    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+    buildCommand: pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
     startCommand: python -m alembic -c alembic.ini upgrade head && uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
@@ -14,6 +14,8 @@ services:
         value: "false"
       - key: LOG_LEVEL
         value: INFO
+      - key: SERVICE_TYPE
+        value: web
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGINS
@@ -31,7 +33,7 @@ services:
       - key: PLAYWRIGHT_ENABLED
         value: "true"
       - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/.cache/ms-playwright
+        value: "0"
       - key: REDIS_URL
         fromService:
           type: redis
@@ -41,7 +43,7 @@ services:
     name: job-intelligence-worker
     env: python
     rootDir: .
-    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+    buildCommand: pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
     startCommand: PYTHONPATH=backend python -m app.worker
     envVars:
       - key: PYTHON_VERSION
@@ -52,6 +54,8 @@ services:
         value: "false"
       - key: LOG_LEVEL
         value: INFO
+      - key: SERVICE_TYPE
+        value: worker
       - key: DATABASE_URL
         sync: false
       - key: AI_PROVIDER
@@ -67,7 +71,7 @@ services:
       - key: PLAYWRIGHT_ENABLED
         value: "true"
       - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/.cache/ms-playwright
+        value: "0"
       - key: REDIS_URL
         fromService:
           type: redis

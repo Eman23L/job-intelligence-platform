@@ -32,11 +32,22 @@ def test_browser_status_endpoint_returns_diagnostics(monkeypatch) -> None:
     response = client.get("/system/browser-status")
 
     assert response.status_code == 200
-    assert response.json() == {
+    assert response.json() | {
+        "service_type": "web",
+        "playwright_browsers_path": None,
+        "chromium_executable_path": None,
+        "chromium_file_exists": False,
+        "chromium_file_executable": False,
+    } == {
+        "service_type": "web",
         "queue_enabled": True,
         "redis_connected": True,
         "playwright_installed": True,
         "chromium_available": True,
+        "playwright_browsers_path": None,
+        "chromium_executable_path": None,
+        "chromium_file_exists": False,
+        "chromium_file_executable": False,
         "worker_running": True,
     }
 
@@ -70,6 +81,25 @@ def test_chromium_detection_globs_versioned_browser_cache(monkeypatch, tmp_path)
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(cache))
     monkeypatch.setattr(browser_automation, "playwright_installed", lambda: True)
     monkeypatch.setattr(browser_automation, "_playwright_chromium_executable_path", lambda: str(cache / "chromium-1140" / "chrome-linux" / "chrome"))
+
+    detection = browser_automation.detect_chromium()
+
+    assert detection.executable_path == str(executable)
+    assert detection.exists is True
+    assert detection.executable is True
+    assert detection.source == "cache_glob"
+
+
+def test_chromium_detection_supports_hermetic_browser_path(monkeypatch, tmp_path) -> None:
+    local_browsers = tmp_path / "driver" / "package" / ".local-browsers"
+    executable = local_browsers / "chromium-1201" / "chrome-linux" / "chrome"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+    monkeypatch.setattr(browser_automation, "playwright_installed", lambda: True)
+    monkeypatch.setattr(browser_automation, "_playwright_chromium_executable_path", lambda: str(local_browsers / "chromium-1140" / "chrome-linux" / "chrome"))
+    monkeypatch.setattr(browser_automation, "_hermetic_browser_root", lambda: local_browsers)
 
     detection = browser_automation.detect_chromium()
 

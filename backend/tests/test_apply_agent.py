@@ -12,6 +12,7 @@ from app.db.models import Base, Job, JobScore, JobSource, User, UserProfile
 from app.db.session import get_db
 from app.main import app
 from app.schemas.database import AssistApplyResult
+from app.api import applications as applications_api
 from app.services import apply_agent
 
 
@@ -112,6 +113,25 @@ def test_assist_apply_endpoint_never_submits(monkeypatch) -> None:
     assert response.json()["status"] == "review_required"
     assert submitted is False
     assert any("intentionally not clicked" in warning for warning in response.json()["warnings"])
+
+
+def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:
+    enqueued = []
+    monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)
+    monkeypatch.setattr(
+        applications_api,
+        "enqueue_or_background",
+        lambda background_tasks, func, *args, **kwargs: enqueued.append((func, args, kwargs)) or "rq-job",
+    )
+
+    with apply_client() as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert enqueued
+    assert enqueued[0][0] is apply_agent.run_assist_apply_background
+    assert enqueued[0][1][0] == ids["job"]
 
 
 def test_submit_requires_explicit_mode(monkeypatch) -> None:

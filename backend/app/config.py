@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     queue_enabled: bool = Field(default=False, alias="QUEUE_ENABLED")
     queue_name: str = Field(default="default", alias="QUEUE_NAME")
     playwright_enabled: bool = Field(default=False, alias="PLAYWRIGHT_ENABLED")
+    service_type: str = Field(default="web", alias="SERVICE_TYPE")
 
     @field_validator("database_url", mode="before")
     @classmethod

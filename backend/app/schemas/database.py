@@ -716,10 +716,15 @@ class AssistApplyRequest(BaseModel):
 
 
 class BrowserStatus(BaseModel):
+    service_type: str = "web"
     queue_enabled: bool
     redis_connected: bool
     playwright_installed: bool
     chromium_available: bool
+    playwright_browsers_path: str | None = None
+    chromium_executable_path: str | None = None
+    chromium_file_exists: bool = False
+    chromium_file_executable: bool = False
     worker_running: bool
 
 

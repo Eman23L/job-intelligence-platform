@@ -12,11 +12,12 @@ Required environment variables on both web and worker:
 - `QUEUE_ENABLED=true`: use RQ. Set `false` only for local fallback to FastAPI `BackgroundTasks`.
 - `QUEUE_NAME=default`: queue name consumed by the worker.
 - `PLAYWRIGHT_ENABLED=true`: allow assisted browser automation.
-- `PLAYWRIGHT_BROWSERS_PATH=/opt/render/.cache/ms-playwright`: shared Render cache path for installed browsers.
+- `PLAYWRIGHT_BROWSERS_PATH=0`: install browsers hermetically into the deployed Python Playwright package directory.
+- `SERVICE_TYPE=web` on the FastAPI service and `SERVICE_TYPE=worker` on the RQ worker.
 
 Build command for both Python services:
 ```bash
-pip install -r requirements.txt && python -m playwright install --with-deps chromium
+pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
 ```
 
 Worker start command:
@@ -32,15 +33,16 @@ Recommended Render sizing:
 - Redis: the managed Render Redis service is sufficient for the current RQ queue.
 
 Browser automation diagnostics:
-- `GET /system/browser-status` reports queue, Redis, Playwright, Chromium, and worker health.
-- Worker startup logs include Redis connectivity, queue status, Playwright availability, and the Chromium executable path.
+- `GET /system/browser-status` on the backend reports queue, Redis, local service Playwright/Chromium, and worker health. The current backend URL is `https://job-intelligence-ai-63rj.onrender.com/system/browser-status`.
+- From the Vercel frontend domain, `/system/browser-status` is proxied to the backend.
+- Worker startup logs include service type, Redis connectivity, queue status, `PLAYWRIGHT_BROWSERS_PATH`, Playwright availability, the resolved Chromium executable path, and file existence/executable checks.
 
 Troubleshooting:
 - `playwright_not_installed`: confirm `requirements.txt` includes `playwright` and the Render build ran `pip install -r requirements.txt`.
-- `chromium_not_installed`: confirm the build command includes `python -m playwright install --with-deps chromium` and `PLAYWRIGHT_BROWSERS_PATH` is set to `/opt/render/.cache/ms-playwright`.
+- `chromium_not_installed`: confirm the build command includes `PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium` and runtime `PLAYWRIGHT_BROWSERS_PATH` is also `0`.
 - If Chromium exists but is not executable, check the worker startup log fields `chromium_file_exists`, `chromium_file_executable`, and `ms_playwright_listing`.
-- If Chromium launches but fails due to missing Linux packages, redeploy with the `--with-deps` install command so Playwright installs required OS dependencies during the Render build.
+- If Chromium launches but fails due to missing Linux packages, switch the build command to `PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install --with-deps chromium` or use Docker with a Playwright-compatible base image.
 - `worker_unavailable`: confirm the worker service is deployed, `QUEUE_ENABLED=true`, `REDIS_URL` points to the Render Redis service, and worker logs show it started against the expected queue.
 - If Chromium launches fail under memory pressure, increase the worker instance size before retrying assisted applications.
 
-The frontend continues polling the existing run status endpoints. No frontend contract changes are required when moving from fallback background tasks to RQ.
+When `QUEUE_ENABLED=true`, assisted apply requests are queued to RQ and run in the worker. The web service should not launch Chromium for assisted applications in production.

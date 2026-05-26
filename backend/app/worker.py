@@ -17,7 +17,8 @@ def main() -> None:
     status = browser_status()
     chromium = chromium_diagnostics()
     logger.info(
-        "worker_startup queue=%s queue_enabled=%s redis_connected=%s playwright_enabled=%s playwright_installed=%s chromium_available=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_path_source=%s chromium_file_exists=%s chromium_file_executable=%s",
+        "worker_startup service_type=%s queue=%s queue_enabled=%s redis_connected=%s playwright_enabled=%s playwright_installed=%s chromium_available=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_path_source=%s chromium_file_exists=%s chromium_file_executable=%s",
+        settings.service_type,
         settings.queue_name,
         settings.queue_enabled,
         redis_connected,

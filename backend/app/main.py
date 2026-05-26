@@ -35,7 +35,8 @@ def _validate_production_startup() -> None:
         return
     logger = logging.getLogger(__name__)
     logger.info(
-        "production startup diagnostics app_env=%s debug=%s cors_origins=%s database_url=%s",
+        "production startup diagnostics service_type=%s app_env=%s debug=%s cors_origins=%s database_url=%s",
+        settings.service_type,
         settings.app_env,
         settings.debug,
         settings.cors_origin_list,
