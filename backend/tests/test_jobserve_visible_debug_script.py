@@ -165,7 +165,7 @@ def test_jobserve_visible_debug_submit_without_identity_gives_friendly_early_err
     try:
         module.validate_local_submit_identity(args)
     except module.LocalSubmitIdentityError as exc:
-        assert "Submit mode requires intended job identity" in str(exc)
+        assert "Submit mode needs intended job identity" in str(exc)
     else:
         raise AssertionError("Expected LocalSubmitIdentityError")
 
@@ -207,6 +207,17 @@ def test_jobserve_visible_debug_submit_with_use_current_selected_job_proceeds(tm
 
     assert context["identity_source"] == "current_selected_job"
     assert context["title"] is None
+
+
+def test_jobserve_visible_debug_use_current_selected_aliases_parse(tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+
+    for flag in ["--use-current-selected-job", "--use-selected-job", "--use-visible-job"]:
+        args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit", flag])
+        assert args.use_current_selected_job is True
+        module.validate_local_submit_identity(args)
 
 
 def test_jobserve_visible_debug_shared_flow_called_in_review_only(monkeypatch, tmp_path) -> None:
@@ -418,6 +429,7 @@ def test_jobserve_visible_debug_startup_output_includes_selected_mode(capsys, tm
     output = capsys.readouterr().out
     assert "submit flag received: true" in output
     assert "mode selected: submit_with_confirmation" in output
+    assert "use_current_selected_job flag received: false" in output
     assert "identity source: manual_args" in output
     assert "intended title: AI Engineer" in output
     assert "intended company: Example Ltd" in output
@@ -438,6 +450,7 @@ def test_jobserve_visible_debug_startup_output_includes_review_mode(capsys, tmp_
 
     output = capsys.readouterr().out
     assert "submit flag received: false" in output
+    assert "use_current_selected_job flag received: false" in output
     assert "mode selected: review_only" in output
     assert "identity source: missing" in output
     assert "email: me@example.com" in output

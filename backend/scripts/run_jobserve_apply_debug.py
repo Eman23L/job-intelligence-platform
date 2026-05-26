@@ -84,7 +84,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--intended-company", help="Intended JobServe company for local submit safety checks.")
     parser.add_argument("--intended-reference", help="Intended JobServe reference/external id for local submit safety checks.")
     parser.add_argument("--intended-url", help="Intended JobServe URL for local submit safety checks.")
-    parser.add_argument("--use-current-selected-job", action="store_true", help="Local-only: use the currently selected JobServe result as the intended job after search results load.")
+    parser.add_argument("--use-current-selected-job", "--use-selected-job", "--use-visible-job", dest="use_current_selected_job", action="store_true", help="Local-only: use the currently selected JobServe result as the intended job after search results load.")
     parser.add_argument("--submit", action="store_true", help="Click the final JobServe Apply button. Defaults to review-only.")
     parser.add_argument("--auto-submit", action="store_true", help="Alias for --submit.")
     parser.add_argument("--pause-each-step", action=argparse.BooleanOptionalAction, default=False)
@@ -328,7 +328,7 @@ def validate_local_submit_identity(args: argparse.Namespace) -> None:
     has_manual_identity = bool(any(str(context.get(key) or "").strip() for key in ["title", "company_name", "source_job_id", "canonical_url"]))
     if has_manual_identity or args.use_current_selected_job:
         return
-    raise LocalSubmitIdentityError("Submit mode requires intended job identity. Pass --intended-title/--intended-company or --use-current-selected-job.")
+    raise LocalSubmitIdentityError("Submit mode needs intended job identity. Pass --use-current-selected-job or --intended-title/--intended-company.")
 
 
 class TerminalProgress:
@@ -368,10 +368,17 @@ class TerminalProgress:
         elif "jobserve_flow_diagnostics" in payload:
             flow = payload["jobserve_flow_diagnostics"]
             selected = flow.get("selected_job") if isinstance(flow, dict) else None
+            if step == "jobserve_current_selected_job_used_as_intended":
+                current = flow.get("current_selected_job_identity") or {}
+                print("[jobserve-debug] Using current selected JobServe result as intended job", flush=True)
+                print(f"[jobserve-debug] title: {current.get('title') or '(missing)'}", flush=True)
+                print(f"[jobserve-debug] company: {current.get('company') or '(missing)'}", flush=True)
+                print(f"[jobserve-debug] reference: {current.get('reference') or '(missing)'}", flush=True)
+                suffix = f" identity source={flow.get('identity_source')}"
             if step == "jobserve_target_job_selected":
                 auto = "matched" if flow.get("auto_selected_matched") else "did not match"
                 replacement = flow.get("selected_result_identity") or selected
-                suffix = f" auto-selected {auto}; selected={replacement}"
+                suffix = f" auto-selected {auto}; selected={replacement}; identity_check={flow.get('identity_check_result')}; final_submit_allowed={flow.get('blocked_reason') is None}"
             elif step == "jobserve_results_loaded":
                 suffix = " checking intended job identity"
             elif selected:
@@ -449,6 +456,7 @@ def print_startup_config(args: argparse.Namespace, trace_path: Path, cv_path: Pa
     job_context = build_job_context(args)
     print("[jobserve-debug] opening search page", flush=True)
     print(f"[jobserve-debug] submit flag received: {str(submit_enabled).lower()}", flush=True)
+    print(f"[jobserve-debug] use_current_selected_job flag received: {str(args.use_current_selected_job).lower()}", flush=True)
     print(f"[jobserve-debug] mode selected: {mode_from_args(args)}", flush=True)
     print(f"[jobserve-debug] identity source: {job_context.get('identity_source')}", flush=True)
     print(f"[jobserve-debug] intended title: {job_context.get('title') or '(missing)'}", flush=True)

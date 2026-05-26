@@ -928,16 +928,35 @@ def _run_jobserve_search_to_apply(
     debug.step("jobserve_results_loaded", jobserve_flow_diagnostics=flow)
 
     if use_current_selected_job_as_intended and not _jobserve_target_has_identity(job_context):
-        current_identity = _jobserve_detail_panel_identity(page)
-        if current_identity:
-            job_context = _jobserve_target_from_current_identity(current_identity)
+        job_context = _jobserve_use_current_selected_job_as_intended(page, flow)
+        if _jobserve_target_has_identity(job_context):
             flow["target"] = job_context
             flow["intended_job_identity"] = job_context
-            flow["identity_source"] = "current_selected_job"
-            flow["current_selected_job_identity"] = current_identity
             debug.step("jobserve_current_selected_job_used_as_intended", jobserve_flow_diagnostics=flow)
         else:
-            flow["blocked_reason"] = "Could not read current selected JobServe job identity"
+            timing_diagnostics["result_matching_ms"] = 0
+            debug.final_error = flow.get("blocked_reason") or "Could not read current selected JobServe job identity"
+            debug.screenshot("current_selected_job_identity_missing")
+            debug.html("current_selected_job_identity_missing", page)
+            warnings.append(debug.final_error)
+            return AssistApplyResult(
+                status="review_required",
+                filled_fields=[],
+                unfilled_fields=[],
+                unfilled_required_fields=[],
+                uploaded_cv=False,
+                submitted=False,
+                warnings=_dedupe(warnings),
+                screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+                profile_diagnostics=profile_diagnostics,
+                jobserve_flow_diagnostics=flow,
+                timing_diagnostics={**timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
+                progress={"current_step": "review_required", "elapsed_ms": int((time.perf_counter() - flow_started) * 1000), "last_heartbeat_at": utcnow().isoformat()},
+                upload_diagnostics=upload_diagnostics,
+                select_diagnostics=select_diagnostics,
+                exceptions=exceptions,
+                **debug.result_kwargs(page),
+            )
 
     match_started = time.perf_counter()
     verified_identity = _verify_or_select_intended_jobserve_result(page, browser, job_context, flow)
@@ -1926,6 +1945,7 @@ def _verify_or_select_intended_jobserve_result(page, browser, job_context: dict[
         flow["first_job_selected"] = True
         flow["selected_result_identity"] = auto_identity
         flow["verified_detail_panel_identity"] = auto_identity
+        flow["identity_check_result"] = "matched_auto_selected"
         return auto_identity
     flow["auto_selected_matched"] = False
     if not candidates or int(candidates[0].get("score") or 0) <= 0:
@@ -1947,10 +1967,13 @@ def _verify_or_select_intended_jobserve_result(page, browser, job_context: dict[
     flow["verified_detail_panel_identity"] = detail_identity
     if detail_identity and not _jobserve_identity_matches(detail_identity, job_context):
         flow["blocked_reason"] = "Selected JobServe detail panel does not match intended job"
+        flow["identity_check_result"] = "mismatch"
         return None
     if not detail_identity and not _jobserve_identity_matches(selected, job_context):
         flow["blocked_reason"] = "Selected JobServe result does not match intended job"
+        flow["identity_check_result"] = "mismatch"
         return None
+    flow["identity_check_result"] = "matched_selected_result"
     return detail_identity
 
 
@@ -2018,6 +2041,27 @@ def _jobserve_identity_clear_mismatch(modal_identity: dict[str, Any], verified_i
 
 def _jobserve_target_has_identity(target: dict[str, Any]) -> bool:
     return any(str(target.get(key) or "").strip() for key in ["source_job_id", "original_external_id", "canonical_url", "title", "original_title", "company_name", "original_company"])
+
+
+def _jobserve_use_current_selected_job_as_intended(page, flow: dict[str, Any]) -> dict[str, Any]:
+    current_identity = _jobserve_detail_panel_identity(page)
+    flow["auto_selected_result_identity"] = current_identity
+    flow["selected_result_identity"] = current_identity
+    flow["verified_detail_panel_identity"] = current_identity
+    flow["identity_source"] = "current_selected_job"
+    flow["current_selected_job_identity"] = current_identity
+    if current_identity:
+        flow["selected_detail_title"] = current_identity.get("title") or ""
+        flow["selected_detail_company"] = current_identity.get("company") or ""
+        flow["selected_detail_reference"] = current_identity.get("reference") or ""
+    if not current_identity or not str(current_identity.get("title") or "").strip():
+        flow["blocked_reason"] = "Could not read current selected JobServe job identity"
+        flow["target_job_match_candidates"] = _jobserve_result_candidates(page)[:10]
+        return {}
+    target = _jobserve_target_from_current_identity(current_identity)
+    flow["auto_selected_matched"] = True
+    flow["first_job_selected"] = True
+    return target
 
 
 def _jobserve_target_from_current_identity(identity: dict[str, Any]) -> dict[str, Any]:

@@ -420,6 +420,35 @@ def test_jobserve_current_selected_identity_can_be_converted_to_intended_target(
     assert apply_agent._jobserve_identity_matches(identity, target) is True
 
 
+def test_jobserve_current_selected_detail_becomes_intended_identity() -> None:
+    identity = {
+        "title": "AI Engineer",
+        "company": "Opus Recruitment Solutions Ltd",
+        "reference": "ABC123",
+        "href": "https://www.jobserve.com/job/ABC123",
+        "text": "AI Engineer Opus Recruitment Solutions Ltd Reference ABC123",
+    }
+    flow: dict = {}
+
+    target = apply_agent._jobserve_use_current_selected_job_as_intended(_FakeJobServeDetailPage(identity), flow)
+
+    assert target["title"] == "AI Engineer"
+    assert target["company_name"] == "Opus Recruitment Solutions Ltd"
+    assert target["source_job_id"] == "ABC123"
+    assert flow["identity_source"] == "current_selected_job"
+    assert flow["auto_selected_matched"] is True
+
+
+def test_jobserve_current_selected_missing_title_returns_specific_block_reason() -> None:
+    flow: dict = {}
+
+    target = apply_agent._jobserve_use_current_selected_job_as_intended(_FakeJobServeDetailPage({"text": "Apply now"}), flow)
+
+    assert target == {}
+    assert flow["blocked_reason"] == "Could not read current selected JobServe job identity"
+    assert flow["target_job_match_candidates"] == []
+
+
 def test_jobserve_dropdown_helper_normalizes_visible_option_text() -> None:
     assert apply_agent._normalize_select_text("  Within   50 miles ") == apply_agent._normalize_select_text("within-50-miles")
 
@@ -1234,6 +1263,16 @@ class _FakePage:
 class _FakeJobServeIdentityPage:
     def evaluate(self, *args, **kwargs):
         return []
+
+
+class _FakeJobServeDetailPage:
+    def __init__(self, identity: dict) -> None:
+        self.identity = identity
+
+    def evaluate(self, script, *args, **kwargs):
+        if "querySelectorAll('a[href], article" in str(script):
+            return []
+        return self.identity
 
 
 class _FakeEmailPage:
