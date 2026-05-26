@@ -53,6 +53,7 @@ STEP_MESSAGES = {
     "jobserve_apply_working_status_selected": "selecting UK Citizen",
     "jobserve_apply_cv_uploaded": "uploading CV",
     "jobserve_application_form_filled": "ready to submit",
+    "jobserve_about_to_submit": "About to submit. Press Enter to continue.",
     "jobserve_first_apply_clicked": "first Apply clicked",
     "jobserve_final_apply_clicked": "clicking final Apply",
     "jobserve_submitted_message_seen": "submitted message seen",
@@ -151,6 +152,12 @@ class TerminalProgress:
         if step == "jobserve_search_remote_only_unchecked" and payload.get("result") == "already_unchecked":
             message = "remote only already unchecked"
             suffix = ""
+        elif step == "jobserve_about_to_submit":
+            guard = payload.get("submit_guard") or {}
+            suffix = (
+                f" intended={guard.get('intended_job')} verified={guard.get('verified_job')} modal={guard.get('modal_job')} "
+                f"email={guard.get('email_filled')} cv={guard.get('cv_uploaded')} status={guard.get('working_status_selected')}"
+            )
         elif "jobserve_flow_diagnostics" in payload:
             flow = payload["jobserve_flow_diagnostics"]
             selected = flow.get("selected_job") if isinstance(flow, dict) else None

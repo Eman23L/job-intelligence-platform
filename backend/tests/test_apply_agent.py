@@ -210,6 +210,10 @@ def test_successful_jobserve_submit_marks_applied(monkeypatch) -> None:
             submitted=True,
             warnings=["Disabled option: register a Job Seeker account."],
             screenshot_path=None,
+            confirmation_text="Your application has been submitted.",
+            registration_toggle_disabled=True,
+            modal_closed=True,
+            submitted_job_title="AI Engineer",
         )
 
     monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
@@ -221,6 +225,11 @@ def test_successful_jobserve_submit_marks_applied(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["submitted"] is True
+    assert response.json()["applied_at"] is not None
+    assert response.json()["confirmation_text"] == "Your application has been submitted."
+    assert response.json()["registration_toggle_disabled"] is True
+    assert response.json()["modal_closed"] is True
+    assert response.json()["submitted_job_title"] == "AI Engineer"
     assert job.application_status == "applied"
     assert job.applied_at is not None
 
@@ -339,6 +348,48 @@ def test_jobserve_modal_mismatch_blocks_submit() -> None:
     modal = {"title": "Data Analyst", "reference": "ZZZ"}
 
     assert apply_agent._jobserve_identity_clear_mismatch(modal, verified) is True
+
+
+def test_jobserve_submit_guard_allows_verified_ready_form() -> None:
+    flow = {
+        "intended_job_identity": {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"},
+        "email_filled": True,
+        "confirmation_email_checked": True,
+        "uk_status_selected": True,
+    }
+    verified = {"title": "Senior AI Engineer", "company": "Acme", "reference": "D8DF", "text": "Senior AI Engineer Acme Ref D8DF"}
+    modal = {"title": "Senior AI Engineer", "reference": "D8DF"}
+    page = _FakeEmailPage("alex@example.invalid")
+
+    assert apply_agent._jobserve_submit_guard(flow, verified, modal, page, True, []) is None
+
+
+def test_jobserve_submit_guard_blocks_mismatch() -> None:
+    flow = {
+        "intended_job_identity": {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"},
+        "email_filled": True,
+        "confirmation_email_checked": True,
+        "uk_status_selected": True,
+    }
+    verified = {"title": "Senior AI Engineer", "company": "Acme", "reference": "D8DF", "text": "Senior AI Engineer Acme Ref D8DF"}
+    modal = {"title": "Data Analyst", "reference": "ZZZ"}
+    page = _FakeEmailPage("alex@example.invalid")
+
+    assert apply_agent._jobserve_submit_guard(flow, verified, modal, page, True, []) == "JobServe application modal does not match intended job"
+
+
+def test_jobserve_submit_guard_blocks_missing_cv() -> None:
+    flow = {
+        "intended_job_identity": {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"},
+        "email_filled": True,
+        "confirmation_email_checked": True,
+        "uk_status_selected": True,
+    }
+    verified = {"title": "Senior AI Engineer", "company": "Acme", "reference": "D8DF", "text": "Senior AI Engineer Acme Ref D8DF"}
+    modal = {"title": "Senior AI Engineer", "reference": "D8DF"}
+    page = _FakeEmailPage("alex@example.invalid")
+
+    assert apply_agent._jobserve_submit_guard(flow, verified, modal, page, False, []) == "CV is not attached"
 
 
 def test_jobserve_dropdown_helper_normalizes_visible_option_text() -> None:
@@ -1150,6 +1201,21 @@ class _FakePage:
 
     def get_by_label(self, pattern):
         return _FakeLocator(self.controls)
+
+
+class _FakeEmailPage:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def get_by_label(self, pattern):
+        return self
+
+    @property
+    def first(self):
+        return self
+
+    def input_value(self, timeout=500):
+        return self.value
 
 
 class _FakeSelectPage:

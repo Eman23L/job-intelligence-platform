@@ -254,6 +254,14 @@ export interface AssistApplyResult {
   upload_diagnostics?: Record<string, unknown>;
   select_diagnostics?: Array<Record<string, unknown>>;
   exceptions?: Array<Record<string, unknown>>;
+  submitted_job_title?: string | null;
+  submitted_job_company?: string | null;
+  submitted_job_reference?: string | null;
+  submitted_job_external_id?: string | null;
+  applied_at?: string | null;
+  confirmation_text?: string | null;
+  registration_toggle_disabled?: boolean;
+  modal_closed?: boolean;
 }
 
 export interface ApplicationsPrepareResult {

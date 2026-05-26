@@ -741,6 +741,10 @@ class AssistApplyResult(BaseModel):
     submitted_job_company: str | None = None
     submitted_job_reference: str | None = None
     submitted_job_external_id: str | None = None
+    applied_at: datetime | None = None
+    confirmation_text: str | None = None
+    registration_toggle_disabled: bool = False
+    modal_closed: bool = False
 
 
 class AssistApplyRequest(BaseModel):

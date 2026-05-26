@@ -134,6 +134,7 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     if result.submitted:
         job.application_status = "applied"
         job.applied_at = utcnow()
+        result.applied_at = job.applied_at
     else:
         job.application_status = "opened"
     db.commit()
@@ -1024,25 +1025,47 @@ def _run_jobserve_search_to_apply(
     debug.screenshot("after_application_form_fill")
 
     if mode == "submit_with_confirmation":
-        if unfilled_required:
-            debug.final_error = f"Required fields missing: {', '.join(_dedupe(unfilled_required))}"
-            debug.html("required_fields_missing", context)
-            raise RuntimeError(debug.final_error)
+        submit_guard = _jobserve_submit_guard(flow, verified_identity, modal_identity, context, uploaded_cv, unfilled_required)
+        if submit_guard:
+            flow["blocked_reason"] = submit_guard
+            warnings.append(submit_guard)
+            debug.html("submit_guard_blocked", context)
+            return AssistApplyResult(
+                status="review_required",
+                filled_fields=_dedupe(filled),
+                unfilled_fields=_dedupe(unfilled),
+                unfilled_required_fields=_dedupe(unfilled_required),
+                uploaded_cv=uploaded_cv,
+                submitted=False,
+                warnings=_dedupe(warnings),
+                screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+                profile_diagnostics=profile_diagnostics,
+                jobserve_flow_diagnostics=flow,
+                timing_diagnostics={**timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
+                progress={"current_step": "review_required", "elapsed_ms": int((time.perf_counter() - flow_started) * 1000), "last_heartbeat_at": utcnow().isoformat()},
+                upload_diagnostics=upload_diagnostics,
+                select_diagnostics=select_diagnostics,
+                exceptions=exceptions,
+                modal_closed=False,
+                **debug.result_kwargs(page),
+            )
         apply_button = _jobserve_apply_button(context)
         if apply_button.count() == 0:
             debug.final_error = "Submit button not found in JobServe apply form."
             debug.html("submit_button_not_found", context)
             raise RuntimeError(debug.final_error)
         submit_started = time.perf_counter()
+        debug.step("jobserve_about_to_submit", jobserve_flow_diagnostics=flow, submit_guard={"email_filled": flow.get("email_filled"), "confirmation_checkbox_checked": flow.get("confirmation_email_checked"), "working_status_selected": flow.get("uk_status_selected"), "cv_uploaded": uploaded_cv, "intended_job": job_context, "verified_job": verified_identity, "modal_job": modal_identity})
         _click_locator_resilient(page, apply_button)
         flow["final_apply_clicked"] = True
         flow["first_apply_clicked"] = True
         debug.step("jobserve_final_apply_clicked", jobserve_flow_diagnostics=flow)
         debug.step("jobserve_first_apply_clicked", jobserve_flow_diagnostics=flow)
         try:
-            _wait_for_jobserve_submission_success(page, browser)
+            confirmation_text = _wait_for_jobserve_submission_success(page, browser)
             timing_diagnostics["submit_wait_ms"] = int((time.perf_counter() - submit_started) * 1000)
             flow["submitted_confirmation_detected"] = True
+            flow["confirmation_text"] = confirmation_text
             flow["submitted_identity"] = _jobserve_modal_identity(page)
             submitted = True
             status = "submitted"
@@ -1054,6 +1077,7 @@ def _run_jobserve_search_to_apply(
             debug.html("confirmation_not_detected", page)
             raise RuntimeError(debug.final_error) from exc
         flow["account_toggles_turned_off"] = _disable_jobserve_account_options(page, warnings)
+        flow["registration_toggle_disabled"] = any("register a Job Seeker account" in item for item in flow["account_toggles_turned_off"])
         debug.step("jobserve_registration_toggle_disabled", jobserve_flow_diagnostics=flow)
         debug.screenshot("registration_toggles_disabled")
         flow["modal_closed"] = _close_modal(page)
@@ -1083,6 +1107,9 @@ def _run_jobserve_search_to_apply(
         submitted_job_company=str((flow.get("submitted_identity") or flow.get("verified_detail_panel_identity") or {}).get("company") or "") or None,
         submitted_job_reference=str((flow.get("submitted_identity") or flow.get("verified_detail_panel_identity") or {}).get("reference") or "") or None,
         submitted_job_external_id=str((flow.get("submitted_identity") or flow.get("verified_detail_panel_identity") or {}).get("reference") or "") or None,
+        confirmation_text=str(flow.get("confirmation_text") or "") or None,
+        registration_toggle_disabled=bool(flow.get("registration_toggle_disabled")),
+        modal_closed=bool(flow.get("modal_closed")),
         **debug.result_kwargs(page),
     )
 
@@ -2003,6 +2030,39 @@ def _jobserve_identity_matches(identity: dict[str, Any], target: dict[str, Any])
     )
 
 
+def _jobserve_submit_guard(flow: dict[str, Any], verified_identity: dict[str, Any], modal_identity: dict[str, Any], context, uploaded_cv: bool, unfilled_required: list[str]) -> str | None:
+    if _jobserve_identity_clear_mismatch(modal_identity, verified_identity):
+        return "JobServe application modal does not match intended job"
+    if not _jobserve_identity_matches(verified_identity, flow.get("intended_job_identity") or {}):
+        return "Verified JobServe detail panel does not match intended job"
+    if not flow.get("email_filled") or not _jobserve_email_field_has_value(context):
+        return "Email field is not filled"
+    if not flow.get("confirmation_email_checked"):
+        return "Confirmation email checkbox is not checked"
+    if not flow.get("uk_status_selected"):
+        return "Working status is not selected"
+    if not uploaded_cv:
+        return "CV is not attached"
+    if unfilled_required:
+        return f"Required fields missing: {', '.join(_dedupe(unfilled_required))}"
+    return None
+
+
+def _jobserve_email_field_has_value(context) -> bool:
+    for pattern in [r"email address", r"email"]:
+        try:
+            value = context.get_by_label(re.compile(pattern, re.I)).first.input_value(timeout=500)
+            if value and "@" in value:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        value = context.locator('input[type="email"], input[name*="email" i], input[id*="email" i]').first.input_value(timeout=500)
+        return bool(value and "@" in value)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _fill_jobserve_application_form(
     context,
     target_page,
@@ -2787,14 +2847,18 @@ def _jobserve_apply_button(page):
     return page.locator("input[type=submit], button[type=submit]").last
 
 
-def _wait_for_jobserve_submission_success(page, browser) -> None:
+def _wait_for_jobserve_submission_success(page, browser) -> str:
     deadline = time.time() + (settings.page_navigation_timeout_ms / 1000)
     last_exc: Exception | None = None
     while time.time() < deadline:
         for context in _all_contexts(page, browser):
             try:
-                context.get_by_text("Your application has been submitted.").first.wait_for(timeout=1000)
-                return
+                locator = context.get_by_text("Your application has been submitted.").first
+                locator.wait_for(timeout=1000)
+                try:
+                    return locator.inner_text(timeout=500)
+                except Exception:  # noqa: BLE001
+                    return "Your application has been submitted."
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 continue
