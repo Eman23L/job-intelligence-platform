@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+from pathlib import Path
 import re
+import time
 from typing import Any
 
 from sqlalchemy import select
@@ -24,6 +26,13 @@ ASSIST_MODES = {"review_only", "submit_with_confirmation"}
 LEGAL_FIELD_PATTERN = re.compile(r"\b(visa|sponsor|sponsorship|authorized|authorised|eligibility|criminal|disability|veteran)\b", re.I)
 SUBMIT_PATTERN = re.compile(r"\b(submit|send application|apply now|final)\b", re.I)
 _OPEN_REVIEW_BROWSERS: list[Any] = []
+DEBUG_ARTIFACT_DIR = Path("backend/runtime/apply_debug")
+JOBSERVE_REQUIRED_DROPDOWN_PATTERNS = {
+    "availability_notice": [r"availability", r"notice"],
+    "salary_expectation_gbp": [r"salary expectation", r"salary"],
+    "travel_distance_miles": [r"travel distance", r"travel"],
+    "work_authorization": [r"working status", r"work status", r"status in uk", r"eligible.*uk"],
+}
 
 
 class BrowserAutomationError(RuntimeError):
@@ -40,7 +49,7 @@ class FieldCandidate:
     reason: str
 
 
-def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "review_only", browser_runner=None) -> AssistApplyResult:
+def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "review_only", debug_mode: bool = False, browser_runner=None) -> AssistApplyResult:
     if mode not in ASSIST_MODES:
         raise ValueError("Invalid assisted apply mode.")
     _validate_application(job)
@@ -60,11 +69,12 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     candidates = profile_field_candidates(user, profile)
     warnings = _safety_warnings(job)
     try:
-        result = (
-            browser_runner(job.canonical_url, candidates, profile, mode, job.apply_strategy)
-            if browser_runner
-            else run_playwright_assist(job.canonical_url, candidates, profile=profile, mode=mode, apply_strategy=job.apply_strategy)
-        )
+        if browser_runner:
+            result = browser_runner(job.canonical_url, candidates, profile, mode, job.apply_strategy)
+        elif debug_mode:
+            result = run_playwright_assist(job.canonical_url, candidates, profile=profile, mode=mode, apply_strategy=job.apply_strategy, debug_mode=True)
+        else:
+            result = run_playwright_assist(job.canonical_url, candidates, profile=profile, mode=mode, apply_strategy=job.apply_strategy)
     except BrowserAutomationError:
         raise
     except RuntimeError as exc:
@@ -82,13 +92,14 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     return result
 
 
-def run_assist_apply_background(application_id: int, user_id: int, mode: str = "review_only") -> None:
+def run_assist_apply_background(application_id: int, user_id: int, mode: str = "review_only", debug_mode: bool = False) -> None:
     logger.info(
-        "assist_apply_worker_start service_type=%s application_id=%s user_id=%s mode=%s",
+        "assist_apply_worker_start service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s",
         settings.service_type,
         application_id,
         user_id,
         mode,
+        debug_mode,
     )
     with SessionLocal() as db:
         job = db.get(Job, application_id)
@@ -97,7 +108,7 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
             logger.error("assist_apply_worker_missing_record service_type=%s application_id=%s user_id=%s", settings.service_type, application_id, user_id)
             return
         try:
-            assist_apply_application(db, job, user, mode=mode)
+            assist_apply_application(db, job, user, mode=mode, debug_mode=debug_mode)
         except BrowserAutomationError as exc:
             _store_assist_failure(db, job, exc.message, error=exc.error)
             logger.exception(
@@ -198,7 +209,15 @@ def classify_form_field(label_text: str, input_type: str = "", autocomplete: str
     return None
 
 
-def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate], *, profile=None, mode: str = "review_only", apply_strategy: str = "unknown") -> AssistApplyResult:
+def run_playwright_assist(
+    url: str,
+    candidates: dict[str, FieldCandidate],
+    *,
+    profile=None,
+    mode: str = "review_only",
+    apply_strategy: str = "unknown",
+    debug_mode: bool = False,
+) -> AssistApplyResult:
     diagnostics = chromium_diagnostics()
     logger.info(
         "assist_apply_browser_preflight service_type=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_file_exists=%s chromium_file_executable=%s",
@@ -233,7 +252,7 @@ def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate], *, pr
                 page = browser.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=20000)
                 if apply_strategy == "jobserve_apply_easy":
-                    return _run_jobserve_modal(page, browser, candidates, profile, mode=mode, keep_open_for_review=keep_open_for_review)
+                    return _run_jobserve_modal(page, browser, candidates, profile, mode=mode, keep_open_for_review=keep_open_for_review, debug_mode=debug_mode)
                 if _captcha_visible(page):
                     warnings.append("Captcha detected; manual review required.")
                 fields = page.locator("input, textarea, select").all()
@@ -328,7 +347,242 @@ def _safety_warnings(job: Job) -> list[str]:
     return warnings
 
 
-def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], profile, *, mode: str, keep_open_for_review: bool) -> AssistApplyResult:
+class _ApplyDebugRecorder:
+    def __init__(self, page, browser, *, enabled: bool, prefix: str = "jobserve") -> None:
+        self.page = page
+        self.browser = browser
+        self.enabled = enabled
+        self.started_ms = int(time.time() * 1000)
+        self.dir = DEBUG_ARTIFACT_DIR / str(self.started_ms)
+        self.prefix = prefix
+        self.screenshot_paths: list[str] = []
+        self.html_snapshot_paths: list[str] = []
+        self.steps: list[dict[str, Any]] = []
+        self.final_error: str | None = None
+        if enabled:
+            self.dir.mkdir(parents=True, exist_ok=True)
+
+    def step(self, name: str, **extra: Any) -> None:
+        state: dict[str, Any] = {"step": name, **_page_state(self.page, self.browser), **extra}
+        self.steps.append(state)
+        logger.info("jobserve_apply_step %s", state)
+
+    def screenshot(self, name: str) -> None:
+        if not self.enabled:
+            return
+        path = self.dir / f"{len(self.screenshot_paths) + 1:02d}_{_slug(name)}.png"
+        try:
+            self.page.screenshot(path=str(path), full_page=True, timeout=8000)
+            self.screenshot_paths.append(str(path))
+        except Exception as exc:  # noqa: BLE001
+            self.step(f"screenshot_failed_{name}", error=str(exc))
+
+    def html(self, name: str, target=None) -> str | None:
+        if not self.enabled:
+            return None
+        path = self.dir / f"{len(self.html_snapshot_paths) + 1:02d}_{_slug(name)}.html"
+        try:
+            html = (target or self.page).content()
+            path.write_text(html, encoding="utf-8")
+            self.html_snapshot_paths.append(str(path))
+            return str(path)
+        except Exception as exc:  # noqa: BLE001
+            self.step(f"html_snapshot_failed_{name}", error=str(exc))
+            return None
+
+    def result_kwargs(self, target=None) -> dict[str, Any]:
+        target_page = target or self.page
+        inventory = _inventory_browser(target_page, self.browser)
+        return {
+            "screenshot_paths": self.screenshot_paths,
+            "html_snapshot_paths": self.html_snapshot_paths,
+            "detected_buttons": inventory["buttons"],
+            "detected_fields": inventory["fields"],
+            "detected_selects": inventory["selects"],
+            "detected_iframes": inventory["iframes"],
+            "debug_steps": self.steps,
+            "final_url": _safe_url(target_page),
+            "final_error": self.final_error,
+            "debug_mode": self.enabled,
+        }
+
+
+def _slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")[:80] or "artifact"
+
+
+def _safe_url(page) -> str | None:
+    try:
+        return page.url
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _safe_title(page) -> str | None:
+    try:
+        return page.title()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _page_state(page, browser) -> dict[str, Any]:
+    return {
+        "current_url": _safe_url(page),
+        "page_title": _safe_title(page),
+        "iframe_count": len(getattr(page, "frames", []) or []),
+        "popup_window_count": len(getattr(page.context, "pages", []) or []) if getattr(page, "context", None) else None,
+    }
+
+
+def _latest_page(browser):
+    try:
+        pages = browser.contexts[0].pages
+        return pages[-1] if pages else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _context_name(context) -> str:
+    try:
+        return f"frame:{context.url}"
+    except Exception:  # noqa: BLE001
+        return "page"
+
+
+def _all_contexts(page, browser) -> list[Any]:
+    contexts: list[Any] = []
+    try:
+        for candidate_page in page.context.pages:
+            contexts.append(candidate_page)
+            contexts.extend(frame for frame in candidate_page.frames if frame is not candidate_page.main_frame)
+    except Exception:  # noqa: BLE001
+        contexts.append(page)
+    return contexts
+
+
+def _find_apply_target(page, browser):
+    for context in _all_contexts(page, browser):
+        locators = [
+            context.get_by_role("button", name=re.compile(r"^apply(\s+now)?$", re.I)).first,
+            context.get_by_role("link", name=re.compile(r"^apply(\s+now)?$", re.I)).first,
+            context.locator("button, input[type=button], input[type=submit], a").filter(has_text=re.compile(r"^apply(\s+now)?$", re.I)).first,
+            context.get_by_text(re.compile(r"^apply\b", re.I)).first,
+        ]
+        for locator in locators:
+            try:
+                if locator.count() and locator.is_visible(timeout=1000):
+                    return locator
+            except Exception:  # noqa: BLE001
+                continue
+    return None
+
+
+def _find_jobserve_form_context(page, browser):
+    deadline = time.time() + 12
+    while time.time() < deadline:
+        for context in _all_contexts(page, browser):
+            try:
+                has_modal = context.locator("[role=dialog], .modal, #ApplyModal").count() > 0
+                has_job_application_text = context.get_by_text(re.compile(r"job application", re.I)).count() > 0
+                has_fields = context.locator("input:not([type=hidden]), select, textarea").count() > 0
+                if (has_modal or has_job_application_text) and has_fields:
+                    return context
+                if has_fields and context.locator("input[type=file], select").count() > 0:
+                    return context
+            except Exception:  # noqa: BLE001
+                continue
+        page.wait_for_timeout(500)
+    return None
+
+
+def _inventory_browser(page, browser) -> dict[str, list[dict[str, Any]]]:
+    buttons: list[dict[str, Any]] = []
+    fields: list[dict[str, Any]] = []
+    selects: list[dict[str, Any]] = []
+    iframes: list[dict[str, Any]] = []
+    for context in _all_contexts(page, browser):
+        inventory = _inventory_context(context)
+        buttons.extend(inventory["buttons"])
+        fields.extend(inventory["fields"])
+        selects.extend(inventory["selects"])
+        iframes.extend(inventory["iframes"])
+    return {"buttons": buttons[:20], "fields": fields, "selects": selects, "iframes": iframes}
+
+
+def _inventory_context(context) -> dict[str, list[dict[str, Any]]]:
+    try:
+        return context.evaluate(
+            """() => {
+                const visible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                };
+                const labelFor = (el) => {
+                    const id = el.getAttribute('id');
+                    if (id) {
+                        const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+                        if (label) return label.innerText.trim();
+                    }
+                    const parent = el.closest('label');
+                    if (parent) return parent.innerText.trim();
+                    return el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+                };
+                const selectorish = (el) => {
+                    const bits = [el.tagName.toLowerCase()];
+                    if (el.id) bits.push(`#${el.id}`);
+                    if (el.getAttribute('name')) bits.push(`[name="${el.getAttribute('name')}"]`);
+                    if (el.className && typeof el.className === 'string') bits.push('.' + el.className.trim().split(/\\s+/).slice(0, 3).join('.'));
+                    return bits.join('');
+                };
+                const buttons = [...document.querySelectorAll('button, a, input[type=button], input[type=submit]')]
+                    .filter(visible)
+                    .slice(0, 20)
+                    .map((el) => ({
+                        text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim(),
+                        tag: el.tagName.toLowerCase(),
+                        selector: selectorish(el),
+                        href: el.href || null,
+                        id: el.id || null,
+                        name: el.getAttribute('name') || null,
+                        type: el.getAttribute('type') || null
+                    }));
+                const fields = [...document.querySelectorAll('input, select, textarea')]
+                    .filter(visible)
+                    .map((el) => ({
+                        tag: el.tagName.toLowerCase(),
+                        type: el.getAttribute('type') || null,
+                        id: el.id || null,
+                        name: el.getAttribute('name') || null,
+                        placeholder: el.getAttribute('placeholder') || null,
+                        label: labelFor(el),
+                        value: el.value || '',
+                        selector: selectorish(el),
+                        required: Boolean(el.required),
+                        options: el.tagName.toLowerCase() === 'select' ? [...el.options].map((option) => option.text.trim()).filter(Boolean).slice(0, 50) : []
+                    }));
+                const selects = fields.filter((field) => field.tag === 'select');
+                const file_inputs = fields.filter((field) => field.type === 'file');
+                const iframes = [...document.querySelectorAll('iframe')]
+                    .map((el) => ({ id: el.id || null, name: el.name || null, src: el.src || null, title: el.title || null }));
+                return { buttons, fields, selects, file_inputs, iframes };
+            }"""
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"buttons": [], "fields": [], "selects": [], "file_inputs": [], "iframes": [{"error": str(exc), "context": _context_name(context)}]}
+
+
+def _detect_jobserve_dropdowns(selects: list[dict[str, Any]]) -> dict[str, bool]:
+    result: dict[str, bool] = {}
+    for key, patterns in JOBSERVE_REQUIRED_DROPDOWN_PATTERNS.items():
+        result[key] = any(
+            any(re.search(pattern, " ".join(str(select.get(part) or "") for part in ["label", "name", "id", "placeholder"]), re.I) for pattern in patterns)
+            for select in selects
+        )
+    return result
+
+
+def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], profile, *, mode: str, keep_open_for_review: bool, debug_mode: bool = False) -> AssistApplyResult:
     filled: list[str] = []
     unfilled_required: list[str] = []
     unfilled: list[str] = []
@@ -336,13 +590,92 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
     uploaded_cv = False
     submitted = False
     status = "review_required"
-    page.get_by_text(re.compile(r"^apply\b", re.I)).first.click(timeout=8000)
-    modal = page.locator("[role=dialog], .modal, #ApplyModal, text=Job Application").first
-    modal.wait_for(timeout=10000)
-    if _captcha_visible(page):
+    debug = _ApplyDebugRecorder(page, browser, enabled=debug_mode)
+    debug.step("initial_page_loaded")
+    debug.screenshot("initial_page_loaded")
+
+    apply_target = _find_apply_target(page, browser)
+    debug.step("apply_button_lookup", apply_button_found=apply_target is not None, detected_buttons=_inventory_browser(page, browser)["buttons"][:20])
+    if apply_target is None:
+        debug.final_error = "No visible JobServe Apply button/link found."
+        debug.html("no_apply_button_found")
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=False,
+            submitted=False,
+            warnings=_dedupe([*warnings, debug.final_error]),
+            screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+            **debug.result_kwargs(),
+        )
+
+    pages_before = len(page.context.pages)
+    apply_target.click(timeout=8000)
+    page.wait_for_timeout(1000)
+    target_page = _latest_page(browser) or page
+    if len(page.context.pages) <= pages_before:
+        target_page = page
+    else:
+        target_page.wait_for_load_state("domcontentloaded", timeout=15000)
+    debug.page = target_page
+    debug.step("apply_button_clicked", apply_button_clicked=True, popup_opened=target_page is not page)
+
+    target_page.wait_for_timeout(3500 if debug_mode else 1200)
+    debug.screenshot("after_clicking_apply")
+    context = _find_jobserve_form_context(target_page, browser)
+    debug.step(
+        "modal_wait_complete",
+        modal_found=context is not None,
+        job_application_modal_found=context is not None,
+        target_context=_context_name(context) if context else None,
+    )
+    debug.screenshot("after_modal_wait")
+    if context is None:
+        debug.final_error = "Job Application modal/form not found after clicking Apply."
+        debug.html("modal_not_found", target_page)
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=False,
+            submitted=False,
+            warnings=_dedupe([*warnings, debug.final_error]),
+            screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+            **debug.result_kwargs(target_page),
+        )
+
+    form_inventory = _inventory_context(context)
+    debug.step(
+        "before_filling",
+        form_fields_detected=len(form_inventory["fields"]),
+        cv_upload_input_detected=bool(form_inventory["file_inputs"]),
+        required_dropdowns_detected=_detect_jobserve_dropdowns(form_inventory["selects"]),
+        detected_fields=form_inventory["fields"],
+        detected_selects=form_inventory["selects"],
+    )
+    debug.screenshot("before_filling")
+    if not form_inventory["fields"]:
+        debug.final_error = "No visible application fields detected in JobServe apply form."
+        debug.html("no_fields_detected", context)
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=False,
+            submitted=False,
+            warnings=_dedupe([*warnings, debug.final_error]),
+            screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+            **debug.result_kwargs(target_page),
+        )
+
+    if _captcha_visible(target_page):
         warnings.append("Captcha detected; manual review required.")
 
-    _disable_jobserve_account_options(page, warnings)
+    _disable_jobserve_account_options(context, warnings)
     required = ["email"]
     for key, patterns in {
         "email": [r"email address", r"email"],
@@ -350,14 +683,14 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         "last_name": [r"last name", r"surname"],
         "phone": [r"phone", r"mobile"],
     }.items():
-        label = _fill_by_label_patterns(page, patterns, candidates.get(key))
+        label = _fill_by_label_patterns(context, patterns, candidates.get(key))
         if label:
             filled.append(label)
         elif key in required:
             unfilled_required.append(key.replace("_", " "))
 
     if candidates.get("work_authorization"):
-        if _select_work_status(page, candidates["work_authorization"].value):
+        if _select_work_status(context, candidates["work_authorization"].value):
             filled.append("Working status in UK")
         else:
             unfilled.append("Working status in UK")
@@ -365,7 +698,7 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         unfilled_required.append("working status in UK")
 
     _handle_required_dropdown(
-        page,
+        context,
         candidates,
         "availability_notice",
         [r"availability", r"notice"],
@@ -377,7 +710,7 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         warnings,
     )
     _handle_required_dropdown(
-        page,
+        context,
         candidates,
         "salary_expectation_gbp",
         [r"salary expectation", r"salary"],
@@ -390,7 +723,7 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         no_match_warning="Could not match salary range",
     )
     _handle_required_dropdown(
-        page,
+        context,
         candidates,
         "travel_distance_miles",
         [r"travel distance", r"travel"],
@@ -402,31 +735,51 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         warnings,
     )
 
+    if not form_inventory["file_inputs"]:
+        debug.final_error = debug.final_error or "CV upload input not found in JobServe apply form."
+        debug.html("cv_upload_input_not_found", context)
     if profile and profile.cv_file_path:
         try:
-            file_input = page.locator("input[type=file]").first
+            file_input = context.locator("input[type=file]").first
             file_input.set_input_files(profile.cv_file_path, timeout=5000)
             uploaded_cv = True
             filled.append("CV upload")
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Could not upload CV: {exc}")
             unfilled_required.append("CV upload")
+            debug.final_error = debug.final_error or "CV upload input not found or could not be populated."
+            debug.html("cv_upload_input_not_found", context)
     else:
         unfilled_required.append("CV upload")
 
-    _disable_jobserve_account_options(page, warnings)
+    debug.step(
+        "after_filling",
+        filled_fields=_dedupe(filled),
+        unfilled_fields=_dedupe(unfilled),
+        unfilled_required_fields=_dedupe(unfilled_required),
+        uploaded_cv=uploaded_cv,
+    )
+    debug.screenshot("after_filling")
+    _disable_jobserve_account_options(context, warnings)
     if mode == "submit_with_confirmation":
+        debug.screenshot("before_submit")
         if unfilled_required:
             raise RuntimeError(f"Required fields missing: {', '.join(_dedupe(unfilled_required))}")
-        apply_button = _jobserve_apply_button(page)
+        apply_button = _jobserve_apply_button(context)
+        if apply_button.count() == 0:
+            debug.final_error = "Submit button not found in JobServe apply form."
+            debug.html("submit_button_not_found", context)
+            raise RuntimeError(debug.final_error)
         apply_button.click(timeout=8000)
-        success = page.get_by_text("Your application has been submitted.").first
+        success = target_page.get_by_text("Your application has been submitted.").first
         success.wait_for(timeout=12000)
         submitted = True
         status = "submitted"
-        _close_modal(page)
+        _close_modal(target_page)
     else:
         warnings.append("Review-only mode: JobServe Apply button was intentionally not clicked.")
+        if debug_mode:
+            warnings.append("Debug mode: submit is disabled and browser state was inventoried.")
         if keep_open_for_review:
             warnings.append("Browser left open for manual review; close it after reviewing the application.")
 
@@ -438,7 +791,8 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         uploaded_cv=uploaded_cv,
         submitted=submitted,
         warnings=_dedupe(warnings),
-        screenshot_path=None,
+        screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+        **debug.result_kwargs(target_page),
     )
 
 

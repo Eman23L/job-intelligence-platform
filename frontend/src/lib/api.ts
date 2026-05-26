@@ -130,11 +130,11 @@ export const api = {
   applications: () => request<ApplicationsList>("/applications"),
   prepareApplications: () => request<ApplicationPrepareRunStart>("/applications/prepare", { method: "POST" }),
   prepareApplicationsRun: (id: number) => request<ApplicationPrepareRunStatus>(`/applications/prepare-runs/${id}`),
-  assistApply: (id: number, mode: "review_only" | "submit_with_confirmation" = "review_only") =>
+  assistApply: (id: number, mode: "review_only" | "submit_with_confirmation" = "review_only", debugMode = false) =>
     request<AssistApplyResult>(`/applications/${id}/assist-apply`, {
       method: "POST",
       timeoutMs: 30000,
-      body: JSON.stringify({ mode })
+      body: JSON.stringify({ mode, debug_mode: debugMode })
     }),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`, { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),

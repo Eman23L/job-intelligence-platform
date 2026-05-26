@@ -235,6 +235,16 @@ export interface AssistApplyResult {
   submitted: boolean;
   warnings: string[];
   screenshot_path: string | null;
+  screenshot_paths: string[];
+  html_snapshot_paths: string[];
+  detected_buttons: Array<Record<string, unknown>>;
+  detected_fields: Array<Record<string, unknown>>;
+  detected_selects: Array<Record<string, unknown>>;
+  detected_iframes: Array<Record<string, unknown>>;
+  debug_steps: Array<Record<string, unknown>>;
+  final_url: string | null;
+  final_error: string | null;
+  debug_mode: boolean;
 }
 
 export interface ApplicationsPrepareResult {

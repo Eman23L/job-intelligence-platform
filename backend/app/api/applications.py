@@ -59,20 +59,22 @@ def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
     user = _default_user(db)
     mode = payload.mode if payload else "review_only"
+    debug_mode = bool(payload.debug_mode) if payload else False
     if queue_enabled():
-        enqueue_or_background(background_tasks, run_assist_apply_background, application_id, user.id, mode)
+        enqueue_or_background(background_tasks, run_assist_apply_background, application_id, user.id, mode, debug_mode)
         logger.info(
-            "assist_apply_queued service_type=%s application_id=%s user_id=%s mode=%s",
+            "assist_apply_queued service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s",
             settings.service_type,
             application_id,
             user.id,
             mode,
+            debug_mode,
         )
         return queued_assist_apply_result()
 
-    logger.info("assist_apply_running_inline service_type=%s application_id=%s mode=%s", settings.service_type, application_id, mode)
+    logger.info("assist_apply_running_inline service_type=%s application_id=%s mode=%s debug_mode=%s", settings.service_type, application_id, mode, debug_mode)
     try:
-        return assist_apply_application(db, job, user, mode=mode)
+        return assist_apply_application(db, job, user, mode=mode, debug_mode=debug_mode)
     except BrowserAutomationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"error": exc.error, "message": exc.message}) from exc
     except ValueError as exc:

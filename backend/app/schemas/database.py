@@ -709,10 +709,21 @@ class AssistApplyResult(BaseModel):
     submitted: bool = False
     warnings: list[str] = Field(default_factory=list)
     screenshot_path: str | None = None
+    screenshot_paths: list[str] = Field(default_factory=list)
+    html_snapshot_paths: list[str] = Field(default_factory=list)
+    detected_buttons: list[dict[str, Any]] = Field(default_factory=list)
+    detected_fields: list[dict[str, Any]] = Field(default_factory=list)
+    detected_selects: list[dict[str, Any]] = Field(default_factory=list)
+    detected_iframes: list[dict[str, Any]] = Field(default_factory=list)
+    debug_steps: list[dict[str, Any]] = Field(default_factory=list)
+    final_url: str | None = None
+    final_error: str | None = None
+    debug_mode: bool = False
 
 
 class AssistApplyRequest(BaseModel):
     mode: str = "review_only"
+    debug_mode: bool = False
 
 
 class BrowserStatus(BaseModel):

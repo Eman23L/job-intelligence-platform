@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -85,7 +86,7 @@ def test_safe_field_mapping_uses_exact_profile_values(db_session) -> None:
 def test_assist_apply_endpoint_never_submits(monkeypatch) -> None:
     submitted = False
 
-    def fake_runner(url, candidates, profile, mode, apply_strategy):
+    def fake_runner(url, candidates, profile, mode, apply_strategy, **kwargs):
         nonlocal submitted
         assert mode == "review_only"
         submitted = False
@@ -284,6 +285,117 @@ def test_submit_apply_blocks_below_threshold(monkeypatch) -> None:
     assert "Job score 74 is below your apply threshold of 80." in response.json()["detail"]
 
 
+def test_debug_mode_returns_debug_artifact_fields(monkeypatch) -> None:
+    def fake_runner(url, candidates, profile, mode, apply_strategy, **kwargs):
+        assert kwargs["debug_mode"] is True
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            warnings=[],
+            screenshot_path=None,
+            debug_mode=True,
+            screenshot_paths=["backend/runtime/apply_debug/1/initial.png"],
+            html_snapshot_paths=["backend/runtime/apply_debug/1/no_modal.html"],
+            detected_buttons=[{"text": "Apply"}],
+            detected_fields=[{"label": "Email", "name": "email"}],
+            detected_selects=[{"label": "Availability notice"}],
+            detected_iframes=[{"src": "about:blank"}],
+            final_url="https://example.invalid/apply",
+            final_error="fixture",
+        )
+
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+    monkeypatch.setattr(apply_agent, "run_playwright_assist", fake_runner)
+    with apply_client(jobserve=True, with_profile=True) as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "review_only", "debug_mode": True})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["debug_mode"] is True
+    assert body["screenshot_paths"]
+    assert body["html_snapshot_paths"]
+    assert body["detected_buttons"][0]["text"] == "Apply"
+    assert body["final_error"] == "fixture"
+
+
+def test_jobserve_no_modal_found_returns_clear_reason_and_html_snapshot(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "DEBUG_ARTIFACT_DIR", tmp_path)
+    with _playwright_page() as (page, browser):
+        page.set_content("<html><title>No Modal</title><body><button>Apply</button><main>No application here</main></body></html>")
+
+        result = apply_agent._run_jobserve_modal(page, browser, {}, None, mode="review_only", keep_open_for_review=False, debug_mode=True)
+
+    assert result.status == "review_required"
+    assert result.final_error == "Job Application modal/form not found after clicking Apply."
+    assert result.html_snapshot_paths
+    assert Path(result.html_snapshot_paths[0]).exists()
+
+
+def test_jobserve_iframe_form_detection(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "DEBUG_ARTIFACT_DIR", tmp_path)
+    iframe = """
+    <iframe srcdoc="<h1>Job Application</h1><label>Email <input name='email' /></label><input type='file' name='cv' /><select name='availability'><option>Immediate</option></select>"></iframe>
+    """
+    with _playwright_page() as (page, browser):
+        page.set_content(f"<button>Apply</button>{iframe}")
+        page.wait_for_timeout(500)
+
+        result = apply_agent._run_jobserve_modal(page, browser, {}, None, mode="review_only", keep_open_for_review=False, debug_mode=True)
+
+    assert result.final_error is None
+    assert any(field.get("name") == "email" for field in result.detected_fields)
+    assert any(select.get("name") == "availability" for select in result.detected_selects)
+
+
+def test_visible_field_inventory_ignores_hidden_and_reports_select_options() -> None:
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Email <input name="email" value="alex@example.invalid" /></label>
+            <input type="hidden" name="csrf" value="secret" />
+            <label>Availability <select name="availability"><option>Immediate</option><option>One month</option></select></label>
+            <button>Apply</button>
+            """
+        )
+
+        inventory = apply_agent._inventory_context(page)
+
+    assert [field["name"] for field in inventory["fields"]] == ["email", "availability"]
+    assert inventory["selects"][0]["options"] == ["Immediate", "One month"]
+    assert inventory["buttons"][0]["text"] == "Apply"
+
+
+def test_jobserve_review_and_debug_mode_do_not_submit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "DEBUG_ARTIFACT_DIR", tmp_path)
+    html = """
+    <button>Apply</button>
+    <div role="dialog">
+      <h1>Job Application</h1>
+      <label>Email <input name="email" /></label>
+      <button type="submit" onclick="window.submitted = (window.submitted || 0) + 1">Apply</button>
+    </div>
+    """
+    with _playwright_page() as (page, browser):
+        page.set_content(html)
+        page.evaluate("window.submitted = 0")
+
+        result = apply_agent._run_jobserve_modal(
+            page,
+            browser,
+            {"email": apply_agent.FieldCandidate(key="email", value="alex@example.invalid", reason="test")},
+            None,
+            mode="review_only",
+            keep_open_for_review=False,
+            debug_mode=True,
+        )
+        submitted = page.evaluate("window.submitted")
+
+    assert result.submitted is False
+    assert submitted == 0
+    assert any("Debug mode" in warning for warning in result.warnings)
+
+
 @contextmanager
 def apply_client(
     *,
@@ -357,6 +469,31 @@ def _seed_application(db_session, *, url: str = "https://example.invalid/apply",
 
 def _fake_runner(url, candidates, profile, mode, apply_strategy):
     return AssistApplyResult(status="review_required", filled_fields=["Email"], unfilled_fields=[], warnings=[], screenshot_path=None)
+
+
+@contextmanager
+def _playwright_page():
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Playwright unavailable: {exc}")
+    try:
+        manager = sync_playwright()
+        playwright = manager.__enter__()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Playwright unavailable: {exc}")
+    try:
+        try:
+            browser = playwright.chromium.launch(headless=True)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium unavailable: {exc}")
+        page = browser.new_page()
+        try:
+            yield page, browser
+        finally:
+            browser.close()
+    finally:
+        manager.__exit__(None, None, None)
 
 
 class _FakeControl:

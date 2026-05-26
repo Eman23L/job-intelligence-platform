@@ -51,6 +51,7 @@ pnpm-debug.log*
 *.log
 *.pid
 *.seed
+backend/runtime/
 
 # Generated scraper exports and temporary data
 jobserve_*.json
