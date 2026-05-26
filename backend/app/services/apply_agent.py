@@ -83,6 +83,18 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     result.warnings[:] = [*warnings, *result.warnings]
     job.assisted_result = result.model_dump()
     job.assisted_warnings = result.warnings
+    logger.info(
+        "assist_apply_result_persisted application_id=%s mode=%s debug_mode=%s status=%s screenshots=%s html_snapshots=%s debug_steps=%s final_url=%s final_error=%s",
+        job.id,
+        mode,
+        debug_mode,
+        result.status,
+        len(result.screenshot_paths),
+        len(result.html_snapshot_paths),
+        len(result.debug_steps),
+        result.final_url,
+        result.final_error,
+    )
     if result.submitted:
         job.application_status = "applied"
         job.applied_at = utcnow()
@@ -374,6 +386,7 @@ class _ApplyDebugRecorder:
         try:
             self.page.screenshot(path=str(path), full_page=True, timeout=8000)
             self.screenshot_paths.append(str(path))
+            logger.info("jobserve_apply_screenshot_saved path=%s", path)
         except Exception as exc:  # noqa: BLE001
             self.step(f"screenshot_failed_{name}", error=str(exc))
 
@@ -385,6 +398,7 @@ class _ApplyDebugRecorder:
             html = (target or self.page).content()
             path.write_text(html, encoding="utf-8")
             self.html_snapshot_paths.append(str(path))
+            logger.info("jobserve_apply_html_snapshot_saved path=%s", path)
             return str(path)
         except Exception as exc:  # noqa: BLE001
             self.step(f"html_snapshot_failed_{name}", error=str(exc))
@@ -395,7 +409,9 @@ class _ApplyDebugRecorder:
         inventory = _inventory_browser(target_page, self.browser)
         return {
             "screenshot_paths": self.screenshot_paths,
+            "screenshot_urls": [_artifact_url(path) for path in self.screenshot_paths],
             "html_snapshot_paths": self.html_snapshot_paths,
+            "html_snapshot_urls": [_artifact_url(path) for path in self.html_snapshot_paths],
             "detected_buttons": inventory["buttons"],
             "detected_fields": inventory["fields"],
             "detected_selects": inventory["selects"],
@@ -409,6 +425,14 @@ class _ApplyDebugRecorder:
 
 def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")[:80] or "artifact"
+
+
+def _artifact_url(path: str) -> str:
+    try:
+        relative = Path(path).resolve().relative_to(DEBUG_ARTIFACT_DIR.resolve())
+    except Exception:  # noqa: BLE001
+        return ""
+    return f"/applications/debug-artifacts/{relative.as_posix()}"
 
 
 def _safe_url(page) -> str | None:

@@ -710,7 +710,9 @@ class AssistApplyResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     screenshot_path: str | None = None
     screenshot_paths: list[str] = Field(default_factory=list)
+    screenshot_urls: list[str] = Field(default_factory=list)
     html_snapshot_paths: list[str] = Field(default_factory=list)
+    html_snapshot_urls: list[str] = Field(default_factory=list)
     detected_buttons: list[dict[str, Any]] = Field(default_factory=list)
     detected_fields: list[dict[str, Any]] = Field(default_factory=list)
     detected_selects: list[dict[str, Any]] = Field(default_factory=list)

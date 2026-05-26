@@ -236,7 +236,9 @@ export interface AssistApplyResult {
   warnings: string[];
   screenshot_path: string | null;
   screenshot_paths: string[];
+  screenshot_urls: string[];
   html_snapshot_paths: string[];
+  html_snapshot_urls: string[];
   detected_buttons: Array<Record<string, unknown>>;
   detected_fields: Array<Record<string, unknown>>;
   detected_selects: Array<Record<string, unknown>>;

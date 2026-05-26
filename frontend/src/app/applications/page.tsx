@@ -8,7 +8,7 @@ import { AvailabilityBadge } from "@/components/AvailabilityBadge";
 import { RecommendationActionBadge } from "@/components/RecommendationActionBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, apiConfig } from "@/lib/api";
 import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyResult, JobScorecard } from "@/types/api";
 
 const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
@@ -24,6 +24,7 @@ export default function ApplicationsPage() {
   const [notice, setNotice] = useState<{ type: "info" | "success" | "warning" | "error"; message: string } | null>(null);
   const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
   const [assistResult, setAssistResult] = useState<{ jobTitle: string; result: AssistApplyResult } | null>(null);
+  const [assistDebugMode, setAssistDebugMode] = useState(true);
   const [threshold, setThreshold] = useState(80);
 
   const refresh = useCallback(async () => {
@@ -162,6 +163,26 @@ export default function ApplicationsPage() {
     }
   };
 
+  const pollAssistResult = async (item: ApplicationItem, fallback: AssistApplyResult, expectDebug: boolean) => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await sleep(2500);
+      const latest = await api.applications();
+      setData(latest);
+      setThreshold(latest.minimum_apply_score);
+      const current = latest.items.find((candidate) => candidate.job_id === item.job_id);
+      const persisted = current?.assisted_result;
+      console.info("Assist apply applications poll payload", { attempt, jobId: item.job_id, assisted_result: persisted });
+      if (!persisted) {
+        continue;
+      }
+      setAssistResult({ jobTitle: current?.title ?? item.title, result: normaliseAssistResult(persisted) });
+      if (persisted.status !== "queued" && (!expectDebug || persisted.debug_mode || persisted.final_error || persisted.debug_steps?.length)) {
+        return persisted;
+      }
+    }
+    return fallback;
+  };
+
   const assistApply = async (item: ApplicationItem, mode: "review_only" | "submit_with_confirmation") => {
     if (mode === "submit_with_confirmation") {
       const confirmed = window.confirm("This will submit the application on JobServe using your saved CV. Continue?");
@@ -173,12 +194,24 @@ export default function ApplicationsPage() {
     setError(null);
     setAssistResult(null);
     try {
-      const result = await api.assistApply(item.job_id, mode);
-      await refresh();
-      setAssistResult({ jobTitle: item.title, result });
+      const effectiveDebugMode = assistDebugMode || item.apply_strategy.startsWith("jobserve");
+      console.info("Assist apply request", { jobId: item.job_id, mode, debug_mode: effectiveDebugMode, apply_strategy: item.apply_strategy });
+      const result = await api.assistApply(item.job_id, mode, effectiveDebugMode);
+      let displayedResult = result;
+      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(result) });
+      if (result.status === "queued") {
+        displayedResult = await pollAssistResult(item, result, effectiveDebugMode);
+      } else {
+        await refresh();
+      }
+      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(displayedResult) });
       setNotice({
-        type: result.submitted ? "success" : "warning",
-        message: result.submitted ? "JobServe application submitted." : "Assisted apply started. Review the browser manually before taking any next action."
+        type: displayedResult.submitted ? "success" : "warning",
+        message: displayedResult.submitted
+          ? "JobServe application submitted."
+          : displayedResult.status === "queued"
+            ? "Assisted apply queued. Waiting for worker diagnostics."
+            : "Assisted apply diagnostics loaded. Review the debug details before taking the next action."
       });
     } catch (err) {
       if (err instanceof ApiError && err.code === "worker_unavailable") {
@@ -212,6 +245,10 @@ export default function ApplicationsPage() {
           {actionLoading === "prepare" ? <span className="spinner" aria-hidden="true" /> : null}
           {actionLoading === "prepare" ? "Preparing..." : "Prepare applications"}
         </button>
+        <label className="inline-toggle">
+          <input type="checkbox" checked={assistDebugMode} onChange={(event) => setAssistDebugMode(event.target.checked)} />
+          Enable debug mode
+        </label>
       </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
       <div className="notice-banner info">Current apply threshold: {threshold}+.</div>
@@ -329,6 +366,10 @@ export default function ApplicationsPage() {
 }
 
 function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result: AssistApplyResult }; onClose: () => void }) {
+  const result = normaliseAssistResult(data.result);
+  const lastStep = result.debug_steps.at(-1) ?? {};
+  const iframeCount = typeof lastStep.iframe_count === "number" ? lastStep.iframe_count : result.detected_iframes.length;
+  const popupCount = typeof lastStep.popup_window_count === "number" ? lastStep.popup_window_count : null;
   return (
     <div className="modal-backdrop">
       <div className="modal-panel scorecard-modal">
@@ -344,28 +385,91 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
         <div className="notice-banner warning">Review manually in the browser. The assistant did not submit the application.</div>
         <section className="scorecard-section">
           <h3>Filled fields</h3>
-          <FieldList items={data.result.filled_fields} empty="No fields filled" />
+          <FieldList items={result.filled_fields} empty="No fields filled" />
         </section>
         <section className="scorecard-section">
           <h3>Unfilled fields</h3>
-          <FieldList items={data.result.unfilled_fields} empty="No unfilled fields detected" />
+          <FieldList items={result.unfilled_fields} empty="No unfilled fields detected" />
         </section>
         <section className="scorecard-section">
           <h3>Required fields not filled</h3>
-          <FieldList items={data.result.unfilled_required_fields} empty="No missing required fields reported" />
+          <FieldList items={result.unfilled_required_fields} empty="No missing required fields reported" />
         </section>
         <section className="scorecard-section">
           <h3>Result</h3>
           <div className="metric-list">
-            <Metric label="CV uploaded" value={data.result.uploaded_cv ? "Yes" : "No"} />
-            <Metric label="Submitted" value={data.result.submitted ? "Yes" : "No"} />
+            <Metric label="Status" value={result.status} />
+            <Metric label="CV uploaded" value={result.uploaded_cv ? "Yes" : "No"} />
+            <Metric label="Submitted" value={result.submitted ? "Yes" : "No"} />
           </div>
         </section>
         <section className="scorecard-section">
           <h3>Warnings</h3>
-          <FieldList items={data.result.warnings} empty="No warnings" />
+          <FieldList items={result.warnings} empty="No warnings" />
+        </section>
+        <section className="scorecard-section">
+          <h3>Debug diagnostics</h3>
+          <div className="metric-list">
+            <Metric label="Debug mode" value={result.debug_mode ? "Enabled" : "Disabled"} />
+            <Metric label="Final URL" value={result.final_url ?? "Not reported"} />
+            <Metric label="Final error" value={result.final_error ?? "None"} />
+            <Metric label="Iframes" value={String(iframeCount)} />
+            <Metric label="Popups/windows" value={popupCount === null ? "Not reported" : String(popupCount)} />
+          </div>
+          <ArtifactLinks title="Screenshots" urls={result.screenshot_urls} paths={result.screenshot_paths} image />
+          <ArtifactLinks title="HTML snapshots" urls={result.html_snapshot_urls} paths={result.html_snapshot_paths} />
+          <DebugJsonList title="Step timeline" items={result.debug_steps} empty="No debug steps returned" />
+          <DebugJsonList title="Detected buttons/links" items={result.detected_buttons} empty="No buttons or links returned" />
+          <DebugJsonList title="Detected fields" items={result.detected_fields} empty="No fields returned" />
+          <DebugJsonList title="Detected selects/dropdowns" items={result.detected_selects} empty="No selects returned" />
+          <DebugJsonList title="Detected iframes" items={result.detected_iframes} empty="No iframe details returned" />
         </section>
       </div>
+    </div>
+  );
+}
+
+function ArtifactLinks({ title, urls, paths, image = false }: { title: string; urls: string[]; paths: string[]; image?: boolean }) {
+  const items = urls.length > 0 ? urls : paths;
+  if (items.length === 0) {
+    return (
+      <div className="debug-block">
+        <h4>{title}</h4>
+        <p className="muted-text">None returned</p>
+      </div>
+    );
+  }
+  return (
+    <div className="debug-block">
+      <h4>{title}</h4>
+      <div className="artifact-grid">
+        {items.map((item, index) => {
+          const href = item.startsWith("/") ? `${apiConfig.baseUrl}${item}` : item;
+          return (
+            <a key={`${item}-${index}`} href={href} target="_blank" rel="noreferrer" className="artifact-link">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {image ? <img src={href} alt={`${title} ${index + 1}`} /> : null}
+              <span>{paths[index] ?? item}</span>
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DebugJsonList({ title, items, empty }: { title: string; items: Array<Record<string, unknown>>; empty: string }) {
+  return (
+    <div className="debug-block">
+      <h4>{title}</h4>
+      {items.length === 0 ? <p className="muted-text">{empty}</p> : null}
+      {items.length > 0 ? (
+        <div className="debug-json-list">
+          {items.map((item, index) => (
+            <pre key={index}>{JSON.stringify(item, null, 2)}</pre>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -454,5 +558,31 @@ function emptyPrepareRun(runId: number, status: string): ApplicationPrepareRunSt
     started_at: null,
     finished_at: null,
     last_heartbeat_at: null
+  };
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
+
+function normaliseAssistResult(result: AssistApplyResult): AssistApplyResult {
+  return {
+    ...result,
+    filled_fields: result.filled_fields ?? [],
+    unfilled_fields: result.unfilled_fields ?? [],
+    unfilled_required_fields: result.unfilled_required_fields ?? [],
+    warnings: result.warnings ?? [],
+    screenshot_paths: result.screenshot_paths ?? [],
+    screenshot_urls: result.screenshot_urls ?? [],
+    html_snapshot_paths: result.html_snapshot_paths ?? [],
+    html_snapshot_urls: result.html_snapshot_urls ?? [],
+    detected_buttons: result.detected_buttons ?? [],
+    detected_fields: result.detected_fields ?? [],
+    detected_selects: result.detected_selects ?? [],
+    detected_iframes: result.detected_iframes ?? [],
+    debug_steps: result.debug_steps ?? [],
+    final_url: result.final_url ?? null,
+    final_error: result.final_error ?? null,
+    debug_mode: result.debug_mode ?? false
   };
 }

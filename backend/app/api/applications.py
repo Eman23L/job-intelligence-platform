@@ -1,6 +1,8 @@
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,6 +22,7 @@ from app.services.queue import enqueue_or_background, queue_enabled
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 logger = logging.getLogger(__name__)
+DEBUG_ARTIFACT_ROOT = Path("backend/runtime/apply_debug").resolve()
 
 
 def _default_user(db: Session) -> User:
@@ -50,6 +53,18 @@ def get_prepare_application_run(run_id: int, db: Session = Depends(get_db)):
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prepare run not found")
     return result
+
+
+@router.get("/debug-artifacts/{artifact_path:path}")
+def get_apply_debug_artifact(artifact_path: str):
+    target = (DEBUG_ARTIFACT_ROOT / artifact_path).resolve()
+    try:
+        target.relative_to(DEBUG_ARTIFACT_ROOT)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debug artifact not found") from exc
+    if not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debug artifact not found")
+    return FileResponse(target)
 
 
 @router.post("/{application_id}/assist-apply", response_model=AssistApplyResult)

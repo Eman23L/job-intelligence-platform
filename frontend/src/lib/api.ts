@@ -125,6 +125,12 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
   }
 }
 
+function logAssistApplyPayload(context: string, payload: unknown) {
+  if (typeof window !== "undefined") {
+    console.info(`Assist apply ${context}`, payload);
+  }
+}
+
 export const api = {
   overview: () => request<AnalyticsOverview>("/analytics/overview", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
   applications: () => request<ApplicationsList>("/applications"),
@@ -135,6 +141,9 @@ export const api = {
       method: "POST",
       timeoutMs: 30000,
       body: JSON.stringify({ mode, debug_mode: debugMode })
+    }).then((payload) => {
+      logAssistApplyPayload("POST response", payload);
+      return payload;
     }),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`, { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),

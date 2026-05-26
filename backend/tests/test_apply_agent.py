@@ -135,6 +135,24 @@ def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:
     assert enqueued[0][1][0] == ids["job"]
 
 
+def test_assist_apply_endpoint_queues_debug_mode(monkeypatch) -> None:
+    enqueued = []
+    monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)
+    monkeypatch.setattr(
+        applications_api,
+        "enqueue_or_background",
+        lambda background_tasks, func, *args, **kwargs: enqueued.append((func, args, kwargs)) or "rq-job",
+    )
+
+    with apply_client(jobserve=True, with_profile=True) as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "review_only", "debug_mode": True})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert enqueued[0][0] is apply_agent.run_assist_apply_background
+    assert enqueued[0][1] == (ids["job"], ids["user"], "review_only", True)
+
+
 def test_submit_requires_explicit_mode(monkeypatch) -> None:
     seen_modes = []
 
@@ -317,6 +335,62 @@ def test_debug_mode_returns_debug_artifact_fields(monkeypatch) -> None:
     assert body["html_snapshot_paths"]
     assert body["detected_buttons"][0]["text"] == "Apply"
     assert body["final_error"] == "fixture"
+
+
+def test_assist_apply_debug_payload_survives_worker_db_api(monkeypatch) -> None:
+    def fake_runner(url, candidates, *, profile=None, mode="review_only", apply_strategy="unknown", debug_mode=False):
+        assert debug_mode is True
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            warnings=[],
+            screenshot_path=None,
+            debug_mode=True,
+            screenshot_paths=["backend/runtime/apply_debug/123/01_initial.png"],
+            screenshot_urls=["/applications/debug-artifacts/123/01_initial.png"],
+            html_snapshot_paths=["backend/runtime/apply_debug/123/01_modal.html"],
+            html_snapshot_urls=["/applications/debug-artifacts/123/01_modal.html"],
+            detected_buttons=[{"text": "Apply", "selector": "button"}],
+            detected_fields=[{"label": "Email", "name": "email"}],
+            detected_selects=[{"label": "Availability", "options": ["Immediate"]}],
+            detected_iframes=[{"src": "about:blank"}],
+            debug_steps=[{"step": "initial_page_loaded", "iframe_count": 1, "popup_window_count": 1}],
+            final_url="https://www.jobserve.com/apply",
+            final_error="fixture selector miss",
+        )
+
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+    monkeypatch.setattr(apply_agent, "run_playwright_assist", fake_runner)
+    with apply_client(jobserve=True, with_profile=True) as (client, ids):
+        monkeypatch.setattr(apply_agent, "SessionLocal", ids["Session"])
+        apply_agent.run_assist_apply_background(ids["job"], ids["user"], "review_only", True)
+        response = client.get("/applications")
+
+    assert response.status_code == 200
+    item = next(candidate for candidate in response.json()["items"] if candidate["job_id"] == ids["job"])
+    persisted = item["assisted_result"]
+    assert persisted["debug_mode"] is True
+    assert persisted["debug_steps"][0]["step"] == "initial_page_loaded"
+    assert persisted["screenshot_urls"] == ["/applications/debug-artifacts/123/01_initial.png"]
+    assert persisted["html_snapshot_urls"] == ["/applications/debug-artifacts/123/01_modal.html"]
+    assert persisted["detected_fields"][0]["name"] == "email"
+    assert persisted["final_url"] == "https://www.jobserve.com/apply"
+    assert persisted["final_error"] == "fixture selector miss"
+
+
+def test_debug_artifact_route_serves_runtime_file(tmp_path, monkeypatch) -> None:
+    artifact_dir = tmp_path / "123"
+    artifact_dir.mkdir()
+    artifact = artifact_dir / "01_modal.html"
+    artifact.write_text("<html>debug</html>", encoding="utf-8")
+    monkeypatch.setattr(applications_api, "DEBUG_ARTIFACT_ROOT", tmp_path.resolve())
+
+    with apply_client() as (client, _ids):
+        response = client.get("/applications/debug-artifacts/123/01_modal.html")
+
+    assert response.status_code == 200
+    assert "debug" in response.text
 
 
 def test_jobserve_no_modal_found_returns_clear_reason_and_html_snapshot(tmp_path, monkeypatch) -> None:

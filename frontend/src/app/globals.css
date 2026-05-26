@@ -744,6 +744,14 @@ textarea:focus {
   width: 0.9rem;
 }
 
+.inline-toggle {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
 .modal-backdrop {
   align-items: center;
   background: rgba(4, 8, 13, 0.72);
@@ -847,6 +855,64 @@ textarea:focus {
 .metric-list {
   display: grid;
   gap: 0.6rem;
+}
+
+.debug-block {
+  border-top: 1px solid var(--line);
+  margin-top: 0.9rem;
+  padding-top: 0.8rem;
+}
+
+.debug-block h4 {
+  margin: 0 0 0.55rem;
+}
+
+.artifact-grid {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.artifact-link {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: #d5dee7;
+  display: grid;
+  gap: 0.45rem;
+  overflow: hidden;
+  padding: 0.55rem;
+  text-decoration: none;
+}
+
+.artifact-link img {
+  background: #ffffff;
+  border-radius: 4px;
+  max-height: 220px;
+  object-fit: contain;
+  width: 100%;
+}
+
+.artifact-link span {
+  overflow-wrap: anywhere;
+}
+
+.debug-json-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.debug-json-list pre {
+  background: rgba(4, 8, 13, 0.65);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: #d5dee7;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 0.7rem;
+  white-space: pre-wrap;
 }
 
 .metric-row {
