@@ -887,7 +887,7 @@ def _run_jobserve_search_to_apply(
     debug.step("jobserve_search_page_loaded", jobserve_flow_diagnostics=flow)
     debug.screenshot("search_page_loaded")
 
-    if not _fill_jobserve_search_form(page, flow, select_diagnostics):
+    if not _fill_jobserve_search_form(page, flow, select_diagnostics, step_callback=progress_callback):
         debug.final_error = "JobServe search form could not be filled."
         debug.html("search_form_failed", page)
         raise RuntimeError(debug.final_error)
@@ -950,6 +950,7 @@ def _run_jobserve_search_to_apply(
         profile_diagnostics=profile_diagnostics,
         exceptions=exceptions,
         debug=debug,
+        step_callback=progress_callback,
     )
     uploaded_cv = fill_result["uploaded_cv"]
     timing_diagnostics.update(fill_result.get("timing_diagnostics", {}))
@@ -1021,17 +1022,34 @@ def _jobserve_search_preferences(profile) -> dict[str, str]:
     }
 
 
-def _fill_jobserve_search_form(page, flow: dict[str, Any], select_diagnostics: list[dict[str, Any]]) -> bool:
+def _fill_jobserve_search_form(
+    page,
+    flow: dict[str, Any],
+    select_diagnostics: list[dict[str, Any]],
+    step_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> bool:
     prefs = flow["search_defaults"]
     controls = flow["search_controls"]
     controls["keywords"] = _fill_first_label_or_selector(page, [r"keywords?", r"what"], ['input[name*="keyword" i]', 'input[id*="keyword" i]', "input[type=search]"], prefs["keywords"])
+    _report_jobserve_step(step_callback, "jobserve_search_keyword_filled", value=prefs["keywords"], succeeded=controls["keywords"])
     controls["location"] = _fill_first_label_or_selector(page, [r"location", r"where"], ['input[name*="location" i]', 'input[id*="location" i]'], prefs["location"])
+    _report_jobserve_step(step_callback, "jobserve_search_location_filled", value=prefs["location"], succeeded=controls["location"])
     controls["distance"] = _select_first_label_or_selector(page, [r"distance", r"miles"], ['select[name*="distance" i]', 'select[id*="distance" i]'], prefs["distance"], "Search distance", select_diagnostics)
+    _report_jobserve_step(step_callback, "jobserve_search_distance_selected", value=prefs["distance"], succeeded=controls["distance"])
     controls["posted_within"] = _select_first_label_or_selector(page, [r"posted", r"date"], ['select[name*="posted" i]', 'select[id*="posted" i]', 'select[name*="age" i]'], prefs["posted_within"], "Posted within", select_diagnostics)
+    _report_jobserve_step(step_callback, "jobserve_search_posted_selected", value=prefs["posted_within"], succeeded=controls["posted_within"])
     controls["job_type"] = _select_first_label_or_selector(page, [r"job type", r"type"], ['select[name*="type" i]', 'select[id*="type" i]'], prefs["job_type"], "Job type", select_diagnostics)
+    _report_jobserve_step(step_callback, "jobserve_search_job_type_selected", value=prefs["job_type"], succeeded=controls["job_type"])
     controls["remote_only_unchecked"] = _set_checkbox_by_label(page, [r"remote only"], checked=False)
+    _report_jobserve_step(step_callback, "jobserve_search_remote_only_unchecked", succeeded=controls["remote_only_unchecked"])
     controls["industries_select_all"] = _select_all_jobserve_industries(page)
+    _report_jobserve_step(step_callback, "jobserve_search_industries_selected", value="Select All", succeeded=controls["industries_select_all"])
     return bool(controls["keywords"] and controls["location"])
+
+
+def _report_jobserve_step(step_callback: Callable[[str, dict[str, Any]], None] | None, step: str, **payload: Any) -> None:
+    if step_callback is not None:
+        step_callback(step, payload)
 
 
 def _fill_first_label_or_selector(page, labels: list[str], selectors: list[str], value: str) -> bool:
@@ -1119,6 +1137,8 @@ def _click_jobserve_search(page) -> bool:
 def _select_jobserve_result(page, job_context: dict[str, Any], flow: dict[str, Any]) -> dict[str, Any] | None:
     candidates = _jobserve_result_candidates(page)
     ranked = _rank_jobserve_candidates(candidates, job_context)
+    if ranked and not _jobserve_target_has_identity(job_context):
+        ranked[0]["score"] = max(int(ranked[0].get("score") or 0), 1)
     flow["target_job_match_candidates"] = ranked[:10]
     if not ranked or ranked[0]["score"] <= 0:
         return None
@@ -1132,6 +1152,10 @@ def _select_jobserve_result(page, job_context: dict[str, Any], flow: dict[str, A
         return selected
     except Exception:  # noqa: BLE001
         return None
+
+
+def _jobserve_target_has_identity(target: dict[str, Any]) -> bool:
+    return any(str(target.get(key) or "").strip() for key in ["source_job_id", "original_external_id", "title", "original_title", "company_name", "original_company"])
 
 
 def _jobserve_result_candidates(page) -> list[dict[str, Any]]:
@@ -1188,6 +1212,7 @@ def _fill_jobserve_application_form(
     profile_diagnostics: dict[str, Any],
     exceptions: list[dict[str, Any]],
     debug: _ApplyDebugRecorder,
+    step_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     form_inventory = _inventory_context(context)
     profile_diagnostics.setdefault("mapped_fields", {})
@@ -1197,22 +1222,27 @@ def _fill_jobserve_application_form(
         filled.append("Email Address")
         flow["email_filled"] = True
         profile_diagnostics["mapped_fields"]["email"] = {"mapped": True, "label": email_label}
+        _report_jobserve_step(step_callback, "jobserve_apply_email_filled", succeeded=True, label=email_label)
     else:
         unfilled_required.append("Email Address")
         profile_diagnostics["mapped_fields"]["email"] = {"mapped": False, "reason": "email field missing or profile email missing"}
+        _report_jobserve_step(step_callback, "jobserve_apply_email_filled", succeeded=False)
         debug.html("email_field_missing", context)
 
     _ensure_confirmation_email_checked(context, flow)
+    _report_jobserve_step(step_callback, "jobserve_apply_confirmation_email_checked", succeeded=flow.get("confirmation_email_checked"))
 
     working_status = candidates.get("work_authorization")
     if working_status and _select_work_status(context, working_status.value, select_diagnostics):
         filled.append("Working status in UK")
         flow["uk_status_selected"] = True
         profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": True, "label": "Working status in UK", "value": working_status.value}
+        _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=True, value=working_status.value)
     else:
         unfilled_required.append("Working status in UK")
         profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": False, "reason": "working status dropdown missing or configured value missing"}
         exceptions.append({"stage": "working_status", "type": "SelectOptionError", "message": "Working status dropdown missing or could not be selected", "traceback": None})
+        _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=False, value=working_status.value if working_status else None)
         debug.html("working_status_dropdown_missing", context)
 
     _handle_optional_dropdown_if_present(
@@ -1270,6 +1300,7 @@ def _fill_jobserve_application_form(
             upload_diagnostics["set_input_files_succeeded"] = True
             upload_diagnostics["displayed_file_name"] = _uploaded_cv_display_name(context, Path(cv_path).name)
             flow["cv_upload_succeeded"] = True
+            _report_jobserve_step(step_callback, "jobserve_apply_cv_uploaded", succeeded=True, path=cv_path)
         except Exception as exc:  # noqa: BLE001
             payload = _exception_payload("cv_upload", exc, upload_diagnostics=dict(upload_diagnostics))
             exceptions.append(payload)
@@ -1277,11 +1308,13 @@ def _fill_jobserve_application_form(
             upload_diagnostics["set_input_files_error"] = payload
             unfilled_required.append("CV upload")
             warnings.append(f"Could not upload CV: {exc}")
+            _report_jobserve_step(step_callback, "jobserve_apply_cv_uploaded", succeeded=False, path=cv_path, error=str(exc))
             debug.html("cv_upload_failed", context)
     else:
         upload_diagnostics["failure_reason"] = "CV file input missing or worker-accessible CV path unavailable."
         exceptions.append({"stage": "cv_upload_preflight", "type": "FileNotFoundError", "message": upload_diagnostics["failure_reason"], "traceback": None, "upload_diagnostics": dict(upload_diagnostics)})
         unfilled_required.append("CV upload")
+        _report_jobserve_step(step_callback, "jobserve_apply_cv_uploaded", succeeded=False, path=cv_path, error=upload_diagnostics["failure_reason"])
         debug.html("cv_upload_failed", context)
     debug.screenshot("after_cv_upload_attempt")
     timing_diagnostics = {"cv_upload_ms": int((time.perf_counter() - upload_started) * 1000)}
