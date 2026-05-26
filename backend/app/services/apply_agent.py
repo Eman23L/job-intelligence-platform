@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Job, JobScore, User
 from app.schemas.database import AssistApplyResult
-from app.services.browser_automation import validate_browser_automation_availability
+from app.services.browser_automation import chromium_executable_path, validate_browser_automation_availability
 from app.services.job_availability import check_job_availability
 from app.services.profile import get_profile
 from app.services.run_tracking import utcnow
@@ -151,7 +151,11 @@ def run_playwright_assist(url: str, candidates: dict[str, FieldCandidate], *, pr
     warnings: list[str] = []
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=headless)
+            executable_path = chromium_executable_path()
+            launch_options = {"headless": headless}
+            if executable_path:
+                launch_options["executable_path"] = executable_path
+            browser = playwright.chromium.launch(**launch_options)
             keep_open_for_review = not headless
             try:
                 page = browser.new_page()

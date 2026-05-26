@@ -16,7 +16,7 @@ Required environment variables on both web and worker:
 
 Build command for both Python services:
 ```bash
-pip install -r requirements.txt && python -m playwright install chromium
+pip install -r requirements.txt && python -m playwright install --with-deps chromium
 ```
 
 Worker start command:
@@ -37,7 +37,9 @@ Browser automation diagnostics:
 
 Troubleshooting:
 - `playwright_not_installed`: confirm `requirements.txt` includes `playwright` and the Render build ran `pip install -r requirements.txt`.
-- `chromium_not_installed`: confirm the build command includes `python -m playwright install chromium` and `PLAYWRIGHT_BROWSERS_PATH` is set to `/opt/render/.cache/ms-playwright`.
+- `chromium_not_installed`: confirm the build command includes `python -m playwright install --with-deps chromium` and `PLAYWRIGHT_BROWSERS_PATH` is set to `/opt/render/.cache/ms-playwright`.
+- If Chromium exists but is not executable, check the worker startup log fields `chromium_file_exists`, `chromium_file_executable`, and `ms_playwright_listing`.
+- If Chromium launches but fails due to missing Linux packages, redeploy with the `--with-deps` install command so Playwright installs required OS dependencies during the Render build.
 - `worker_unavailable`: confirm the worker service is deployed, `QUEUE_ENABLED=true`, `REDIS_URL` points to the Render Redis service, and worker logs show it started against the expected queue.
 - If Chromium launches fail under memory pressure, increase the worker instance size before retrying assisted applications.
 

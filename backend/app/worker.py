@@ -3,7 +3,7 @@ import logging
 from rq import Worker
 
 from app.config import settings
-from app.services.browser_automation import browser_status, chromium_executable_path
+from app.services.browser_automation import browser_status, chromium_diagnostics
 from app.services.queue import redis_connection
 
 
@@ -15,16 +15,23 @@ def main() -> None:
     connection = redis_connection()
     redis_connected = bool(connection.ping())
     status = browser_status()
+    chromium = chromium_diagnostics()
     logger.info(
-        "worker_startup queue=%s queue_enabled=%s redis_connected=%s playwright_enabled=%s playwright_installed=%s chromium_available=%s chromium_executable_path=%s",
+        "worker_startup queue=%s queue_enabled=%s redis_connected=%s playwright_enabled=%s playwright_installed=%s chromium_available=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_path_source=%s chromium_file_exists=%s chromium_file_executable=%s",
         settings.queue_name,
         settings.queue_enabled,
         redis_connected,
         settings.playwright_enabled,
         status["playwright_installed"],
         status["chromium_available"],
-        chromium_executable_path(),
+        chromium["playwright_browsers_path"],
+        chromium["chromium_executable_path"],
+        chromium["chromium_path_source"],
+        chromium["chromium_file_exists"],
+        chromium["chromium_file_executable"],
     )
+    if not status["chromium_available"]:
+        logger.warning("worker_startup_chromium_unavailable ms_playwright_listing=%s", chromium["ms_playwright_listing"])
     worker = Worker([settings.queue_name], connection=connection)
     worker.work(with_scheduler=True)
 

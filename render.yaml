@@ -3,7 +3,7 @@ services:
     name: job-intelligence-backend
     env: python
     rootDir: .
-    buildCommand: pip install -r requirements.txt && python -m playwright install chromium
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
     startCommand: python -m alembic -c alembic.ini upgrade head && uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
@@ -41,7 +41,7 @@ services:
     name: job-intelligence-worker
     env: python
     rootDir: .
-    buildCommand: pip install -r requirements.txt && python -m playwright install chromium
+    buildCommand: pip install -r requirements.txt && python -m playwright install --with-deps chromium
     startCommand: PYTHONPATH=backend python -m app.worker
     envVars:
       - key: PYTHON_VERSION
