@@ -383,6 +383,9 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
           </button>
         </div>
         <div className="notice-banner warning">Review manually in the browser. The assistant did not submit the application.</div>
+        {result.jobserve_flow_diagnostics?.mode === "search_to_apply" ? (
+          <div className="notice-banner info">Search-to-apply flow</div>
+        ) : null}
         <section className="scorecard-section">
           <h3>Filled fields</h3>
           <FieldList items={result.filled_fields} empty="No fields filled" />
@@ -419,6 +422,11 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
           <ArtifactLinks title="Screenshots" urls={result.screenshot_urls} paths={result.screenshot_paths} image />
           <ArtifactLinks title="HTML snapshots" urls={result.html_snapshot_urls} paths={result.html_snapshot_paths} />
           <DebugJsonList title="Step timeline" items={result.debug_steps} empty="No debug steps returned" />
+          <DebugJsonList title="JobServe flow" items={objectToList(result.jobserve_flow_diagnostics)} empty="No JobServe flow diagnostics returned" />
+          <DebugJsonList title="Profile hydration" items={objectToList(result.profile_diagnostics)} empty="No profile diagnostics returned" />
+          <DebugJsonList title="Upload diagnostics" items={objectToList(result.upload_diagnostics)} empty="No upload diagnostics returned" />
+          <DebugJsonList title="Select diagnostics" items={result.select_diagnostics ?? []} empty="No select diagnostics returned" />
+          <DebugJsonList title="Exceptions" items={result.exceptions ?? []} empty="No structured exceptions returned" />
           <DebugJsonList title="Detected buttons/links" items={result.detected_buttons} empty="No buttons or links returned" />
           <DebugJsonList title="Detected fields" items={result.detected_fields} empty="No fields returned" />
           <DebugJsonList title="Detected selects/dropdowns" items={result.detected_selects} empty="No selects returned" />
@@ -583,6 +591,18 @@ function normaliseAssistResult(result: AssistApplyResult): AssistApplyResult {
     debug_steps: result.debug_steps ?? [],
     final_url: result.final_url ?? null,
     final_error: result.final_error ?? null,
-    debug_mode: result.debug_mode ?? false
+    debug_mode: result.debug_mode ?? false,
+    profile_diagnostics: result.profile_diagnostics ?? {},
+    jobserve_flow_diagnostics: result.jobserve_flow_diagnostics ?? {},
+    upload_diagnostics: result.upload_diagnostics ?? {},
+    select_diagnostics: result.select_diagnostics ?? [],
+    exceptions: result.exceptions ?? []
   };
+}
+
+function objectToList(value: Record<string, unknown> | undefined): Array<Record<string, unknown>> {
+  if (!value || Object.keys(value).length === 0) {
+    return [];
+  }
+  return [value];
 }

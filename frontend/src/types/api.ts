@@ -247,6 +247,11 @@ export interface AssistApplyResult {
   final_url: string | null;
   final_error: string | null;
   debug_mode: boolean;
+  profile_diagnostics?: Record<string, unknown>;
+  jobserve_flow_diagnostics?: Record<string, unknown>;
+  upload_diagnostics?: Record<string, unknown>;
+  select_diagnostics?: Array<Record<string, unknown>>;
+  exceptions?: Array<Record<string, unknown>>;
 }
 
 export interface ApplicationsPrepareResult {

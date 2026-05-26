@@ -724,6 +724,7 @@ class AssistApplyResult(BaseModel):
     final_error: str | None = None
     debug_mode: bool = False
     profile_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    jobserve_flow_diagnostics: dict[str, Any] = Field(default_factory=dict)
     upload_diagnostics: dict[str, Any] = Field(default_factory=dict)
     select_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     exceptions: list[dict[str, Any]] = Field(default_factory=list)

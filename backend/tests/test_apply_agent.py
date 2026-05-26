@@ -279,6 +279,40 @@ def test_cv_upload_path_materializes_database_blob(tmp_path, monkeypatch) -> Non
     assert diagnostics["path_file_size"] == 8
 
 
+def test_jobserve_search_defaults_are_configured() -> None:
+    prefs = apply_agent._jobserve_search_preferences(SimpleNamespace(preferences={}))
+
+    assert prefs["keywords"] == "AI"
+    assert prefs["location"] == "London"
+    assert prefs["distance"] == "Within 50 miles"
+    assert prefs["posted_within"] == "Within 7 days"
+    assert prefs["job_type"] == "Any"
+    assert prefs["working_status"] == "UK Citizen"
+
+
+def test_jobserve_results_target_matching_prefers_reference_title_and_company() -> None:
+    candidates = [
+        {"text": "Other AI Engineer Example", "href": "/1", "title": "Other", "company": "Example", "reference": "X"},
+        {"text": "Senior AI Engineer Acme Ref D8DF", "href": "/2", "title": "Senior AI Engineer", "company": "Acme", "reference": "D8DF"},
+    ]
+    target = {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"}
+
+    ranked = apply_agent._rank_jobserve_candidates(candidates, target)
+
+    assert ranked[0]["href"] == "/2"
+    assert ranked[0]["score"] > ranked[1]["score"]
+
+
+def test_submit_validation_allows_optional_salary_travel_defaults(db_session) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    profile = UserProfile(user_id=user.id, cv_text="CV", email="apply-agent@example.invalid", cv_file_bytes=b"cv", cv_file_name="cv.pdf")
+    db_session.add(profile)
+    db_session.add(JobScore(job_id=job.id, user_id=user.id, total_score=90, recommendation="apply", recommendation_tier="Strong match"))
+    db_session.commit()
+
+    apply_agent._validate_jobserve_submit(db_session, job, user, profile)
+
+
 def test_salary_65000_selects_50_to_75_range() -> None:
     assert apply_agent.salary_range_label("65000") == "£50,000 - £75,000"
 
@@ -291,13 +325,14 @@ def test_travel_25_selects_16_to_30() -> None:
     assert apply_agent.travel_distance_label("25") == "16 to 30"
 
 
-def test_missing_required_dropdown_blocks_submit(monkeypatch) -> None:
+def test_missing_optional_dropdowns_do_not_block_submit_validation(monkeypatch) -> None:
     monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
-    with apply_client(jobserve=True, with_profile=True, with_cv=True, dropdowns=False) as (client, ids):
-        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "submit_with_confirmation"})
-
-    assert response.status_code == 400
-    assert "Availability notice missing" in response.json()["detail"]
+    with apply_client(jobserve=True, with_profile=True, with_cv=True, dropdowns=False) as (_client, ids):
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+            user = db.get(User, ids["user"])
+            profile = db.query(UserProfile).filter(UserProfile.user_id == ids["user"]).one()
+            apply_agent._validate_jobserve_submit(db, job, user, profile)
 
 
 def test_review_only_leaves_missing_dropdown_blank() -> None:
@@ -506,6 +541,104 @@ def test_jobserve_review_and_debug_mode_do_not_submit(tmp_path, monkeypatch) -> 
     assert result.submitted is False
     assert submitted == 0
     assert any("Debug mode" in warning for warning in result.warnings)
+
+
+def test_jobserve_search_form_fill_select_all_industries() -> None:
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Keywords <input name="keywords" /></label>
+            <label>Location <input name="location" /></label>
+            <label>Distance <select name="distance"><option>Within 50 miles</option></select></label>
+            <label>Posted <select name="posted"><option>Within 7 days</option></select></label>
+            <label>Job Type <select name="type"><option>Any</option></select></label>
+            <label>Remote only <input type="checkbox" checked /></label>
+            <button type="button">Industries</button><button type="button" onclick="window.selectedAll = true">Select All</button>
+            """
+        )
+        flow = {"search_defaults": apply_agent._jobserve_search_preferences(SimpleNamespace(preferences={})), "search_controls": {}}
+
+        assert apply_agent._fill_jobserve_search_form(page, flow, []) is True
+
+        assert page.locator("input[name=keywords]").input_value() == "AI"
+        assert page.locator("input[name=location]").input_value() == "London"
+        assert page.get_by_label("Remote only").is_checked() is False
+        assert page.evaluate("window.selectedAll") is True
+
+
+def test_jobserve_modal_fill_uploads_filcv_and_review_only_does_not_submit(tmp_path, monkeypatch) -> None:
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    profile = SimpleNamespace(
+        cv_file_path=str(cv_path),
+        cv_file_name="cv.pdf",
+        cv_file_bytes=None,
+        cv_file_mime_type="application/pdf",
+        cv_file_size=4,
+        preferences={},
+    )
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <form>
+              <label>Email Address <input name="email" /></label>
+              <label>Send confirmation of my application to this Email Address <input type="checkbox" /></label>
+              <label>Working status in UK <select name="status"><option></option><option>UK Citizen</option></select></label>
+              <input id="filCV" type="file" />
+              <button type="button" onclick="window.submitted = true">Apply</button>
+            </form>
+            """
+        )
+        flow = {}
+        filled: list[str] = []
+        unfilled: list[str] = []
+        required: list[str] = []
+        debug = apply_agent._ApplyDebugRecorder(page, _browser, enabled=False)
+
+        result = apply_agent._fill_jobserve_application_form(
+            page,
+            page,
+            {
+                "email": apply_agent.FieldCandidate("email", "alex@example.invalid", "test"),
+                "work_authorization": apply_agent.FieldCandidate("work_authorization", "UK Citizen", "test"),
+            },
+            profile,
+            mode="review_only",
+            flow=flow,
+            filled=filled,
+            unfilled=unfilled,
+            unfilled_required=required,
+            warnings=[],
+            upload_diagnostics={},
+            select_diagnostics=[],
+            profile_diagnostics={"mapped_fields": {}},
+            exceptions=[],
+            debug=debug,
+        )
+
+        assert result["uploaded_cv"] is True
+        assert page.locator("input[name=email]").input_value() == "alex@example.invalid"
+        assert page.get_by_label("Send confirmation of my application to this Email Address").is_checked() is True
+        assert page.evaluate("window.submitted") is None
+        assert "CV upload" in filled
+
+
+def test_confirmation_detection_and_account_toggle_off() -> None:
+    warnings: list[str] = []
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <div>Your application has been submitted.</div>
+            <label>I would like to register a Job Seeker account <input type="checkbox" checked /></label>
+            <button aria-label="Close">X</button>
+            """
+        )
+        page.get_by_text("Your application has been submitted.").first.wait_for(timeout=1000)
+        disabled = apply_agent._disable_jobserve_account_options(page, warnings)
+        closed = apply_agent._close_modal(page)
+
+    assert disabled == ["register a Job Seeker account"]
+    assert closed is True
 
 
 @contextmanager
