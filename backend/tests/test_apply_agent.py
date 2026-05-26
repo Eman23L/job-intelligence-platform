@@ -156,7 +156,7 @@ def test_assist_apply_endpoint_queues_debug_mode(monkeypatch) -> None:
 def test_submit_requires_explicit_mode(monkeypatch) -> None:
     seen_modes = []
 
-    def fake_runner(url, candidates, profile, mode, apply_strategy):
+    def fake_runner(url, candidates, profile=None, mode="review_only", apply_strategy="unknown", **kwargs):
         seen_modes.append(mode)
         return AssistApplyResult(status="review_required", filled_fields=[], unfilled_fields=[], warnings=[], screenshot_path=None)
 
@@ -197,7 +197,7 @@ def test_unavailable_job_blocks_submit(monkeypatch) -> None:
 
 
 def test_successful_jobserve_submit_marks_applied(monkeypatch) -> None:
-    def fake_runner(url, candidates, profile, mode, apply_strategy):
+    def fake_runner(url, candidates, profile=None, mode="review_only", apply_strategy="unknown", **kwargs):
         assert mode == "submit_with_confirmation"
         assert apply_strategy == "jobserve_apply_easy"
         return AssistApplyResult(
@@ -237,8 +237,46 @@ def test_account_registration_toggles_are_disabled_if_present() -> None:
 def test_availability_dropdown_selects_immediate() -> None:
     page = _FakeSelectPage()
 
-    assert apply_agent._select_dropdown_by_label_patterns(page, [r"availability"], "Immediate") is True
+    diagnostics: list[dict] = []
+
+    assert apply_agent._select_dropdown_by_label_patterns(page, [r"availability"], "Immediate", diagnostics=diagnostics) is True
     assert page.selected == "Immediate"
+    assert diagnostics[0]["available_options"]
+    assert diagnostics[0]["strategy"] == "exact_label"
+
+
+def test_select_dropdown_falls_back_to_normalized_text() -> None:
+    page = _FakeSelectPage(options=["Please select", "1 Month"])
+    diagnostics: list[dict] = []
+
+    assert apply_agent._select_dropdown_by_label_patterns(page, [r"availability"], "1 month", diagnostics=diagnostics) is True
+
+    assert page.selected == "1 Month"
+    assert diagnostics[0]["strategy"] == "normalized_label"
+
+
+def test_select_dropdown_falls_back_to_option_index() -> None:
+    page = _FakeSelectPage(options=["Please select", "Immediate", "1 Month"])
+    diagnostics: list[dict] = []
+
+    assert apply_agent._select_dropdown_by_label_patterns(page, [r"availability"], "2", diagnostics=diagnostics) is True
+
+    assert page.selected == "1 Month"
+    assert diagnostics[0]["strategy"] == "fallback_option_index"
+
+
+def test_cv_upload_path_materializes_database_blob(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "WORKER_CV_DIR", tmp_path)
+    profile = SimpleNamespace(cv_file_path=str(tmp_path / "missing.pdf"), cv_file_name="my cv.pdf", cv_file_bytes=b"%PDF-1.4", cv_file_mime_type="application/pdf", cv_file_size=8)
+    diagnostics: dict = {}
+
+    path = apply_agent._cv_upload_path(profile, diagnostics)
+
+    assert path is not None
+    assert Path(path).exists()
+    assert diagnostics["materialized_from_blob"] is True
+    assert diagnostics["path_exists"] is True
+    assert diagnostics["path_file_size"] == 8
 
 
 def test_salary_65000_selects_50_to_75_range() -> None:
@@ -338,7 +376,7 @@ def test_debug_mode_returns_debug_artifact_fields(monkeypatch) -> None:
 
 
 def test_assist_apply_debug_payload_survives_worker_db_api(monkeypatch) -> None:
-    def fake_runner(url, candidates, *, profile=None, mode="review_only", apply_strategy="unknown", debug_mode=False):
+    def fake_runner(url, candidates, *, profile=None, mode="review_only", apply_strategy="unknown", debug_mode=False, **kwargs):
         assert debug_mode is True
         return AssistApplyResult(
             status="review_required",
@@ -599,8 +637,9 @@ class _FakePage:
 
 
 class _FakeSelectPage:
-    def __init__(self) -> None:
+    def __init__(self, options: list[str] | None = None) -> None:
         self.selected = None
+        self.options = options or ["Immediate", "One month"]
 
     def get_by_label(self, pattern):
         return _FakeSelectLocator(self)
@@ -611,7 +650,19 @@ class _FakeSelectLocator:
         self.page = page
         self.first = self
 
-    def select_option(self, *, label, timeout=0):
+    def evaluate(self, expression, timeout=0):
+        return [
+            {"index": index, "label": option, "text": option, "value": option}
+            for index, option in enumerate(self.page.options)
+        ]
+
+    def select_option(self, *, label=None, value=None, index=None, timeout=0):
+        if value is not None:
+            self.page.selected = value
+            return
+        if index is not None:
+            self.page.selected = self.page.options[index]
+            return
         if isinstance(label, str):
             self.page.selected = label
             return

@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     JSON,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -95,6 +96,9 @@ class UserProfile(Base):
     sponsorship_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     cv_file_path: Mapped[str | None] = mapped_column(String(1000))
     cv_file_name: Mapped[str | None] = mapped_column(String(255))
+    cv_file_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
+    cv_file_mime_type: Mapped[str | None] = mapped_column(String(120))
+    cv_file_size: Mapped[int | None] = mapped_column(Integer)
     cv_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     location_preference: Mapped[str | None] = mapped_column(String(255))
     remote_preference: Mapped[str | None] = mapped_column(String(80))

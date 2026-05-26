@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import mimetypes
+import os
 from pathlib import Path
 import re
 import time
+import traceback
 from typing import Any
 
 from sqlalchemy import select
@@ -27,6 +30,7 @@ LEGAL_FIELD_PATTERN = re.compile(r"\b(visa|sponsor|sponsorship|authorized|author
 SUBMIT_PATTERN = re.compile(r"\b(submit|send application|apply now|final)\b", re.I)
 _OPEN_REVIEW_BROWSERS: list[Any] = []
 DEBUG_ARTIFACT_DIR = Path("backend/runtime/apply_debug")
+WORKER_CV_DIR = Path("backend/runtime/worker_cv_files")
 JOBSERVE_REQUIRED_DROPDOWN_PATTERNS = {
     "availability_notice": [r"availability", r"notice"],
     "salary_expectation_gbp": [r"salary expectation", r"salary"],
@@ -72,9 +76,24 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
         if browser_runner:
             result = browser_runner(job.canonical_url, candidates, profile, mode, job.apply_strategy)
         elif debug_mode:
-            result = run_playwright_assist(job.canonical_url, candidates, profile=profile, mode=mode, apply_strategy=job.apply_strategy, debug_mode=True)
+            result = run_playwright_assist(
+                job.canonical_url,
+                candidates,
+                profile=profile,
+                mode=mode,
+                apply_strategy=job.apply_strategy,
+                debug_mode=True,
+                profile_diagnostics=profile_debug_payload(user, profile, candidates),
+            )
         else:
-            result = run_playwright_assist(job.canonical_url, candidates, profile=profile, mode=mode, apply_strategy=job.apply_strategy)
+            result = run_playwright_assist(
+                job.canonical_url,
+                candidates,
+                profile=profile,
+                mode=mode,
+                apply_strategy=job.apply_strategy,
+                profile_diagnostics=profile_debug_payload(user, profile, candidates),
+            )
     except BrowserAutomationError:
         raise
     except RuntimeError as exc:
@@ -194,6 +213,29 @@ def profile_field_candidates(user: User, profile) -> dict[str, FieldCandidate]:
     }
 
 
+def profile_debug_payload(user: User, profile, candidates: dict[str, FieldCandidate]) -> dict[str, Any]:
+    profile_values = {
+        "email": getattr(profile, "email", None) or user.email,
+        "availability_notice": getattr(profile, "availability_notice", None) if profile is not None else None,
+        "salary_expectation": getattr(profile, "salary_expectation", None) if profile is not None else None,
+        "salary_expectation_gbp": getattr(profile, "salary_expectation_gbp", None) if profile is not None else None,
+        "travel_distance": getattr(profile, "travel_distance", None) if profile is not None else None,
+        "travel_distance_miles": getattr(profile, "travel_distance_miles", None) if profile is not None else None,
+        "work_status_uk": getattr(profile, "work_status_uk", None) if profile is not None else None,
+        "cv_file_name": getattr(profile, "cv_file_name", None) if profile is not None else None,
+        "cv_file_path": getattr(profile, "cv_file_path", None) if profile is not None else None,
+        "cv_file_mime_type": getattr(profile, "cv_file_mime_type", None) if profile is not None else None,
+        "cv_file_size": getattr(profile, "cv_file_size", None) if profile is not None else None,
+        "cv_blob_present": bool(getattr(profile, "cv_file_bytes", None)) if profile is not None else False,
+    }
+    return {
+        "profile_loaded": profile is not None,
+        "loaded_profile_values": profile_values,
+        "candidate_keys": sorted(candidates.keys()),
+        "mapped_fields": {},
+    }
+
+
 def classify_form_field(label_text: str, input_type: str = "", autocomplete: str = "", name: str = "", placeholder: str = "") -> str | None:
     text = " ".join([label_text, input_type, autocomplete, name, placeholder]).lower()
     if not text.strip():
@@ -229,6 +271,7 @@ def run_playwright_assist(
     mode: str = "review_only",
     apply_strategy: str = "unknown",
     debug_mode: bool = False,
+    profile_diagnostics: dict[str, Any] | None = None,
 ) -> AssistApplyResult:
     diagnostics = chromium_diagnostics()
     logger.info(
@@ -264,7 +307,16 @@ def run_playwright_assist(
                 page = browser.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=20000)
                 if apply_strategy == "jobserve_apply_easy":
-                    return _run_jobserve_modal(page, browser, candidates, profile, mode=mode, keep_open_for_review=keep_open_for_review, debug_mode=debug_mode)
+                    return _run_jobserve_modal(
+                        page,
+                        browser,
+                        candidates,
+                        profile,
+                        mode=mode,
+                        keep_open_for_review=keep_open_for_review,
+                        debug_mode=debug_mode,
+                        profile_diagnostics=profile_diagnostics,
+                    )
                 if _captcha_visible(page):
                     warnings.append("Captcha detected; manual review required.")
                 fields = page.locator("input, textarea, select").all()
@@ -332,7 +384,7 @@ def _validate_application(job: Job) -> None:
 def _validate_jobserve_submit(db: Session, job: Job, user: User, profile) -> None:
     if job.apply_strategy != "jobserve_apply_easy":
         raise ValueError("Submit with confirmation is only available for JobServe easy apply.")
-    if not profile or not profile.cv_file_path:
+    if not profile or not (getattr(profile, "cv_file_path", None) or getattr(profile, "cv_file_bytes", None)):
         raise ValueError("Saved CV file is required before submitting a JobServe application.")
     if not (getattr(profile, "email", None) or ""):
         raise ValueError("Email is required before submitting a JobServe application.")
@@ -433,6 +485,77 @@ def _artifact_url(path: str) -> str:
     except Exception:  # noqa: BLE001
         return ""
     return f"/applications/debug-artifacts/{relative.as_posix()}"
+
+
+def _exception_payload(stage: str, exc: BaseException, **extra: Any) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": traceback.format_exc(),
+        **extra,
+    }
+
+
+def _cv_upload_path(profile, diagnostics: dict[str, Any]) -> str | None:
+    raw_path = getattr(profile, "cv_file_path", None) if profile is not None else None
+    file_name = getattr(profile, "cv_file_name", None) if profile is not None else None
+    blob = getattr(profile, "cv_file_bytes", None) if profile is not None else None
+    diagnostics.update(
+        {
+            "stored_cv_file_path": raw_path,
+            "stored_cv_file_name": file_name,
+            "stored_cv_mime_type": getattr(profile, "cv_file_mime_type", None) if profile is not None else None,
+            "stored_cv_file_size": getattr(profile, "cv_file_size", None) if profile is not None else None,
+            "blob_present": bool(blob),
+            "resolved_absolute_path": None,
+            "path_exists": False,
+            "path_readable": False,
+            "path_file_size": None,
+            "detected_mime_type": None,
+            "materialized_from_blob": False,
+            "set_input_files_succeeded": False,
+        }
+    )
+    if raw_path:
+        try:
+            resolved = Path(raw_path).expanduser().resolve()
+            diagnostics["resolved_absolute_path"] = str(resolved)
+            diagnostics["path_exists"] = os.path.exists(resolved)
+            diagnostics["path_readable"] = os.access(resolved, os.R_OK) if diagnostics["path_exists"] else False
+            if diagnostics["path_exists"]:
+                diagnostics["path_file_size"] = resolved.stat().st_size
+                diagnostics["detected_mime_type"] = mimetypes.guess_type(str(resolved))[0]
+                logger.info(
+                    "jobserve_apply_cv_path_resolved path=%s exists=%s size=%s mime=%s",
+                    resolved,
+                    diagnostics["path_exists"],
+                    diagnostics["path_file_size"],
+                    diagnostics["detected_mime_type"],
+                )
+                return str(resolved)
+        except Exception as exc:  # noqa: BLE001
+            diagnostics["path_resolution_error"] = str(exc)
+    if blob:
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", file_name or "cv.pdf").strip("._") or "cv.pdf"
+        WORKER_CV_DIR.mkdir(parents=True, exist_ok=True)
+        target = (WORKER_CV_DIR / f"{int(time.time() * 1000)}_{safe_name}").resolve()
+        target.write_bytes(blob)
+        diagnostics["resolved_absolute_path"] = str(target)
+        diagnostics["path_exists"] = target.exists()
+        diagnostics["path_readable"] = os.access(target, os.R_OK) if diagnostics["path_exists"] else False
+        diagnostics["path_file_size"] = target.stat().st_size if target.exists() else None
+        diagnostics["detected_mime_type"] = mimetypes.guess_type(str(target))[0]
+        diagnostics["materialized_from_blob"] = True
+        logger.info(
+            "jobserve_apply_cv_materialized_from_db path=%s exists=%s size=%s mime=%s",
+            target,
+            diagnostics["path_exists"],
+            diagnostics["path_file_size"],
+            diagnostics["detected_mime_type"],
+        )
+        return str(target)
+    return None
 
 
 def _safe_url(page) -> str | None:
@@ -606,7 +729,17 @@ def _detect_jobserve_dropdowns(selects: list[dict[str, Any]]) -> dict[str, bool]
     return result
 
 
-def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], profile, *, mode: str, keep_open_for_review: bool, debug_mode: bool = False) -> AssistApplyResult:
+def _run_jobserve_modal(
+    page,
+    browser,
+    candidates: dict[str, FieldCandidate],
+    profile,
+    *,
+    mode: str,
+    keep_open_for_review: bool,
+    debug_mode: bool = False,
+    profile_diagnostics: dict[str, Any] | None = None,
+) -> AssistApplyResult:
     filled: list[str] = []
     unfilled_required: list[str] = []
     unfilled: list[str] = []
@@ -614,6 +747,10 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
     uploaded_cv = False
     submitted = False
     status = "review_required"
+    profile_diagnostics = profile_diagnostics or {"profile_loaded": profile is not None, "loaded_profile_values": {}, "candidate_keys": sorted(candidates.keys()), "mapped_fields": {}}
+    upload_diagnostics: dict[str, Any] = {}
+    select_diagnostics: list[dict[str, Any]] = []
+    exceptions: list[dict[str, Any]] = []
     debug = _ApplyDebugRecorder(page, browser, enabled=debug_mode)
     debug.step("initial_page_loaded")
     debug.screenshot("initial_page_loaded")
@@ -632,6 +769,10 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
             submitted=False,
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+            profile_diagnostics=profile_diagnostics,
+            upload_diagnostics=upload_diagnostics,
+            select_diagnostics=select_diagnostics,
+            exceptions=exceptions,
             **debug.result_kwargs(),
         )
 
@@ -668,6 +809,10 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
             submitted=False,
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+            profile_diagnostics=profile_diagnostics,
+            upload_diagnostics=upload_diagnostics,
+            select_diagnostics=select_diagnostics,
+            exceptions=exceptions,
             **debug.result_kwargs(target_page),
         )
 
@@ -693,6 +838,10 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
             submitted=False,
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+            profile_diagnostics=profile_diagnostics,
+            upload_diagnostics=upload_diagnostics,
+            select_diagnostics=select_diagnostics,
+            exceptions=exceptions,
             **debug.result_kwargs(target_page),
         )
 
@@ -710,16 +859,31 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         label = _fill_by_label_patterns(context, patterns, candidates.get(key))
         if label:
             filled.append(label)
+            profile_diagnostics.setdefault("mapped_fields", {})[key] = {"mapped": True, "label": label}
         elif key in required:
             unfilled_required.append(key.replace("_", " "))
+            profile_diagnostics.setdefault("mapped_fields", {})[key] = {"mapped": False, "reason": "field not found or candidate missing"}
 
     if candidates.get("work_authorization"):
-        if _select_work_status(context, candidates["work_authorization"].value):
+        if _select_work_status(context, candidates["work_authorization"].value, select_diagnostics):
             filled.append("Working status in UK")
+            profile_diagnostics.setdefault("mapped_fields", {})["work_authorization"] = {"mapped": True, "label": "Working status in UK"}
         else:
             unfilled.append("Working status in UK")
+            profile_diagnostics.setdefault("mapped_fields", {})["work_authorization"] = {"mapped": False, "reason": "select/fill failed"}
+            exceptions.append(
+                {
+                    "stage": "select",
+                    "type": "SelectOptionError",
+                    "message": "Could not fill working status in UK",
+                    "traceback": None,
+                    "field": "Working status in UK",
+                    "select_diagnostic": select_diagnostics[-1] if select_diagnostics else None,
+                }
+            )
     else:
         unfilled_required.append("working status in UK")
+        profile_diagnostics.setdefault("mapped_fields", {})["work_authorization"] = {"mapped": False, "reason": "candidate missing"}
 
     _handle_required_dropdown(
         context,
@@ -732,6 +896,9 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         filled,
         unfilled_required,
         warnings,
+        select_diagnostics,
+        profile_diagnostics,
+        exceptions,
     )
     _handle_required_dropdown(
         context,
@@ -744,6 +911,9 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         filled,
         unfilled_required,
         warnings,
+        select_diagnostics,
+        profile_diagnostics,
+        exceptions,
         no_match_warning="Could not match salary range",
     )
     _handle_required_dropdown(
@@ -757,24 +927,61 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         filled,
         unfilled_required,
         warnings,
+        select_diagnostics,
+        profile_diagnostics,
+        exceptions,
     )
 
-    if not form_inventory["file_inputs"]:
+    upload_diagnostics["detected_file_inputs"] = form_inventory["file_inputs"]
+    upload_diagnostics["file_input_detected"] = bool(context.locator("input[type=file]").count())
+    cv_path = _cv_upload_path(profile, upload_diagnostics)
+    debug.step("before_cv_upload", upload_diagnostics=upload_diagnostics)
+    if not upload_diagnostics["file_input_detected"]:
         debug.final_error = debug.final_error or "CV upload input not found in JobServe apply form."
         debug.html("cv_upload_input_not_found", context)
-    if profile and profile.cv_file_path:
+    if cv_path and upload_diagnostics.get("path_exists"):
         try:
-            file_input = context.locator("input[type=file]").first
-            file_input.set_input_files(profile.cv_file_path, timeout=5000)
+            file_input = context.locator("input[type=file], #filCV").first
+            file_input.set_input_files(cv_path, timeout=5000)
+            upload_diagnostics["set_input_files_succeeded"] = True
             uploaded_cv = True
             filled.append("CV upload")
+            logger.info(
+                "jobserve_apply_cv_upload_succeeded path=%s exists=%s size=%s mime=%s",
+                upload_diagnostics.get("resolved_absolute_path"),
+                upload_diagnostics.get("path_exists"),
+                upload_diagnostics.get("path_file_size"),
+                upload_diagnostics.get("detected_mime_type"),
+            )
         except Exception as exc:  # noqa: BLE001
+            payload = _exception_payload("cv_upload", exc, upload_diagnostics=dict(upload_diagnostics))
+            exceptions.append(payload)
+            upload_diagnostics["set_input_files_succeeded"] = False
+            upload_diagnostics["set_input_files_error"] = payload
             warnings.append(f"Could not upload CV: {exc}")
             unfilled_required.append("CV upload")
             debug.final_error = debug.final_error or "CV upload input not found or could not be populated."
-            debug.html("cv_upload_input_not_found", context)
+            logger.exception(
+                "jobserve_apply_cv_upload_failed path=%s exists=%s size=%s mime=%s",
+                upload_diagnostics.get("resolved_absolute_path"),
+                upload_diagnostics.get("path_exists"),
+                upload_diagnostics.get("path_file_size"),
+                upload_diagnostics.get("detected_mime_type"),
+            )
+            debug.html("cv_upload_failed", context)
     else:
+        upload_diagnostics["failure_reason"] = "No worker-accessible CV file path could be resolved." if cv_path is None else "Resolved CV path does not exist."
+        exceptions.append(
+            {
+                "stage": "cv_upload_preflight",
+                "type": "FileNotFoundError",
+                "message": upload_diagnostics["failure_reason"],
+                "traceback": None,
+                "upload_diagnostics": dict(upload_diagnostics),
+            }
+        )
         unfilled_required.append("CV upload")
+    debug.screenshot("after_cv_upload_attempt")
 
     debug.step(
         "after_filling",
@@ -816,6 +1023,10 @@ def _run_jobserve_modal(page, browser, candidates: dict[str, FieldCandidate], pr
         submitted=submitted,
         warnings=_dedupe(warnings),
         screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+        profile_diagnostics=profile_diagnostics,
+        upload_diagnostics=upload_diagnostics,
+        select_diagnostics=select_diagnostics,
+        exceptions=exceptions,
         **debug.result_kwargs(target_page),
     )
 
@@ -833,10 +1044,12 @@ def _fill_by_label_patterns(page, patterns: list[str], candidate: FieldCandidate
     return None
 
 
-def _select_work_status(page, value: str) -> bool:
+def _select_work_status(page, value: str, select_diagnostics: list[dict[str, Any]] | None = None) -> bool:
     for pattern in [r"working status", r"work status", r"status in uk", r"eligible.*uk"]:
         locator = page.get_by_label(re.compile(pattern, re.I)).first
         try:
+            if _select_locator_option(locator, "UK", field_name="Working status in UK", label_pattern=pattern, diagnostics=select_diagnostics):
+                return True
             locator.select_option(label=re.compile("Citizen|Permanent|Eligible|No sponsorship|UK", re.I), timeout=1500)
             return True
         except Exception:  # noqa: BLE001
@@ -859,39 +1072,166 @@ def _handle_required_dropdown(
     filled: list[str],
     unfilled_required: list[str],
     warnings: list[str],
+    select_diagnostics: list[dict[str, Any]] | None = None,
+    profile_diagnostics: dict[str, Any] | None = None,
+    exceptions: list[dict[str, Any]] | None = None,
     *,
     no_match_warning: str | None = None,
 ) -> None:
+    mapped_fields = profile_diagnostics.setdefault("mapped_fields", {}) if profile_diagnostics is not None else {}
     candidate = candidates.get(key)
     if candidate is None:
         warnings.append(missing_warning)
         unfilled_required.append(field_name)
+        mapped_fields[key] = {"mapped": False, "reason": "candidate missing"}
         return
     option = matcher(candidate.value)
     if option is None:
         warnings.append(no_match_warning or f"Could not match {field_name.lower()}")
         unfilled_required.append(field_name)
+        mapped_fields[key] = {"mapped": False, "reason": "profile value could not be converted to JobServe option", "value": candidate.value}
         return
-    if _select_dropdown_by_label_patterns(page, label_patterns, option):
+    if _select_dropdown_by_label_patterns(page, label_patterns, option, field_name=field_name, diagnostics=select_diagnostics):
         filled.append(field_name)
+        mapped_fields[key] = {"mapped": True, "label": field_name, "target_option": option}
         return
     warnings.append(f"Could not fill {field_name.lower()}")
     unfilled_required.append(field_name)
+    select_failure = select_diagnostics[-1] if select_diagnostics else None
+    mapped_fields[key] = {"mapped": False, "reason": "select option failed", "target_option": option, "select_diagnostic": select_failure}
+    if exceptions is not None:
+        exceptions.append(
+            {
+                "stage": "select",
+                "type": "SelectOptionError",
+                "message": f"Could not fill {field_name.lower()}",
+                "traceback": None,
+                "field": field_name,
+                "target_option": option,
+                "select_diagnostic": select_failure,
+            }
+        )
 
 
-def _select_dropdown_by_label_patterns(page, label_patterns: list[str], visible_text: str) -> bool:
+def _select_dropdown_by_label_patterns(
+    page,
+    label_patterns: list[str],
+    visible_text: str,
+    *,
+    field_name: str | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> bool:
     for pattern in label_patterns:
         locator = page.get_by_label(re.compile(pattern, re.I)).first
-        try:
-            locator.select_option(label=visible_text, timeout=1500)
+        if _select_locator_option(locator, visible_text, field_name=field_name or visible_text, label_pattern=pattern, diagnostics=diagnostics):
             return True
-        except Exception:  # noqa: BLE001
-            try:
-                locator.select_option(label=re.compile(re.escape(visible_text), re.I), timeout=1500)
-                return True
-            except Exception:  # noqa: BLE001
-                continue
     return False
+
+
+def _select_locator_option(locator, visible_text: str, *, field_name: str, label_pattern: str, diagnostics: list[dict[str, Any]] | None = None) -> bool:
+    diagnostic: dict[str, Any] = {
+        "field": field_name,
+        "label_pattern": label_pattern,
+        "target": visible_text,
+        "available_options": [],
+        "selected_option": None,
+        "strategy": None,
+        "success": False,
+        "failure_reason": None,
+    }
+    try:
+        options = locator.evaluate(
+            """element => Array.from(element.options || []).map((option, index) => ({
+                index,
+                label: option.label || option.textContent || '',
+                text: option.textContent || '',
+                value: option.value || ''
+            }))""",
+            timeout=1000,
+        )
+        diagnostic["available_options"] = options
+    except Exception as exc:  # noqa: BLE001
+        diagnostic["failure_reason"] = f"Could not inspect select options: {exc}"
+        if diagnostics is not None:
+            diagnostics.append(diagnostic)
+        return False
+
+    normalized_target = _normalize_select_text(visible_text)
+    options = diagnostic["available_options"]
+    fallback_index = _fallback_option_by_index(options, visible_text)
+    attempts: list[tuple[str, Any]] = [
+        ("exact_label", next((option for option in options if str(option.get("label") or option.get("text") or "") == visible_text), None)),
+        ("normalized_label", next((option for option in options if _normalize_select_text(str(option.get("label") or option.get("text") or "")) == normalized_target), None)),
+        ("fallback_option_index", fallback_index),
+        ("partial_text", next((option for option in options if normalized_target and normalized_target in _normalize_select_text(str(option.get("label") or option.get("text") or ""))), None)),
+    ]
+
+    for strategy, option in attempts:
+        if not option:
+            continue
+        selected, failure_reason = _select_option_candidate(locator, option, visible_text)
+        if selected:
+            diagnostic["strategy"] = strategy
+            diagnostic["selected_option"] = option
+            diagnostic["success"] = True
+            if diagnostics is not None:
+                diagnostics.append(diagnostic)
+            return True
+        diagnostic["failure_reason"] = f"{strategy} failed: {failure_reason}"
+
+    try:
+        locator.select_option(label=re.compile(re.escape(visible_text), re.I), timeout=1500)
+        diagnostic["strategy"] = "regex_label"
+        diagnostic["selected_option"] = visible_text
+        diagnostic["success"] = True
+        if diagnostics is not None:
+            diagnostics.append(diagnostic)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        diagnostic["failure_reason"] = diagnostic["failure_reason"] or str(exc)
+        if diagnostics is not None:
+            diagnostics.append(diagnostic)
+        return False
+
+
+def _select_option_candidate(locator, option: dict[str, Any], visible_text: str) -> tuple[bool, str | None]:
+    failures: list[str] = []
+    value = str(option.get("value") or "")
+    label = str(option.get("label") or option.get("text") or "")
+    if value:
+        try:
+            locator.select_option(value=value, timeout=1500)
+            return True, None
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"value={value!r}: {exc}")
+    for candidate_label in [label, visible_text]:
+        if candidate_label:
+            try:
+                locator.select_option(label=candidate_label, timeout=1500)
+                return True, None
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"label={candidate_label!r}: {exc}")
+    try:
+        locator.select_option(index=int(option["index"]), timeout=1500)
+        return True, None
+    except Exception as exc:  # noqa: BLE001
+        failures.append(f"index={option.get('index')!r}: {exc}")
+    return False, "; ".join(failures)
+
+
+def _fallback_option_by_index(options: list[dict[str, Any]], visible_text: str) -> dict[str, Any] | None:
+    match = re.fullmatch(r"\s*(\d+)\s*", str(visible_text))
+    if match:
+        requested = int(match.group(1))
+        for index in [requested, requested - 1]:
+            option = next((candidate for candidate in options if candidate.get("index") == index), None)
+            if option is not None:
+                return option
+    return None
+
+
+def _normalize_select_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
 def salary_range_label(value: str) -> str | None:

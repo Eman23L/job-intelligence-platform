@@ -103,6 +103,8 @@ class UserProfileRead(ORMModel):
     sponsorship_required: bool = False
     cv_file_path: str | None = None
     cv_file_name: str | None = None
+    cv_file_mime_type: str | None = None
+    cv_file_size: int | None = None
     cv_uploaded_at: datetime | None = None
     location_preference: str | None = None
     remote_preference: str | None = None
@@ -721,6 +723,10 @@ class AssistApplyResult(BaseModel):
     final_url: str | None = None
     final_error: str | None = None
     debug_mode: bool = False
+    profile_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    upload_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    select_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    exceptions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AssistApplyRequest(BaseModel):

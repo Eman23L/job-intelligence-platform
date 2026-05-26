@@ -1,5 +1,4 @@
 import re
-import shutil
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -210,26 +209,42 @@ def update_application_profile(db: Session, user: User, values: dict[str, Any]) 
     return profile
 
 
-def store_cv_file(db: Session, user: User, file_name: str, source_file) -> UserProfile:
+def store_cv_file(db: Session, user: User, file_name: str, source_file, *, content_type: str | None = None) -> UserProfile:
     suffix = Path(file_name).suffix.lower()
     if suffix not in {".pdf", ".doc", ".docx"}:
         raise ValueError("CV file must be PDF, DOC, or DOCX.")
+    file_bytes = source_file.read()
+    if not file_bytes:
+        raise ValueError("CV file is empty.")
     storage_dir = Path(__file__).resolve().parents[3] / "storage" / "cv_files" / str(user.id)
     storage_dir.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(file_name).name).strip("._") or f"cv{suffix}"
     target = storage_dir / safe_name
     with target.open("wb") as output:
-        shutil.copyfileobj(source_file, output)
+        output.write(file_bytes)
     profile = get_profile(db, user)
     if profile is None:
         profile = UserProfile(user_id=user.id, cv_text="", summary="", skills=[], experience=[], projects=[], education=[], preferred_roles=[])
         db.add(profile)
     profile.cv_file_path = str(target)
     profile.cv_file_name = safe_name
+    profile.cv_file_bytes = file_bytes
+    profile.cv_file_mime_type = content_type or _mime_type_for_suffix(suffix)
+    profile.cv_file_size = len(file_bytes)
     profile.cv_uploaded_at = utcnow()
     db.commit()
     db.refresh(profile)
     return profile
+
+
+def _mime_type_for_suffix(suffix: str) -> str:
+    if suffix == ".pdf":
+        return "application/pdf"
+    if suffix == ".doc":
+        return "application/msword"
+    if suffix == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return "application/octet-stream"
 
 
 def extract_profile_fields(cv_text: str) -> dict[str, Any]:

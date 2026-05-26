@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from contextlib import contextmanager
+from io import BytesIO
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -169,6 +170,41 @@ def test_post_cv_updates_existing_profile() -> None:
         assert second.json()["preferred_roles"] == ["Frontend Developer"]
         assert second.json()["preferences"]["remote"] == "remote"
         assert second.json()["remote_preference"] == "remote"
+
+
+def test_application_profile_saves_jobserve_required_fields() -> None:
+    with profile_client() as client:
+        response = client.post(
+            "/profile/application",
+            json={
+                "email": "candidate@example.invalid",
+                "availability_notice": "Immediate",
+                "salary_expectation_gbp": 65000,
+                "travel_distance_miles": 25,
+                "minimum_apply_score": 80,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["email"] == "candidate@example.invalid"
+        assert body["availability_notice"] == "Immediate"
+        assert body["salary_expectation_gbp"] == 65000
+        assert body["travel_distance_miles"] == 25
+
+
+def test_cv_file_upload_stores_worker_accessible_blob() -> None:
+    with profile_client() as client:
+        response = client.post(
+            "/profile/cv-file",
+            files={"file": ("cv.pdf", BytesIO(b"%PDF-1.4 fixture"), "application/pdf")},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cv_file_name"] == "cv.pdf"
+        assert body["cv_file_mime_type"] == "application/pdf"
+        assert body["cv_file_size"] == len(b"%PDF-1.4 fixture")
 
 
 def test_get_profile_returns_null_when_missing() -> None:
