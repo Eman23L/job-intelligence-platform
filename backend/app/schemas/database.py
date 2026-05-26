@@ -207,6 +207,10 @@ class JobServeSearchScrapeRequest(BaseModel):
     keywords: str = Field(min_length=1, max_length=120)
     location: str | None = Field(default=None, max_length=120)
     posted_within_days: int | None = Field(default=7, ge=1, le=30)
+    distance: str = "Within 50 miles"
+    select_all_industries: bool = True
+    posted_within: str = "Within 7 days"
+    job_type: str = "Any"
     remote_only: bool = False
     max_pages: int = Field(default=3, ge=1, le=10)
     check_availability_after: bool = False
@@ -237,6 +241,9 @@ class SourceScrapeRunStatus(BaseModel):
     updated: int = 0
     skipped: int = 0
     error: str | None = None
+    search_params: dict[str, Any] = Field(default_factory=dict)
+    final_search_url: str | None = None
+    result_count: int = 0
 
 
 class SourceDeleteResult(BaseModel):

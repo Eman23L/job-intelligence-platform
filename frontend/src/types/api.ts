@@ -507,7 +507,11 @@ export type ScrapeNowResult = ScrapeRunStatus;
 export interface JobServeSearchPayload {
   keywords: string;
   location?: string | null;
+  distance?: string;
+  select_all_industries?: boolean;
+  posted_within?: string;
   posted_within_days?: number | null;
+  job_type?: string;
   remote_only?: boolean;
   max_pages?: number;
 }
@@ -525,6 +529,9 @@ export interface SourceScrapeRunStatus {
   updated: number;
   skipped: number;
   error: string | null;
+  search_params?: Record<string, unknown>;
+  final_search_url?: string | null;
+  result_count?: number;
 }
 
 export interface SourceDeleteResult {

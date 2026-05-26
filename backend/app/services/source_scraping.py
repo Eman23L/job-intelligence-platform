@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -266,7 +267,7 @@ def start_jobserve_search_scrape(db: Session, payload: JobServeSearchScrapeReque
         status="running",
         started_at=datetime.now(tz=timezone.utc),
         errors=[],
-        parsed_jobs=[],
+        parsed_jobs=[{"search_metadata": _jobserve_search_metadata(payload)}],
         jobs_found=0,
         jobs_created=0,
         jobs_updated=0,
@@ -276,10 +277,14 @@ def start_jobserve_search_scrape(db: Session, payload: JobServeSearchScrapeReque
     db.commit()
     db.refresh(run)
     LOGGER.info(
-        "JobServe search scrape queued run_id=%s keywords=%s location=%s max_pages=%s",
+        "JobServe search scrape queued run_id=%s keywords=%s location=%s distance=%s posted=%s job_type=%s remote_only=%s max_pages=%s",
         run.id,
         payload.keywords,
         payload.location,
+        payload.distance,
+        _posted_within_label(payload),
+        payload.job_type,
+        payload.remote_only,
         payload.max_pages,
     )
     return SourceScrapeRunStart(run_id=run.id, status="running")
@@ -303,7 +308,10 @@ def run_jobserve_search_scrape_background(scrape_run_id: int, payload_data: dict
             run.jobs_created = result.jobs_created
             run.jobs_updated = result.jobs_updated
             run.jobs_skipped = result.jobs_skipped
-            run.parsed_jobs = [item.model_dump() if hasattr(item, "model_dump") else item for item in result.parsed_jobs]
+            run.parsed_jobs = [
+                {"search_metadata": _jobserve_search_metadata(payload, final_search_url=result.search_url, result_count=result.jobs_found)},
+                *[item.model_dump() if hasattr(item, "model_dump") else item for item in result.parsed_jobs],
+            ]
             run.errors = result.errors
             run.error_message = "; ".join(result.errors[:5]) if result.errors else None
             db.commit()
@@ -343,6 +351,7 @@ def get_source_scrape_run_status(db: Session, run_id: int) -> SourceScrapeRunSta
     run = db.get(ScrapeRun, run_id)
     if run is None:
         return None
+    metadata = _source_scrape_search_metadata(run)
     return SourceScrapeRunStatus(
         run_id=run.id,
         status=run.status,
@@ -351,7 +360,19 @@ def get_source_scrape_run_status(db: Session, run_id: int) -> SourceScrapeRunSta
         updated=run.jobs_updated or 0,
         skipped=run.jobs_skipped or 0,
         error=run.error_message,
+        search_params=metadata.get("search_params", {}),
+        final_search_url=metadata.get("final_search_url"),
+        result_count=int(metadata.get("result_count") or run.jobs_found or 0),
     )
+
+
+def _source_scrape_search_metadata(run: ScrapeRun) -> dict[str, Any]:
+    parsed = run.parsed_jobs or []
+    if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+        metadata = parsed[0].get("search_metadata")
+        if isinstance(metadata, dict):
+            return metadata
+    return {}
 
 
 def _update_scrape_run_progress(
@@ -377,6 +398,38 @@ def _update_scrape_run_progress(
 
 def build_jobserve_search_url(payload: JobServeSearchScrapeRequest) -> str:
     return "https://www.jobserve.com/gb/en/Job-Search/"
+
+
+def _jobserve_search_metadata(payload: JobServeSearchScrapeRequest, *, final_search_url: str | None = None, result_count: int = 0) -> dict[str, Any]:
+    search_params = {
+        "keywords": payload.keywords,
+        "location": payload.location,
+        "distance": payload.distance,
+        "select_all_industries": payload.select_all_industries,
+        "industries_mode": "Select All" if payload.select_all_industries else "Default",
+        "posted_within": _posted_within_label(payload),
+        "job_type": payload.job_type,
+        "remote_only": payload.remote_only,
+        "max_pages": payload.max_pages,
+    }
+    return {
+        "search_params": search_params,
+        "selected_distance": payload.distance,
+        "selected_industries_mode": search_params["industries_mode"],
+        "selected_posted_value": search_params["posted_within"],
+        "selected_job_type": payload.job_type,
+        "remote_only": payload.remote_only,
+        "final_search_url": final_search_url,
+        "result_count": result_count,
+    }
+
+
+def _posted_within_label(payload: JobServeSearchScrapeRequest) -> str:
+    if payload.posted_within:
+        return payload.posted_within
+    if payload.posted_within_days == 1:
+        return "Within 1 day"
+    return f"Within {payload.posted_within_days or 7} days"
 
 
 def _fetch_jobserve_search_results(payload: JobServeSearchScrapeRequest) -> JobServeSearchResultPage:
@@ -433,7 +486,15 @@ def _jobserve_search_form_payload(html: str, base_url: str, payload: JobServeSea
 
     data["ctl00$main$srch$ctl_qs$txtKey"] = payload.keywords.strip()
     data["ctl00$main$srch$ctl_qs$txtLoc"] = (payload.location or "").strip()
-    data["selAge"] = str(payload.posted_within_days or 7)
+    _set_form_text(data, form, [r"key", r"what"], payload.keywords.strip())
+    _set_form_text(data, form, [r"loc", r"where"], (payload.location or "").strip())
+    _set_form_select(data, form, [r"distance", r"miles", r"radius", r"rad"], payload.distance)
+    _set_form_select(data, form, [r"posted", r"age", r"date"], _posted_within_label(payload))
+    _set_form_select(data, form, [r"job.?type", r"type", r"jobtype"], payload.job_type)
+    _set_industries_select_all(data, form, payload.select_all_industries)
+    data["selAge"] = _posted_within_value(payload)
+    data.setdefault("selRad", _distance_value(payload.distance))
+    data.setdefault("selJType", _job_type_value(payload.job_type))
     data["ctl00$main$srch$ctl_qs$btnSearch"] = "Search"
     remote_name = "ctl00$main$srch$ctl_qs$RemoteWorking$chkRemoteWorking"
     if payload.remote_only:
@@ -442,6 +503,93 @@ def _jobserve_search_form_payload(html: str, base_url: str, payload: JobServeSea
         data.pop(remote_name, None)
     action_url = urljoin(base_url, form.get("action") or "./JobServeHome.aspx")
     return data, action_url
+
+
+def _set_form_text(data: dict[str, Any], form, patterns: list[str], value: str) -> None:
+    for field in form.find_all("input"):
+        name = field.get("name")
+        if not name:
+            continue
+        identity = " ".join(str(field.get(attr) or "") for attr in ["name", "id", "aria-label", "placeholder"])
+        if any(re.search(pattern, identity, re.I) for pattern in patterns):
+            data[name] = value
+
+
+def _set_form_select(data: dict[str, Any], form, patterns: list[str], label: str) -> None:
+    for field in form.find_all("select"):
+        name = field.get("name")
+        if not name:
+            continue
+        identity = " ".join(str(field.get(attr) or "") for attr in ["name", "id", "aria-label"])
+        option_text = " ".join(option.get_text(" ", strip=True) for option in field.find_all("option"))
+        if any(re.search(pattern, f"{identity} {option_text}", re.I) for pattern in patterns):
+            matched = _select_option_value(field, label)
+            if matched is not None:
+                data[name] = matched
+
+
+def _select_option_value(select, label: str) -> str | None:
+    normalized_target = _normalize_jobserve_form_text(label)
+    for option in select.find_all("option"):
+        text = option.get_text(" ", strip=True)
+        if text == label or _normalize_jobserve_form_text(text) == normalized_target:
+            return option.get("value") or text
+    for option in select.find_all("option"):
+        text = option.get_text(" ", strip=True)
+        if normalized_target and normalized_target in _normalize_jobserve_form_text(text):
+            return option.get("value") or text
+    return None
+
+
+def _set_industries_select_all(data: dict[str, Any], form, select_all: bool) -> None:
+    if not select_all:
+        return
+    for field in form.find_all("select"):
+        name = field.get("name")
+        if not name:
+            continue
+        identity = " ".join(str(field.get(attr) or "") for attr in ["name", "id", "aria-label"])
+        option_text = " ".join(option.get_text(" ", strip=True) for option in field.find_all("option"))
+        if re.search(r"industr(y|ies)|sector|selind|\bind\b", f"{identity} {option_text}", re.I):
+            values = [option.get("value") or option.get_text(" ", strip=True) for option in field.find_all("option") if option.get("value") not in {None, ""}]
+            data[name] = values if field.has_attr("multiple") else (values[0] if values else data.get(name, ""))
+    for field in form.find_all("input"):
+        name = field.get("name")
+        if name and re.search(r"industr(y|ies)|sector|selind|\bind\b", " ".join(str(field.get(attr) or "") for attr in ["name", "id"]), re.I):
+            input_type = str(field.get("type") or "").lower()
+            if input_type in {"checkbox", "hidden"}:
+                data[name] = field.get("value") or "on"
+
+
+def _posted_within_value(payload: JobServeSearchScrapeRequest) -> str:
+    text = _posted_within_label(payload).lower()
+    if text == "today":
+        return "0"
+    match = re.search(r"\d+", text)
+    if match:
+        return match.group(0)
+    return str(payload.posted_within_days or 7)
+
+
+def _distance_value(distance: str) -> str:
+    match = re.search(r"\d+", distance)
+    return match.group(0) if match else "50"
+
+
+def _job_type_value(job_type: str) -> str:
+    normalized = _normalize_jobserve_form_text(job_type)
+    mapping = {
+        "any": "",
+        "permanent": "P",
+        "contract": "C",
+        "contract permanent": "CP",
+        "part time temporary seasonal": "T",
+    }
+    return mapping.get(normalized, job_type)
+
+
+def _normalize_jobserve_form_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
 def _hidden_int(html: str, element_id: str, *, default: int) -> int:

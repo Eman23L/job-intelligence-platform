@@ -23,12 +23,18 @@ const initialForm = {
 const initialJobServeSearch = {
   keywords: "AI",
   location: "London",
-  posted_within_days: "7",
+  distance: "Within 50 miles",
+  select_all_industries: true,
+  posted_within: "Within 7 days",
+  job_type: "Any",
   remote_only: false,
   max_pages: "3"
 };
 
 const quickSearches = ["AI", "AI Engineer", "Data Analyst", "Power BI", "Automation Engineer"];
+const distanceOptions = ["Within 1 mile", "Within 5 miles", "Within 10 miles", "Within 15 miles", "Within 25 miles", "Within 50 miles", "Within 75 miles", "Within 100 miles"];
+const postedOptions = ["Within 7 days", "Within 6 days", "Within 5 days", "Within 4 days", "Within 3 days", "Within 2 days", "Within 1 day", "Today"];
+const jobTypeOptions = ["Any", "Permanent", "Contract", "Contract/Permanent", "Part Time/Temporary/Seasonal"];
 
 export default function SourcesPage() {
   const [health, setHealth] = useState<SourceHealthAnalytics | null>(null);
@@ -224,12 +230,35 @@ export default function SourcesPage() {
       const started = await api.searchScrapeJobServe({
         keywords: jobServeSearch.keywords,
         location: jobServeSearch.location || null,
-        posted_within_days: Number(jobServeSearch.posted_within_days || 7),
+        distance: jobServeSearch.distance,
+        select_all_industries: jobServeSearch.select_all_industries,
+        posted_within: jobServeSearch.posted_within,
+        job_type: jobServeSearch.job_type,
         remote_only: jobServeSearch.remote_only,
         max_pages: Number(jobServeSearch.max_pages || 3)
       });
       setActiveJobServeRunId(started.run_id);
-      setJobServeResult({ run_id: started.run_id, status: started.status, found: 0, created: 0, updated: 0, skipped: 0, error: null });
+      setJobServeResult({
+        run_id: started.run_id,
+        status: started.status,
+        found: 0,
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        error: null,
+        search_params: {
+          keywords: jobServeSearch.keywords,
+          location: jobServeSearch.location,
+          distance: jobServeSearch.distance,
+          select_all_industries: jobServeSearch.select_all_industries,
+          posted_within: jobServeSearch.posted_within,
+          job_type: jobServeSearch.job_type,
+          remote_only: jobServeSearch.remote_only,
+          max_pages: Number(jobServeSearch.max_pages || 3)
+        },
+        final_search_url: null,
+        result_count: 0
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to run JobServe search scrape");
       setActionLoading(null);
@@ -296,16 +325,38 @@ export default function SourcesPage() {
             <input value={jobServeSearch.location} onChange={(event) => setJobServeSearch({ ...jobServeSearch, location: event.target.value })} />
           </label>
           <label>
-            Posted within
+            Distance
             <select
-              value={jobServeSearch.posted_within_days}
-              onChange={(event) => setJobServeSearch({ ...jobServeSearch, posted_within_days: event.target.value })}
+              value={jobServeSearch.distance}
+              onChange={(event) => setJobServeSearch({ ...jobServeSearch, distance: event.target.value })}
             >
-              <option value="1">1 day</option>
-              <option value="3">3 days</option>
-              <option value="7">7 days</option>
-              <option value="14">14 days</option>
-              <option value="30">30 days</option>
+              {distanceOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={jobServeSearch.select_all_industries}
+              onChange={(event) => setJobServeSearch({ ...jobServeSearch, select_all_industries: event.target.checked })}
+            />
+            Select all industries
+          </label>
+          <label>
+            Posted
+            <select value={jobServeSearch.posted_within} onChange={(event) => setJobServeSearch({ ...jobServeSearch, posted_within: event.target.value })}>
+              {postedOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Job type
+            <select value={jobServeSearch.job_type} onChange={(event) => setJobServeSearch({ ...jobServeSearch, job_type: event.target.value })}>
+              {jobTypeOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
             </select>
           </label>
           <label>
@@ -338,8 +389,20 @@ export default function SourcesPage() {
             <h3>JobServe result</h3>
             <div className="metric-list">
               <div className="metric-row">
+                <span>Search params</span>
+                <strong>{formatSearchParams(jobServeResult.search_params)}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Final URL</span>
+                <strong>{jobServeResult.final_search_url ?? "Pending"}</strong>
+              </div>
+              <div className="metric-row">
                 <span>Found</span>
                 <strong>{jobServeResult.found}</strong>
+              </div>
+              <div className="metric-row">
+                <span>Result count</span>
+                <strong>{jobServeResult.result_count ?? jobServeResult.found}</strong>
               </div>
               <div className="metric-row">
                 <span>Created</span>
@@ -551,4 +614,22 @@ function splitPatterns(value: string) {
     .map((item) => item.trim())
     .filter(Boolean);
   return items.length ? items : null;
+}
+
+function formatSearchParams(params: Record<string, unknown> | undefined): string {
+  if (!params || Object.keys(params).length === 0) {
+    return "Pending";
+  }
+  return [
+    params.keywords,
+    params.location,
+    params.distance,
+    params.posted_within,
+    params.job_type,
+    params.select_all_industries ? "All industries" : "Default industries",
+    params.remote_only ? "Remote only" : "All work modes",
+    params.max_pages ? `Max ${params.max_pages} pages` : null
+  ]
+    .filter(Boolean)
+    .join(" | ");
 }

@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.main import app
 from app.scrapers.job_boards import JobRecord
 from app.scrapers.policies.robots import RobotsCheckResult
+from app.schemas.database import JobServeSearchScrapeRequest
 from app.services import source_scraping
 from scripts.seed_data import seed_database
 
@@ -324,6 +325,59 @@ def test_jobserve_search_scrape_validates_request() -> None:
         assert response.status_code == 422
 
 
+def test_jobserve_search_scrape_request_accepts_full_real_form_fields() -> None:
+    payload = JobServeSearchScrapeRequest(
+        keywords="AI",
+        location="London",
+        distance="Within 50 miles",
+        select_all_industries=True,
+        posted_within="Within 7 days",
+        job_type="Any",
+        remote_only=False,
+        max_pages=3,
+    )
+
+    assert payload.distance == "Within 50 miles"
+    assert payload.select_all_industries is True
+    assert payload.posted_within == "Within 7 days"
+    assert payload.job_type == "Any"
+
+
+def test_jobserve_search_form_payload_maps_full_real_form_controls() -> None:
+    html = """
+    <form id="frm1" action="/gb/en/JobSearch.aspx">
+      <input name="ctl00$main$srch$ctl_qs$txtKey" />
+      <input name="ctl00$main$srch$ctl_qs$txtLoc" />
+      <select name="selRad"><option value="10">Within 10 miles</option><option value="50">Within 50 miles</option></select>
+      <select name="selAge"><option value="1">Within 1 day</option><option value="7">Within 7 days</option></select>
+      <select name="selJType"><option value="">Any</option><option value="P">Permanent</option></select>
+      <select name="selInd" multiple><option value="it">IT</option><option value="eng">Engineering</option></select>
+      <input type="checkbox" name="ctl00$main$srch$ctl_qs$RemoteWorking$chkRemoteWorking" value="on" checked />
+    </form>
+    """
+    payload = JobServeSearchScrapeRequest(
+        keywords="AI Engineer",
+        location="London",
+        distance="Within 50 miles",
+        select_all_industries=True,
+        posted_within="Within 7 days",
+        job_type="Permanent",
+        remote_only=False,
+        max_pages=3,
+    )
+
+    data, action_url = source_scraping._jobserve_search_form_payload(html, "https://www.jobserve.com/gb/en/Job-Search/", payload)
+
+    assert action_url == "https://www.jobserve.com/gb/en/JobSearch.aspx"
+    assert data["ctl00$main$srch$ctl_qs$txtKey"] == "AI Engineer"
+    assert data["ctl00$main$srch$ctl_qs$txtLoc"] == "London"
+    assert data["selRad"] == "50"
+    assert data["selAge"] == "7"
+    assert data["selJType"] == "P"
+    assert data["selInd"] == ["it", "eng"]
+    assert "ctl00$main$srch$ctl_qs$RemoteWorking$chkRemoteWorking" not in data
+
+
 def test_jobserve_search_scrape_summary_dedupe_and_fingerprints(monkeypatch) -> None:
     jobserve_html = (FIXTURES / "jobserve_search.html").read_text(encoding="utf-8")
 
@@ -378,6 +432,12 @@ def test_jobserve_search_scrape_summary_dedupe_and_fingerprints(monkeypatch) -> 
         second_status = client.get(f"/sources/scrape-runs/{second.json()['run_id']}")
         assert first.json()["status"] == "running"
         assert first_status.json()["found"] == 3
+        assert first_status.json()["search_params"]["distance"] == "Within 50 miles"
+        assert first_status.json()["search_params"]["posted_within"] == "Within 7 days"
+        assert first_status.json()["search_params"]["job_type"] == "Any"
+        assert first_status.json()["search_params"]["select_all_industries"] is True
+        assert first_status.json()["final_search_url"] == "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture"
+        assert first_status.json()["result_count"] == 3
         assert first_status.json()["created"] == 3
         assert first_status.json()["updated"] == 0
         assert first_status.json()["skipped"] == 0
