@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import sys
 import time
 from pathlib import Path
@@ -22,6 +23,9 @@ from app.services import apply_agent  # noqa: E402
 DEBUG_ROOT = BACKEND_ROOT / "runtime" / "jobserve-debug"
 VIDEO_DIR = DEBUG_ROOT / "videos"
 TRACE_DIR = DEBUG_ROOT / "traces"
+REMEMBERED_CV_PATH = BACKEND_ROOT / "runtime" / "jobserve_debug_cv_path.txt"
+CV_EXTENSIONS = {".pdf", ".doc", ".docx"}
+CV_KEYWORDS = ("cv", "resume", "manuel", "bamgbala", "emmanuel")
 
 
 STEP_MESSAGES = {
@@ -65,7 +69,9 @@ STEP_MESSAGES = {
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the JobServe apply flow in a visible local Playwright browser.")
     parser.add_argument("--email", required=True, help="Email address to fill in the JobServe application modal.")
-    parser.add_argument("--cv-path", required=True, help="Local CV file path to upload.")
+    parser.add_argument("--cv-path", help="Local CV file path to upload. If omitted, a remembered or discovered CV can be used.")
+    parser.add_argument("--cv-search", action="store_true", help="Search common folders for a CV and choose from the matches.")
+    parser.add_argument("--remember-cv-path", action="store_true", help="Remember the resolved CV path for future local debug runs.")
     parser.add_argument("--keywords", default="AI")
     parser.add_argument("--location", default="London")
     parser.add_argument("--distance", default="Within 50 miles")
@@ -80,6 +86,157 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--slow-mo-ms", type=int, default=500)
     parser.add_argument("--devtools", action="store_true")
     return parser.parse_args(argv)
+
+
+class CVPathError(RuntimeError):
+    pass
+
+
+def resolve_cv_path(args: argparse.Namespace, *, input_func: Callable[[str], str] = input, search_dirs: list[Path] | None = None, remember_path: Path = REMEMBERED_CV_PATH) -> Path:
+    provided_path = Path(args.cv_path).expanduser().resolve() if args.cv_path else None
+    if provided_path and provided_path.exists() and not args.cv_search:
+        _remember_cv_path_if_requested(args, provided_path, remember_path)
+        args.cv_path = str(provided_path)
+        return provided_path
+
+    if provided_path and not provided_path.exists():
+        _print_missing_cv_path_diagnostics(provided_path)
+
+    if not provided_path and not args.cv_search:
+        remembered = _load_remembered_cv_path(remember_path)
+        if remembered and remembered.exists():
+            print(f"[jobserve-debug] Using remembered CV: {remembered}", flush=True)
+            args.cv_path = str(remembered)
+            return remembered
+        if remembered:
+            print(f"[jobserve-debug] Remembered CV path is invalid, falling back to search: {remembered}", flush=True)
+
+    candidates = discover_cv_files(search_dirs=search_dirs)
+    if len(candidates) == 1:
+        selected = candidates[0]
+        print(f"[jobserve-debug] Using discovered CV: {selected}", flush=True)
+        _remember_cv_path_if_requested(args, selected, remember_path)
+        args.cv_path = str(selected)
+        return selected
+    if len(candidates) > 1:
+        selected = choose_cv_file(candidates, input_func=input_func)
+        _remember_cv_path_if_requested(args, selected, remember_path)
+        args.cv_path = str(selected)
+        return selected
+
+    raise CVPathError("No likely CV file found. Pass --cv-path, place a CV in Downloads/Documents/Desktop, or run with --cv-search.")
+
+
+def _print_missing_cv_path_diagnostics(path: Path) -> None:
+    print(f"[jobserve-debug] CV file not found at: {path}", flush=True)
+    print(f"[jobserve-debug] current working directory: {Path.cwd()}", flush=True)
+    print(f"[jobserve-debug] parent folder exists: {path.parent.exists()}", flush=True)
+
+
+def _load_remembered_cv_path(remember_path: Path = REMEMBERED_CV_PATH) -> Path | None:
+    try:
+        value = remember_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    return Path(value).expanduser().resolve() if value else None
+
+
+def _remember_cv_path_if_requested(args: argparse.Namespace, cv_path: Path, remember_path: Path = REMEMBERED_CV_PATH) -> None:
+    if not args.remember_cv_path:
+        return
+    remember_path.parent.mkdir(parents=True, exist_ok=True)
+    remember_path.write_text(str(cv_path), encoding="utf-8")
+    print(f"[jobserve-debug] Remembered CV path: {cv_path}", flush=True)
+
+
+def cv_search_dirs() -> list[Path]:
+    home = Path.home()
+    explicit_home = Path(r"C:\Users\Home")
+    return _dedupe_paths(
+        [
+            REPO_ROOT,
+            Path.cwd(),
+            home / "Downloads",
+            home / "Documents",
+            home / "Desktop",
+            explicit_home / "Downloads",
+            explicit_home / "Documents",
+            explicit_home / "Desktop",
+            explicit_home / "Web_Job_Scrap",
+        ]
+    )
+
+
+def discover_cv_files(*, search_dirs: list[Path] | None = None) -> list[Path]:
+    matches: list[tuple[int, float, Path]] = []
+    for directory in cv_search_dirs() if search_dirs is None else search_dirs:
+        if not directory.exists() or not directory.is_dir():
+            continue
+        for path in _iter_candidate_documents(directory):
+            score = _cv_match_score(path)
+            if score <= 0:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            matches.append((score, mtime, path.resolve()))
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for _, _, path in sorted(matches, key=lambda item: (item[0], item[1], str(item[2]).lower()), reverse=True):
+        if path in seen:
+            continue
+        seen.add(path)
+        ordered.append(path)
+    return ordered
+
+
+def _iter_candidate_documents(directory: Path):
+    try:
+        iterator = directory.rglob("*")
+        for path in iterator:
+            if path.is_file() and path.suffix.lower() in CV_EXTENSIONS:
+                yield path
+    except OSError:
+        return
+
+
+def _cv_match_score(path: Path) -> int:
+    name = path.name.lower()
+    if path.suffix.lower() not in CV_EXTENSIONS:
+        return 0
+    if name.startswith("~$"):
+        return 0
+    score = 0
+    for keyword in CV_KEYWORDS:
+        if keyword in name:
+            score += 5
+    return score
+
+
+def choose_cv_file(candidates: list[Path], *, input_func: Callable[[str], str] = input) -> Path:
+    print("[jobserve-debug] Multiple likely CV files found:", flush=True)
+    for index, path in enumerate(candidates, start=1):
+        print(f"[jobserve-debug] {index}. {path}", flush=True)
+    while True:
+        choice = input_func("Choose CV number: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+            selected = candidates[int(choice) - 1]
+            print(f"[jobserve-debug] Using discovered CV: {selected}", flush=True)
+            return selected
+        print("[jobserve-debug] Invalid selection. Enter one of the listed numbers.", flush=True)
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for path in paths:
+        resolved = path.expanduser().resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(resolved)
+    return result
 
 
 def build_local_profile(args: argparse.Namespace) -> SimpleNamespace:
@@ -206,15 +363,12 @@ class TerminalProgress:
 
 
 def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
-    cv_path = Path(args.cv_path).expanduser().resolve()
-    if not cv_path.exists():
-        raise FileNotFoundError(f"CV file does not exist: {cv_path}")
-
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     TRACE_DIR.mkdir(parents=True, exist_ok=True)
+    cv_path = resolve_cv_path(args)
     trace_path = TRACE_DIR / f"jobserve-visible-{int(time.time())}.zip"
 
-    print_startup_config(args, trace_path)
+    print_startup_config(args, trace_path, cv_path)
 
     from playwright.sync_api import sync_playwright
 
@@ -262,11 +416,16 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
                 print("[jobserve-debug] result:", json.dumps(result.model_dump(), default=str, indent=2)[:8000], flush=True)
 
 
-def print_startup_config(args: argparse.Namespace, trace_path: Path) -> None:
+def print_startup_config(args: argparse.Namespace, trace_path: Path, cv_path: Path | None = None) -> None:
     submit_enabled = submit_requested(args)
+    resolved_cv_path = cv_path or (Path(args.cv_path).expanduser().resolve() if args.cv_path else None)
     print("[jobserve-debug] opening search page", flush=True)
     print(f"[jobserve-debug] submit flag received: {str(submit_enabled).lower()}", flush=True)
     print(f"[jobserve-debug] mode selected: {mode_from_args(args)}", flush=True)
+    print(f"[jobserve-debug] email: {args.email}", flush=True)
+    print(f"[jobserve-debug] resolved CV path: {resolved_cv_path or '(none)'}", flush=True)
+    print(f"[jobserve-debug] CV exists/readable: {str(_is_readable_file(resolved_cv_path)).lower()}", flush=True)
+    print(f"[jobserve-debug] CV size: {_file_size_label(resolved_cv_path)}", flush=True)
     print(f"[jobserve-debug] final apply click enabled: {str(submit_enabled).lower()}", flush=True)
     if submit_enabled:
         print("[jobserve-debug] submit mode enabled: final JobServe Apply will be clicked only after safety checks pass", flush=True)
@@ -276,10 +435,33 @@ def print_startup_config(args: argparse.Namespace, trace_path: Path) -> None:
     print(f"[jobserve-debug] trace path: {trace_path}", flush=True)
 
 
+def _is_readable_file(path: Path | None) -> bool:
+    if not path or not path.exists() or not path.is_file():
+        return False
+    try:
+        with path.open("rb"):
+            return True
+    except OSError:
+        return False
+
+
+def _file_size_label(path: Path | None) -> str:
+    if not path or not path.exists():
+        return "(missing)"
+    try:
+        return str(path.stat().st_size)
+    except OSError:
+        return "(unreadable)"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    run_visible_browser(args)
-    return 0
+    try:
+        run_visible_browser(args)
+        return 0
+    except CVPathError as exc:
+        print(f"[jobserve-debug] {exc}", flush=True)
+        return 2
 
 
 if __name__ == "__main__":

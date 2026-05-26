@@ -46,6 +46,93 @@ def test_jobserve_visible_debug_cli_args_parse_and_submit_defaults_false(tmp_pat
     assert args.slow_mo_ms == 500
 
 
+def test_jobserve_visible_debug_valid_cv_path_resolves(tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "manuel_cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path)])
+
+    resolved = module.resolve_cv_path(args, search_dirs=[])
+
+    assert resolved == cv_path.resolve()
+    assert args.cv_path == str(cv_path.resolve())
+
+
+def test_jobserve_visible_debug_missing_cv_path_gives_friendly_error(capsys, tmp_path) -> None:
+    module = _load_script_module()
+    missing = tmp_path / "manuel_Bamgbala_CV (1).pdf"
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(missing)])
+
+    try:
+        module.resolve_cv_path(args, search_dirs=[])
+    except module.CVPathError as exc:
+        assert "No likely CV file found" in str(exc)
+    else:
+        raise AssertionError("Expected CVPathError")
+
+    output = capsys.readouterr().out
+    assert f"CV file not found at: {missing.resolve()}" in output
+    assert "current working directory:" in output
+    assert "parent folder exists:" in output
+
+
+def test_jobserve_visible_debug_cv_search_finds_one_cv_automatically(capsys, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "manuel-bamgbala-cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-search"])
+
+    resolved = module.resolve_cv_path(args, search_dirs=[tmp_path])
+
+    assert resolved == cv_path.resolve()
+    assert args.cv_path == str(cv_path.resolve())
+    assert "Using discovered CV:" in capsys.readouterr().out
+
+
+def test_jobserve_visible_debug_multiple_cvs_prompt_selection(tmp_path) -> None:
+    module = _load_script_module()
+    first = tmp_path / "manuel-cv.pdf"
+    second = tmp_path / "emmanuel-resume.docx"
+    first.write_bytes(b"%PDF")
+    second.write_bytes(b"DOCX")
+    args = module.parse_args(["--email", "me@example.com", "--cv-search"])
+
+    resolved = module.resolve_cv_path(args, input_func=lambda prompt: "2", search_dirs=[tmp_path])
+
+    assert resolved in {first.resolve(), second.resolve()}
+    assert args.cv_path == str(resolved)
+
+
+def test_jobserve_visible_debug_remembered_cv_path_is_reused(tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "manuel-cv.pdf"
+    remember_path = tmp_path / "remember.txt"
+    cv_path.write_bytes(b"%PDF")
+    remember_path.write_text(str(cv_path), encoding="utf-8")
+    args = module.parse_args(["--email", "me@example.com"])
+
+    resolved = module.resolve_cv_path(args, search_dirs=[], remember_path=remember_path)
+
+    assert resolved == cv_path.resolve()
+    assert args.cv_path == str(cv_path.resolve())
+
+
+def test_jobserve_visible_debug_invalid_remembered_path_falls_back_to_search(capsys, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "manuel-cv.pdf"
+    remember_path = tmp_path / "remember.txt"
+    cv_path.write_bytes(b"%PDF")
+    remember_path.write_text(str(tmp_path / "missing.pdf"), encoding="utf-8")
+    args = module.parse_args(["--email", "me@example.com"])
+
+    resolved = module.resolve_cv_path(args, search_dirs=[tmp_path], remember_path=remember_path)
+
+    assert resolved == cv_path.resolve()
+    output = capsys.readouterr().out
+    assert "Remembered CV path is invalid" in output
+    assert "Using discovered CV:" in output
+
+
 def test_jobserve_visible_debug_cli_submit_sets_explicit_submit_mode(tmp_path) -> None:
     module = _load_script_module()
     cv_path = tmp_path / "cv.pdf"
@@ -244,11 +331,15 @@ def test_jobserve_visible_debug_startup_output_includes_selected_mode(capsys, tm
     cv_path.write_bytes(b"%PDF")
     args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit"])
 
-    module.print_startup_config(args, tmp_path / "trace.zip")
+    module.print_startup_config(args, tmp_path / "trace.zip", cv_path.resolve())
 
     output = capsys.readouterr().out
     assert "submit flag received: true" in output
     assert "mode selected: submit_with_confirmation" in output
+    assert "email: me@example.com" in output
+    assert f"resolved CV path: {cv_path.resolve()}" in output
+    assert "CV exists/readable: true" in output
+    assert "CV size: 4" in output
     assert "final apply click enabled: true" in output
 
 
@@ -258,9 +349,10 @@ def test_jobserve_visible_debug_startup_output_includes_review_mode(capsys, tmp_
     cv_path.write_bytes(b"%PDF")
     args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path)])
 
-    module.print_startup_config(args, tmp_path / "trace.zip")
+    module.print_startup_config(args, tmp_path / "trace.zip", cv_path.resolve())
 
     output = capsys.readouterr().out
     assert "submit flag received: false" in output
     assert "mode selected: review_only" in output
+    assert "email: me@example.com" in output
     assert "final apply click enabled: false" in output
