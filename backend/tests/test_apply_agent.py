@@ -334,6 +334,12 @@ def test_jobserve_auto_selected_identity_mismatch_requires_result_selection() ->
     assert ranked[0]["reference"] == "D8DF"
 
 
+def test_jobserve_direct_job_url_is_preferred_over_search_url() -> None:
+    assert apply_agent._jobserve_should_try_direct_url("https://www.jobserve.com/gb/en/job/ABC123") is True
+    assert apply_agent._jobserve_should_try_direct_url("https://www.jobserve.com/FastTrack/Apply.aspx?jobid=ABC123") is True
+    assert apply_agent._jobserve_should_try_direct_url("https://www.jobserve.com/gb/en/Job-Search/") is False
+
+
 def test_jobserve_intended_result_missing_blocks() -> None:
     intended = {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"}
     candidates = [{"title": "Data Analyst", "company": "Other", "reference": "ZZZ", "text": "Data Analyst Other Ref ZZZ"}]
@@ -447,6 +453,22 @@ def test_jobserve_current_selected_missing_title_returns_specific_block_reason()
     assert target == {}
     assert flow["blocked_reason"] == "Could not read current selected JobServe job identity"
     assert flow["target_job_match_candidates"] == []
+
+
+def test_jobserve_local_selected_identity_shortcut_does_not_change_production_missing_identity_block() -> None:
+    production_flow: dict = {}
+    selected = apply_agent._verify_or_select_intended_jobserve_result(_FakeJobServeIdentityPage(), object(), {}, production_flow)
+
+    local_flow: dict = {}
+    local_target = apply_agent._jobserve_use_current_selected_job_as_intended(
+        _FakeJobServeDetailPage({"title": "AI Engineer", "company": "Acme", "reference": "ABC123", "href": "https://www.jobserve.com/gb/en/job/ABC123", "text": "AI Engineer Acme"}),
+        local_flow,
+    )
+
+    assert selected is None
+    assert production_flow["blocked_reason"] == "Intended JobServe job identity missing"
+    assert local_target["source_job_id"] == "ABC123"
+    assert local_flow["identity_source"] == "current_selected_job"
 
 
 def test_jobserve_dropdown_helper_normalizes_visible_option_text() -> None:

@@ -306,6 +306,17 @@ def jobserve_job_context(job: Job) -> dict[str, Any]:
     }
 
 
+def _jobserve_should_try_direct_url(url: str | None) -> bool:
+    if not url:
+        return False
+    lowered = url.lower()
+    if "jobserve.com" not in lowered:
+        return False
+    if "job-search" in lowered or "jobsearch" in lowered:
+        return False
+    return any(token in lowered for token in ["/job/", "jobid", "job=", "fasttrack", "apply"])
+
+
 def classify_form_field(label_text: str, input_type: str = "", autocomplete: str = "", name: str = "", placeholder: str = "") -> str | None:
     text = " ".join([label_text, input_type, autocomplete, name, placeholder]).lower()
     if not text.strip():
@@ -386,6 +397,28 @@ def run_playwright_assist(
                 page.set_default_timeout(settings.playwright_step_timeout_ms)
                 page.set_default_navigation_timeout(settings.page_navigation_timeout_ms)
                 if apply_strategy == "jobserve_apply_easy":
+                    if _jobserve_should_try_direct_url(url):
+                        try:
+                            result = _run_jobserve_modal(
+                                page,
+                                browser,
+                                candidates,
+                                profile,
+                                mode=mode,
+                                keep_open_for_review=keep_open_for_review,
+                                debug_mode=debug_mode,
+                                profile_diagnostics=profile_diagnostics,
+                                progress_callback=progress_callback,
+                                job_context=job_context or {"canonical_url": url},
+                                direct_url=url,
+                            )
+                            if result.submitted or result.final_error not in {"Direct JobServe detail did not match intended job.", "No visible JobServe Apply button/link found.", "JobServe direct URL could not be opened."}:
+                                result.timing_diagnostics = {**result.timing_diagnostics, **timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)}
+                                return result
+                            logger.warning("jobserve_direct_apply_falling_back final_error=%s", result.final_error)
+                        except RuntimeError as exc:
+                            logger.warning("jobserve_direct_apply_falling_back error=%s", exc)
+
                     try:
                         result = _run_jobserve_search_to_apply(
                             page,
@@ -1990,7 +2023,15 @@ def _jobserve_detail_panel_identity(page) -> dict[str, Any] | None:
                 const panel = candidates.find((el) => /apply/i.test(el.innerText || el.textContent || '')) || document.body;
                 const text = (panel.innerText || panel.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 3000);
                 const link = panel.querySelector('a[href*="/job/"], a[href*="jobserve.com"]');
-                const heading = panel.querySelector('h1,h2,h3,.job-title,.title');
+                let heading = panel.querySelector('h1,h2,h3,.job-title,.title,[class*="title" i]');
+                if (!heading) {
+                    const applyButton = Array.from(panel.querySelectorAll('button,a,input[type=button],input[type=submit]')).find((el) => /^apply(\\s+now)?$/i.test(((el.innerText || el.value || el.textContent || '') + '').trim()));
+                    const applyParent = applyButton ? applyButton.closest('section,article,div,main') : null;
+                    heading = applyParent ? applyParent.querySelector('h1,h2,h3,.job-title,.title,[class*="title" i]') : null;
+                }
+                if (!heading) {
+                    heading = document.querySelector('[aria-selected="true"] h1,[aria-selected="true"] h2,[aria-selected="true"] h3,[aria-selected="true"] .job-title,[aria-selected="true"] [class*="title" i], .selected h1,.selected h2,.selected h3,.selected .job-title,.active h1,.active h2,.active h3,.active .job-title');
+                }
                 const company = panel.querySelector('.company,.recruiter,.employer,[class*="company" i],[class*="recruiter" i]');
                 const refMatch = text.match(/(?:ref(?:erence)?\\s*[:#]?\\s*)([A-Z0-9-]{3,})/i);
                 const salaryMatch = text.match(/(?:£|GBP|salary)\\s?[^\\n\\r]{0,80}/i);
@@ -2372,6 +2413,8 @@ def _run_jobserve_modal(
     debug_mode: bool = False,
     profile_diagnostics: dict[str, Any] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    job_context: dict[str, Any] | None = None,
+    direct_url: str | None = None,
 ) -> AssistApplyResult:
     flow_started = time.perf_counter()
     filled: list[str] = []
@@ -2386,8 +2429,42 @@ def _run_jobserve_modal(
     select_diagnostics: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
     debug = _ApplyDebugRecorder(page, browser, enabled=debug_mode, progress_callback=progress_callback)
+    flow: dict[str, Any] = {"mode": "direct_job_url" if direct_url else "modal", "target": job_context or {}, "direct_url": direct_url, "identity_source": (job_context or {}).get("identity_source") or "db", "verified_detail_panel_identity": None, "blocked_reason": None}
+    if direct_url:
+        try:
+            page.goto(direct_url, wait_until="domcontentloaded", timeout=settings.page_navigation_timeout_ms)
+            page.wait_for_timeout(1200)
+        except Exception as exc:  # noqa: BLE001
+            debug.final_error = "JobServe direct URL could not be opened."
+            exceptions.append(_exception_payload("direct_job_url_open", exc, jobserve_flow_diagnostics=dict(flow)))
+            return AssistApplyResult(status="review_required", filled_fields=[], unfilled_fields=[], unfilled_required_fields=[], uploaded_cv=False, submitted=False, warnings=[debug.final_error], screenshot_path=None, profile_diagnostics=profile_diagnostics, jobserve_flow_diagnostics=flow, timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)}, upload_diagnostics=upload_diagnostics, select_diagnostics=select_diagnostics, exceptions=exceptions, **debug.result_kwargs(page))
     debug.step("initial_page_loaded")
     debug.screenshot("initial_page_loaded")
+    if job_context and _jobserve_target_has_identity(job_context):
+        detail_identity = _jobserve_detail_panel_identity(page)
+        flow["verified_detail_panel_identity"] = detail_identity
+        if detail_identity and not _jobserve_identity_matches(detail_identity, job_context):
+            flow["blocked_reason"] = "Direct JobServe detail did not match intended job"
+            debug.final_error = "Direct JobServe detail did not match intended job."
+            debug.html("direct_detail_identity_mismatch", page)
+            return AssistApplyResult(
+                status="review_required",
+                filled_fields=[],
+                unfilled_fields=[],
+                unfilled_required_fields=[],
+                uploaded_cv=False,
+                submitted=False,
+                warnings=[debug.final_error],
+                screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+                profile_diagnostics=profile_diagnostics,
+                jobserve_flow_diagnostics=flow,
+                timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
+                upload_diagnostics=upload_diagnostics,
+                select_diagnostics=select_diagnostics,
+                exceptions=exceptions,
+                **debug.result_kwargs(page),
+            )
+        flow["identity_check_result"] = "matched_direct_detail" if detail_identity else "direct_detail_identity_unavailable"
 
     apply_target = _find_apply_target(page, browser)
     debug.step("apply_button_lookup", apply_button_found=apply_target is not None, detected_buttons=_inventory_browser(page, browser)["buttons"][:20])
@@ -2404,6 +2481,7 @@ def _run_jobserve_modal(
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
             profile_diagnostics=profile_diagnostics,
+            jobserve_flow_diagnostics=flow,
             timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
             upload_diagnostics=upload_diagnostics,
             select_diagnostics=select_diagnostics,
@@ -2445,6 +2523,7 @@ def _run_jobserve_modal(
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
             profile_diagnostics=profile_diagnostics,
+            jobserve_flow_diagnostics=flow,
             timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
             upload_diagnostics=upload_diagnostics,
             select_diagnostics=select_diagnostics,
@@ -2475,6 +2554,7 @@ def _run_jobserve_modal(
             warnings=_dedupe([*warnings, debug.final_error]),
             screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
             profile_diagnostics=profile_diagnostics,
+            jobserve_flow_diagnostics=flow,
             timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
             upload_diagnostics=upload_diagnostics,
             select_diagnostics=select_diagnostics,
@@ -2661,6 +2741,7 @@ def _run_jobserve_modal(
         warnings=_dedupe(warnings),
         screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
         profile_diagnostics=profile_diagnostics,
+        jobserve_flow_diagnostics=flow,
         timing_diagnostics={"total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
         progress={"current_step": "submitted" if submitted else "review_required", "elapsed_ms": int((time.perf_counter() - flow_started) * 1000), "last_heartbeat_at": utcnow().isoformat()},
         upload_diagnostics=upload_diagnostics,
