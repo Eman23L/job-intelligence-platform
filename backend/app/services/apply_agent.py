@@ -846,6 +846,7 @@ def _run_jobserve_search_to_apply(
     debug_mode: bool = False,
     profile_diagnostics: dict[str, Any] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    use_current_selected_job_as_intended: bool = False,
 ) -> AssistApplyResult:
     flow_started = time.perf_counter()
     timing_diagnostics: dict[str, Any] = {}
@@ -854,6 +855,7 @@ def _run_jobserve_search_to_apply(
         "search_url": JOBSERVE_SEARCH_URL,
         "search_defaults": _jobserve_search_preferences(profile),
         "target": job_context,
+        "identity_source": job_context.get("identity_source") or "db",
         "search_page_loaded": False,
         "search_controls": {},
         "search_button_clicked": False,
@@ -924,6 +926,18 @@ def _run_jobserve_search_to_apply(
     debug.screenshot("search_results_loaded")
     flow["results_loaded"] = True
     debug.step("jobserve_results_loaded", jobserve_flow_diagnostics=flow)
+
+    if use_current_selected_job_as_intended and not _jobserve_target_has_identity(job_context):
+        current_identity = _jobserve_detail_panel_identity(page)
+        if current_identity:
+            job_context = _jobserve_target_from_current_identity(current_identity)
+            flow["target"] = job_context
+            flow["intended_job_identity"] = job_context
+            flow["identity_source"] = "current_selected_job"
+            flow["current_selected_job_identity"] = current_identity
+            debug.step("jobserve_current_selected_job_used_as_intended", jobserve_flow_diagnostics=flow)
+        else:
+            flow["blocked_reason"] = "Could not read current selected JobServe job identity"
 
     match_started = time.perf_counter()
     verified_identity = _verify_or_select_intended_jobserve_result(page, browser, job_context, flow)
@@ -1956,12 +1970,16 @@ def _jobserve_detail_panel_identity(page) -> dict[str, Any] | None:
                 const heading = panel.querySelector('h1,h2,h3,.job-title,.title');
                 const company = panel.querySelector('.company,.recruiter,.employer,[class*="company" i],[class*="recruiter" i]');
                 const refMatch = text.match(/(?:ref(?:erence)?\\s*[:#]?\\s*)([A-Z0-9-]{3,})/i);
+                const salaryMatch = text.match(/(?:£|GBP|salary)\\s?[^\\n\\r]{0,80}/i);
+                const locationNode = panel.querySelector('.location,[class*="location" i],[class*="loc" i]');
                 return {
                     text,
                     title: heading ? heading.innerText.trim() : '',
                     company: company ? company.innerText.trim() : '',
                     href: link ? link.href : location.href,
-                    reference: refMatch ? refMatch[1] : ''
+                    reference: refMatch ? refMatch[1] : '',
+                    location: locationNode ? locationNode.innerText.trim() : '',
+                    salary: salaryMatch ? salaryMatch[0].trim() : ''
                 };
             }""",
             timeout=1500,
@@ -1999,7 +2017,23 @@ def _jobserve_identity_clear_mismatch(modal_identity: dict[str, Any], verified_i
 
 
 def _jobserve_target_has_identity(target: dict[str, Any]) -> bool:
-    return any(str(target.get(key) or "").strip() for key in ["source_job_id", "original_external_id", "title", "original_title", "company_name", "original_company"])
+    return any(str(target.get(key) or "").strip() for key in ["source_job_id", "original_external_id", "canonical_url", "title", "original_title", "company_name", "original_company"])
+
+
+def _jobserve_target_from_current_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_id": None,
+        "title": identity.get("title") or "",
+        "original_title": identity.get("title") or "",
+        "company_name": identity.get("company") or "",
+        "original_company": identity.get("company") or "",
+        "source_job_id": identity.get("reference") or "",
+        "original_external_id": identity.get("reference") or "",
+        "canonical_url": identity.get("href") or "",
+        "location": identity.get("location") or "",
+        "salary": identity.get("salary") or "",
+        "identity_source": "current_selected_job",
+    }
 
 
 def _jobserve_result_candidates(page) -> list[dict[str, Any]]:

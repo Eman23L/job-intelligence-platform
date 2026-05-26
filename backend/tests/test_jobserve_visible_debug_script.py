@@ -138,7 +138,7 @@ def test_jobserve_visible_debug_cli_submit_sets_explicit_submit_mode(tmp_path) -
     cv_path = tmp_path / "cv.pdf"
     cv_path.write_bytes(b"%PDF")
 
-    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit"])
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit", "--intended-title", "AI Engineer", "--intended-company", "Example Ltd"])
 
     assert args.submit is True
     assert module.mode_from_args(args) == "submit_with_confirmation"
@@ -154,6 +154,59 @@ def test_jobserve_visible_debug_cli_auto_submit_sets_explicit_submit_mode(tmp_pa
     assert args.auto_submit is True
     assert module.submit_requested(args) is True
     assert module.mode_from_args(args) == "submit_with_confirmation"
+
+
+def test_jobserve_visible_debug_submit_without_identity_gives_friendly_early_error(tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit"])
+
+    try:
+        module.validate_local_submit_identity(args)
+    except module.LocalSubmitIdentityError as exc:
+        assert "Submit mode requires intended job identity" in str(exc)
+    else:
+        raise AssertionError("Expected LocalSubmitIdentityError")
+
+
+def test_jobserve_visible_debug_submit_with_intended_args_proceeds(tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(
+        [
+            "--email",
+            "me@example.com",
+            "--cv-path",
+            str(cv_path),
+            "--submit",
+            "--intended-title",
+            "AI Engineer",
+            "--intended-company",
+            "Opus Recruitment Solutions Ltd",
+        ]
+    )
+
+    module.validate_local_submit_identity(args)
+    context = module.build_job_context(args)
+
+    assert context["identity_source"] == "manual_args"
+    assert context["title"] == "AI Engineer"
+    assert context["company_name"] == "Opus Recruitment Solutions Ltd"
+
+
+def test_jobserve_visible_debug_submit_with_use_current_selected_job_proceeds(tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit", "--use-current-selected-job"])
+
+    module.validate_local_submit_identity(args)
+    context = module.build_job_context(args)
+
+    assert context["identity_source"] == "current_selected_job"
+    assert context["title"] is None
 
 
 def test_jobserve_visible_debug_shared_flow_called_in_review_only(monkeypatch, tmp_path) -> None:
@@ -256,6 +309,35 @@ def test_jobserve_visible_debug_shared_flow_called_in_submit_mode(monkeypatch, t
     assert captured["job_context"]["company_name"] == "Example Ltd"
 
 
+def test_jobserve_visible_debug_use_current_selected_job_flag_is_passed(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit", "--use-current-selected-job"])
+    captured = {}
+
+    def fake_run(page, browser, candidates, profile, job_context, **kwargs):
+        captured["use_current_selected_job_as_intended"] = kwargs["use_current_selected_job_as_intended"]
+        captured["job_context"] = job_context
+        return AssistApplyResult(
+            status="submitted",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=True,
+            submitted=True,
+            warnings=[],
+            screenshot_path=None,
+        )
+
+    monkeypatch.setattr(module.apply_agent, "_run_jobserve_search_to_apply", fake_run)
+
+    module.run_shared_jobserve_flow(SimpleNamespace(), SimpleNamespace(), args)
+
+    assert captured["use_current_selected_job_as_intended"] is True
+    assert captured["job_context"]["identity_source"] == "current_selected_job"
+
+
 def test_jobserve_visible_debug_submit_checkpoint_waits_for_enter_before_final_click(monkeypatch) -> None:
     module = _load_script_module()
     prompts = []
@@ -329,13 +411,16 @@ def test_jobserve_visible_debug_startup_output_includes_selected_mode(capsys, tm
     module = _load_script_module()
     cv_path = tmp_path / "cv.pdf"
     cv_path.write_bytes(b"%PDF")
-    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit"])
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit", "--intended-title", "AI Engineer", "--intended-company", "Example Ltd"])
 
     module.print_startup_config(args, tmp_path / "trace.zip", cv_path.resolve())
 
     output = capsys.readouterr().out
     assert "submit flag received: true" in output
     assert "mode selected: submit_with_confirmation" in output
+    assert "identity source: manual_args" in output
+    assert "intended title: AI Engineer" in output
+    assert "intended company: Example Ltd" in output
     assert "email: me@example.com" in output
     assert f"resolved CV path: {cv_path.resolve()}" in output
     assert "CV exists/readable: true" in output
@@ -354,5 +439,6 @@ def test_jobserve_visible_debug_startup_output_includes_review_mode(capsys, tmp_
     output = capsys.readouterr().out
     assert "submit flag received: false" in output
     assert "mode selected: review_only" in output
+    assert "identity source: missing" in output
     assert "email: me@example.com" in output
     assert "final apply click enabled: false" in output

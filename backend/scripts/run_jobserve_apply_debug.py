@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
-import os
 import sys
 import time
 from pathlib import Path
@@ -49,6 +48,7 @@ STEP_MESSAGES = {
     "jobserve_search_form_filled": "search form filled",
     "jobserve_search_submitted": "clicking search",
     "jobserve_results_loaded": "results loaded",
+    "jobserve_current_selected_job_used_as_intended": "using current selected JobServe result as intended job for local debug submit",
     "jobserve_target_job_selected": "matching job",
     "jobserve_apply_button_clicked": "apply button clicked",
     "jobserve_apply_modal_wait_complete": "opening modal",
@@ -80,6 +80,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-title")
     parser.add_argument("--target-company")
     parser.add_argument("--target-reference")
+    parser.add_argument("--intended-title", help="Intended JobServe job title for local submit safety checks.")
+    parser.add_argument("--intended-company", help="Intended JobServe company for local submit safety checks.")
+    parser.add_argument("--intended-reference", help="Intended JobServe reference/external id for local submit safety checks.")
+    parser.add_argument("--intended-url", help="Intended JobServe URL for local submit safety checks.")
+    parser.add_argument("--use-current-selected-job", action="store_true", help="Local-only: use the currently selected JobServe result as the intended job after search results load.")
     parser.add_argument("--submit", action="store_true", help="Click the final JobServe Apply button. Defaults to review-only.")
     parser.add_argument("--auto-submit", action="store_true", help="Alias for --submit.")
     parser.add_argument("--pause-each-step", action=argparse.BooleanOptionalAction, default=False)
@@ -89,6 +94,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 class CVPathError(RuntimeError):
+    pass
+
+
+class LocalSubmitIdentityError(RuntimeError):
     pass
 
 
@@ -267,14 +276,20 @@ def build_local_profile(args: argparse.Namespace) -> SimpleNamespace:
 
 
 def build_job_context(args: argparse.Namespace) -> dict[str, Any]:
+    title = args.intended_title or args.target_title
+    company = args.intended_company or args.target_company
+    reference = args.intended_reference or args.target_reference
+    identity_source = "current_selected_job" if args.use_current_selected_job else ("manual_args" if any([title, company, reference, args.intended_url]) else "missing")
     return {
         "job_id": None,
-        "title": args.target_title,
-        "original_title": args.target_title,
-        "company_name": args.target_company,
-        "original_company": args.target_company,
-        "source_job_id": args.target_reference,
-        "original_external_id": args.target_reference,
+        "title": title,
+        "original_title": title,
+        "company_name": company,
+        "original_company": company,
+        "source_job_id": reference,
+        "original_external_id": reference,
+        "canonical_url": args.intended_url,
+        "identity_source": identity_source,
     }
 
 
@@ -294,6 +309,7 @@ def run_shared_jobserve_flow(page, browser, args: argparse.Namespace, progress_c
         debug_mode=True,
         profile_diagnostics=apply_agent.profile_debug_payload(user, profile, candidates),
         progress_callback=progress_callback,
+        use_current_selected_job_as_intended=args.use_current_selected_job,
     )
 
 
@@ -303,6 +319,16 @@ def submit_requested(args: argparse.Namespace) -> bool:
 
 def mode_from_args(args: argparse.Namespace) -> str:
     return "submit_with_confirmation" if submit_requested(args) else "review_only"
+
+
+def validate_local_submit_identity(args: argparse.Namespace) -> None:
+    if not submit_requested(args):
+        return
+    context = build_job_context(args)
+    has_manual_identity = bool(any(str(context.get(key) or "").strip() for key in ["title", "company_name", "source_job_id", "canonical_url"]))
+    if has_manual_identity or args.use_current_selected_job:
+        return
+    raise LocalSubmitIdentityError("Submit mode requires intended job identity. Pass --intended-title/--intended-company or --use-current-selected-job.")
 
 
 class TerminalProgress:
@@ -363,6 +389,7 @@ class TerminalProgress:
 
 
 def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
+    validate_local_submit_identity(args)
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     TRACE_DIR.mkdir(parents=True, exist_ok=True)
     cv_path = resolve_cv_path(args)
@@ -419,9 +446,14 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
 def print_startup_config(args: argparse.Namespace, trace_path: Path, cv_path: Path | None = None) -> None:
     submit_enabled = submit_requested(args)
     resolved_cv_path = cv_path or (Path(args.cv_path).expanduser().resolve() if args.cv_path else None)
+    job_context = build_job_context(args)
     print("[jobserve-debug] opening search page", flush=True)
     print(f"[jobserve-debug] submit flag received: {str(submit_enabled).lower()}", flush=True)
     print(f"[jobserve-debug] mode selected: {mode_from_args(args)}", flush=True)
+    print(f"[jobserve-debug] identity source: {job_context.get('identity_source')}", flush=True)
+    print(f"[jobserve-debug] intended title: {job_context.get('title') or '(missing)'}", flush=True)
+    print(f"[jobserve-debug] intended company: {job_context.get('company_name') or '(missing)'}", flush=True)
+    print(f"[jobserve-debug] intended reference: {job_context.get('source_job_id') or '(missing)'}", flush=True)
     print(f"[jobserve-debug] email: {args.email}", flush=True)
     print(f"[jobserve-debug] resolved CV path: {resolved_cv_path or '(none)'}", flush=True)
     print(f"[jobserve-debug] CV exists/readable: {str(_is_readable_file(resolved_cv_path)).lower()}", flush=True)
@@ -459,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run_visible_browser(args)
         return 0
-    except CVPathError as exc:
+    except (CVPathError, LocalSubmitIdentityError) as exc:
         print(f"[jobserve-debug] {exc}", flush=True)
         return 2
 

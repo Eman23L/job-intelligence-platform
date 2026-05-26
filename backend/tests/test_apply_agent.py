@@ -392,6 +392,34 @@ def test_jobserve_submit_guard_blocks_missing_cv() -> None:
     assert apply_agent._jobserve_submit_guard(flow, verified, modal, page, False, []) == "CV is not attached"
 
 
+def test_jobserve_production_missing_db_identity_blocks_submit() -> None:
+    flow: dict = {}
+
+    selected = apply_agent._verify_or_select_intended_jobserve_result(_FakeJobServeIdentityPage(), object(), {}, flow)
+
+    assert selected is None
+    assert flow["blocked_reason"] == "Intended JobServe job identity missing"
+
+
+def test_jobserve_current_selected_identity_can_be_converted_to_intended_target() -> None:
+    identity = {
+        "title": "AI Engineer",
+        "company": "Opus Recruitment Solutions Ltd",
+        "reference": "ABC123",
+        "href": "https://www.jobserve.com/job/ABC123",
+        "location": "London",
+        "salary": "GBP 600 per day",
+    }
+
+    target = apply_agent._jobserve_target_from_current_identity(identity)
+
+    assert target["title"] == "AI Engineer"
+    assert target["company_name"] == "Opus Recruitment Solutions Ltd"
+    assert target["source_job_id"] == "ABC123"
+    assert target["identity_source"] == "current_selected_job"
+    assert apply_agent._jobserve_identity_matches(identity, target) is True
+
+
 def test_jobserve_dropdown_helper_normalizes_visible_option_text() -> None:
     assert apply_agent._normalize_select_text("  Within   50 miles ") == apply_agent._normalize_select_text("within-50-miles")
 
@@ -1201,6 +1229,11 @@ class _FakePage:
 
     def get_by_label(self, pattern):
         return _FakeLocator(self.controls)
+
+
+class _FakeJobServeIdentityPage:
+    def evaluate(self, *args, **kwargs):
+        return []
 
 
 class _FakeEmailPage:
