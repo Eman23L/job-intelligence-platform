@@ -144,8 +144,9 @@ def mode_from_args(args: argparse.Namespace) -> str:
 
 
 class TerminalProgress:
-    def __init__(self, *, pause_each_step: bool) -> None:
+    def __init__(self, *, pause_each_step: bool, submit_enabled: bool = False) -> None:
         self.pause_each_step = pause_each_step
+        self.submit_enabled = submit_enabled
         self.seen: set[str] = set()
 
     def __call__(self, step: str, payload: dict[str, Any]) -> None:
@@ -156,6 +157,8 @@ class TerminalProgress:
         if step == "jobserve_search_remote_only_unchecked" and payload.get("result") == "already_unchecked":
             message = "remote only already unchecked"
             suffix = ""
+        elif step == "jobserve_application_form_filled" and self.submit_enabled:
+            message = "application form filled; running final submit safety checks"
         elif step == "jobserve_about_to_submit":
             guard = payload.get("submit_guard") or {}
             intended = guard.get("intended_job") or {}
@@ -168,6 +171,8 @@ class TerminalProgress:
             print(f"[jobserve-debug] email value: {guard.get('email_value') or '(missing)'}", flush=True)
             print(f"[jobserve-debug] CV attachment detected: {'yes' if guard.get('cv_uploaded') else 'no'}", flush=True)
             print(f"[jobserve-debug] working status selected: {guard.get('working_status_value') or guard.get('working_status_selected')}", flush=True)
+            print(f"[jobserve-debug] identity verification result: {guard.get('identity_verified')}", flush=True)
+            print(f"[jobserve-debug] final apply click enabled: {guard.get('final_apply_click_enabled')}", flush=True)
             suffix = (
                 f" intended={guard.get('intended_job')} verified={guard.get('verified_job')} modal={guard.get('modal_job')} "
                 f"email={guard.get('email_filled')} cv={guard.get('cv_uploaded')} status={guard.get('working_status_selected')}"
@@ -184,6 +189,12 @@ class TerminalProgress:
             elif selected:
                 suffix = f" selected={selected.get('title') or selected.get('text') or selected.get('href')}"
         print(f"[jobserve-debug] {message}{suffix}", flush=True)
+        if self.pause_each_step and self.submit_enabled and step == "jobserve_application_form_filled":
+            return
+        if self.pause_each_step and self.submit_enabled and step == "jobserve_about_to_submit" and step not in self.seen:
+            self.seen.add(step)
+            input("Ready to submit verified JobServe application. Press Enter to submit.")
+            return
         if self.pause_each_step and step not in self.seen:
             self.seen.add(step)
             input("Press Enter to continue...")
@@ -201,6 +212,8 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
     mode = mode_from_args(args)
     print("[jobserve-debug] opening search page", flush=True)
     print(f"[jobserve-debug] mode={mode}", flush=True)
+    print(f"[jobserve-debug] submit flag received: {args.submit}", flush=True)
+    print(f"[jobserve-debug] final apply click enabled: {args.submit}", flush=True)
     if args.submit:
         print("[jobserve-debug] --submit enabled: final JobServe Apply will be clicked only after safety checks pass", flush=True)
     else:
@@ -217,7 +230,7 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
         page = context.new_page()
         try:
-            result = run_shared_jobserve_flow(page, browser, args, TerminalProgress(pause_each_step=args.pause_each_step))
+            result = run_shared_jobserve_flow(page, browser, args, TerminalProgress(pause_each_step=args.pause_each_step, submit_enabled=args.submit))
             if result.submitted:
                 print("[jobserve-debug] submitted successfully", flush=True)
                 print(f"[jobserve-debug] confirmation text: {result.confirmation_text or '(not captured)'}", flush=True)

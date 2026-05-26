@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from types import SimpleNamespace
 from pathlib import Path
 
 from app.schemas.database import AssistApplyResult
@@ -153,3 +154,72 @@ def test_jobserve_visible_debug_shared_flow_called_in_submit_mode(monkeypatch, t
     assert captured["cv_file_path"] == str(cv_path.resolve())
     assert captured["job_context"]["title"] == "AI Engineer"
     assert captured["job_context"]["company_name"] == "Example Ltd"
+
+
+def test_jobserve_visible_debug_submit_checkpoint_waits_for_enter_before_final_click(monkeypatch) -> None:
+    module = _load_script_module()
+    prompts = []
+    progress = module.TerminalProgress(pause_each_step=True, submit_enabled=True)
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "")
+
+    progress("jobserve_application_form_filled", {})
+    progress(
+        "jobserve_about_to_submit",
+        {
+            "submit_guard": {
+                "email_filled": True,
+                "email_value": "me@example.com",
+                "working_status_selected": True,
+                "working_status_value": "UK Citizen",
+                "cv_uploaded": True,
+                "identity_verified": True,
+                "final_apply_click_enabled": True,
+                "intended_job": {"title": "AI Engineer", "company_name": "Example Ltd"},
+                "verified_job": {"title": "AI Engineer", "company": "Example Ltd"},
+                "modal_job": {"title": "AI Engineer", "company": "Example Ltd"},
+            }
+        },
+    )
+
+    assert prompts == ["Ready to submit verified JobServe application. Press Enter to submit."]
+
+
+def test_jobserve_visible_debug_review_only_checkpoint_uses_safe_prompt(monkeypatch) -> None:
+    module = _load_script_module()
+    prompts = []
+    progress = module.TerminalProgress(pause_each_step=True, submit_enabled=False)
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "")
+
+    progress("jobserve_application_form_filled", {})
+
+    assert prompts == ["Press Enter to continue..."]
+
+
+def test_jobserve_visible_debug_hardcoded_review_only_cannot_override_submit(monkeypatch, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit"])
+    captured = {}
+
+    def fake_run(page, browser, candidates, profile, job_context, **kwargs):
+        captured["mode"] = kwargs["mode"]
+        return AssistApplyResult(
+            status="submitted",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=True,
+            submitted=True,
+            warnings=[],
+            screenshot_path=None,
+        )
+
+    monkeypatch.setattr(module.apply_agent, "_run_jobserve_search_to_apply", fake_run)
+
+    module.run_shared_jobserve_flow(SimpleNamespace(), SimpleNamespace(), args)
+
+    assert captured["mode"] == module.mode_from_args(args)
+    assert captured["mode"] != "review_only"

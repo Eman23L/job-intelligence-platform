@@ -1065,6 +1065,8 @@ def _run_jobserve_search_to_apply(
                 "working_status_selected": flow.get("uk_status_selected"),
                 "working_status_value": flow.get("uk_status_value"),
                 "cv_uploaded": uploaded_cv,
+                "identity_verified": True,
+                "final_apply_click_enabled": True,
                 "intended_job": job_context,
                 "verified_job": verified_identity,
                 "modal_job": modal_identity,
