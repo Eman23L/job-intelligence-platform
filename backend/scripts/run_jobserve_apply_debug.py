@@ -141,6 +141,9 @@ class TerminalProgress:
         suffix = ""
         if "succeeded" in payload:
             suffix = " ok" if payload.get("succeeded") else " failed"
+        if step == "jobserve_search_remote_only_unchecked" and payload.get("result") == "already_unchecked":
+            message = "remote only already unchecked"
+            suffix = ""
         elif "jobserve_flow_diagnostics" in payload:
             flow = payload["jobserve_flow_diagnostics"]
             selected = flow.get("selected_job") if isinstance(flow, dict) else None

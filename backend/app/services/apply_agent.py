@@ -1068,8 +1068,10 @@ def _fill_jobserve_search_form(
     )
     _report_jobserve_step(step_callback, "jobserve_search_job_type_selected", value=prefs["job_type"], succeeded=controls["job_type"])
     _jobserve_dropdown_screenshot(screenshot_callback, "after_job_type_dropdown_selection")
-    controls["remote_only_unchecked"] = _set_checkbox_by_label(page, [r"remote only"], checked=False)
-    _report_jobserve_step(step_callback, "jobserve_search_remote_only_unchecked", succeeded=controls["remote_only_unchecked"])
+    remote_diagnostic: dict[str, Any] = {}
+    controls["remote_only_unchecked"] = _set_checkbox_by_label(page, [r"only show jobs with remote working", r"remote only", r"remote working"], checked=False, diagnostic=remote_diagnostic)
+    controls["remote_only_diagnostic"] = remote_diagnostic
+    _report_jobserve_step(step_callback, "jobserve_search_remote_only_unchecked", succeeded=controls["remote_only_unchecked"], **remote_diagnostic)
     controls["industries_select_all"] = _select_all_jobserve_industries(page, select_diagnostics, step_callback=step_callback)
     _report_jobserve_step(step_callback, "jobserve_search_industries_selected", value="Select All", succeeded=controls["industries_select_all"])
     _jobserve_dropdown_screenshot(screenshot_callback, "after_industries_dropdown_selection")
@@ -1332,17 +1334,106 @@ def _select_first_label_or_selector(page, labels: list[str], selectors: list[str
     return False
 
 
-def _set_checkbox_by_label(page, labels: list[str], *, checked: bool) -> bool:
+def _set_checkbox_by_label(page, labels: list[str], *, checked: bool, diagnostic: dict[str, Any] | None = None) -> bool:
+    details: dict[str, Any] = {
+        "checkbox_found": False,
+        "initial_checked": None,
+        "clicked": False,
+        "final_checked": None,
+        "result": "not_found",
+    }
+    failures: list[str] = []
     for pattern in labels:
-        for control in page.get_by_label(re.compile(pattern, re.I)).all():
+        for control in _checkbox_candidates_by_label(page, pattern):
             try:
-                current = control.is_checked(timeout=500)
-                if current != checked:
-                    control.set_checked(checked, timeout=1000)
-                return True
+                current = _checkbox_checked_state(control)
+                if current is None:
+                    failures.append(f"{pattern}: state unknown")
+                    continue
+                details["checkbox_found"] = True
+                details["initial_checked"] = current
+                if current == checked:
+                    details["final_checked"] = current
+                    details["result"] = "already_checked" if checked else "already_unchecked"
+                    if diagnostic is not None:
+                        diagnostic.update(details)
+                    return True
+                _click_checkbox_box(control)
+                details["clicked"] = True
+                final = _checkbox_checked_state(control)
+                details["final_checked"] = final
+                if final == checked:
+                    details["result"] = "checked_after_click" if checked else "unchecked_after_click"
+                    if diagnostic is not None:
+                        diagnostic.update(details)
+                    return True
+                failures.append(f"{pattern}: final state {final!r}")
             except Exception:  # noqa: BLE001
+                failures.append(pattern)
                 continue
+    details["failure_reason"] = "; ".join(failures[-5:]) if failures else "checkbox not found"
+    if diagnostic is not None:
+        diagnostic.update(details)
     return False
+
+
+def _checkbox_candidates_by_label(page, pattern: str) -> list[Any]:
+    candidates = []
+    try:
+        candidates.extend(page.get_by_label(re.compile(pattern, re.I)).all())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        label = page.get_by_text(re.compile(pattern, re.I)).first
+        label_for = label.get_attribute("for", timeout=500)
+        if label_for:
+            candidates.append(page.locator(f"#{label_for}").first)
+        candidates.append(label.locator("input[type=checkbox]").first)
+        candidates.append(label.locator("xpath=ancestor-or-self::*[self::label or @role='checkbox' or contains(@class, 'checkbox')][1]").first)
+    except Exception:  # noqa: BLE001
+        pass
+    candidates.append(page.locator('input[type=checkbox][name*="remote" i], input[type=checkbox][id*="remote" i]').first)
+    candidates.append(page.locator('[role=checkbox][aria-label*="remote" i], [class*="checkbox" i][class*="remote" i], [id*="remote" i][class*="checkbox" i]').first)
+    return candidates
+
+
+def _checkbox_checked_state(locator) -> bool | None:
+    try:
+        return bool(locator.is_checked(timeout=500))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        aria_checked = locator.get_attribute("aria-checked", timeout=500)
+        if aria_checked is not None:
+            return aria_checked.lower() == "true"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return locator.evaluate(
+            """element => {
+                const target = element.matches?.('input[type=checkbox]') ? element : element.querySelector?.('input[type=checkbox]');
+                if (target) return Boolean(target.checked);
+                const aria = element.getAttribute?.('aria-checked');
+                if (aria !== null && aria !== undefined) return String(aria).toLowerCase() === 'true';
+                const className = String(element.className || '').toLowerCase();
+                if (className.includes('unchecked')) return false;
+                if (className.includes('checked') || className.includes('selected') || className.includes('active')) return true;
+                return null;
+            }""",
+            timeout=500,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _click_checkbox_box(locator) -> None:
+    try:
+        box = locator.locator("input[type=checkbox]").first
+        box.click(timeout=1000, position={"x": 6, "y": 6})
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    locator.click(timeout=1000, position={"x": 6, "y": 6})
 
 
 def _select_all_jobserve_industries(

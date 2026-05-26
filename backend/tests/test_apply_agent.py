@@ -639,6 +639,83 @@ def test_jobserve_search_form_fill_select_all_industries() -> None:
         assert {"Search distance", "Posted within", "Job type", "Industries"}.issubset({item["field"] for item in diagnostics})
 
 
+def test_jobserve_remote_checkbox_already_unchecked_succeeds_without_click() -> None:
+    diagnostic: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Only show jobs with remote working
+              <input type="checkbox" name="remote" onclick="window.clicked = true" />
+            </label>
+            """
+        )
+
+        result = apply_agent._set_checkbox_by_label(page, [r"only show jobs with remote working"], checked=False, diagnostic=diagnostic)
+
+        assert result is True
+        assert page.evaluate("window.clicked") is None
+        assert diagnostic["checkbox_found"] is True
+        assert diagnostic["initial_checked"] is False
+        assert diagnostic["clicked"] is False
+        assert diagnostic["final_checked"] is False
+        assert diagnostic["result"] == "already_unchecked"
+
+
+def test_jobserve_remote_checkbox_checked_clicks_and_succeeds() -> None:
+    diagnostic: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <label>Only show jobs with remote working
+              <input type="checkbox" name="remote" checked onclick="window.clicked = true" />
+            </label>
+            """
+        )
+
+        result = apply_agent._set_checkbox_by_label(page, [r"only show jobs with remote working"], checked=False, diagnostic=diagnostic)
+
+        assert result is True
+        assert page.evaluate("window.clicked") is True
+        assert page.locator("input[name=remote]").is_checked() is False
+        assert diagnostic["initial_checked"] is True
+        assert diagnostic["clicked"] is True
+        assert diagnostic["final_checked"] is False
+        assert diagnostic["result"] == "unchecked_after_click"
+
+
+def test_jobserve_remote_checkbox_not_found_is_not_success() -> None:
+    diagnostic: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content("<div>No remote filter here</div>")
+
+        result = apply_agent._set_checkbox_by_label(page, [r"only show jobs with remote working"], checked=False, diagnostic=diagnostic)
+
+        assert result is False
+        assert diagnostic["checkbox_found"] is False
+        assert diagnostic["result"] == "not_found"
+
+
+def test_jobserve_remote_checkbox_styled_fallback_clicks_box() -> None:
+    diagnostic: dict = {}
+    with _playwright_page() as (page, _browser):
+        page.set_content(
+            """
+            <div role="checkbox" aria-checked="true" aria-label="Only show jobs with remote working"
+                 onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); window.clicked = true">
+            </div>
+            """
+        )
+
+        result = apply_agent._set_checkbox_by_label(page, [r"only show jobs with remote working"], checked=False, diagnostic=diagnostic)
+
+        assert result is True
+        assert page.evaluate("window.clicked") is True
+        assert diagnostic["initial_checked"] is True
+        assert diagnostic["clicked"] is True
+        assert diagnostic["final_checked"] is False
+        assert diagnostic["result"] == "unchecked_after_click"
+
+
 def test_jobserve_modal_fill_uploads_filcv_and_review_only_does_not_submit(tmp_path, monkeypatch) -> None:
     cv_path = tmp_path / "cv.pdf"
     cv_path.write_bytes(b"%PDF")
