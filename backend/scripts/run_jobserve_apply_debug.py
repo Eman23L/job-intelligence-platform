@@ -75,6 +75,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-company")
     parser.add_argument("--target-reference")
     parser.add_argument("--submit", action="store_true", help="Click the final JobServe Apply button. Defaults to review-only.")
+    parser.add_argument("--auto-submit", action="store_true", help="Alias for --submit.")
     parser.add_argument("--pause-each-step", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--slow-mo-ms", type=int, default=500)
     parser.add_argument("--devtools", action="store_true")
@@ -132,15 +133,19 @@ def run_shared_jobserve_flow(page, browser, args: argparse.Namespace, progress_c
         profile,
         build_job_context(args),
         mode=mode,
-        keep_open_for_review=not args.submit,
+        keep_open_for_review=not submit_requested(args),
         debug_mode=True,
         profile_diagnostics=apply_agent.profile_debug_payload(user, profile, candidates),
         progress_callback=progress_callback,
     )
 
 
+def submit_requested(args: argparse.Namespace) -> bool:
+    return bool(args.submit or args.auto_submit)
+
+
 def mode_from_args(args: argparse.Namespace) -> str:
-    return "submit_with_confirmation" if args.submit else "review_only"
+    return "submit_with_confirmation" if submit_requested(args) else "review_only"
 
 
 class TerminalProgress:
@@ -209,17 +214,7 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
     TRACE_DIR.mkdir(parents=True, exist_ok=True)
     trace_path = TRACE_DIR / f"jobserve-visible-{int(time.time())}.zip"
 
-    mode = mode_from_args(args)
-    print("[jobserve-debug] opening search page", flush=True)
-    print(f"[jobserve-debug] mode={mode}", flush=True)
-    print(f"[jobserve-debug] submit flag received: {args.submit}", flush=True)
-    print(f"[jobserve-debug] final apply click enabled: {args.submit}", flush=True)
-    if args.submit:
-        print("[jobserve-debug] --submit enabled: final JobServe Apply will be clicked only after safety checks pass", flush=True)
-    else:
-        print("[jobserve-debug] --submit not provided: running review-only and stopping before final Apply", flush=True)
-    print(f"[jobserve-debug] video directory: {VIDEO_DIR}", flush=True)
-    print(f"[jobserve-debug] trace path: {trace_path}", flush=True)
+    print_startup_config(args, trace_path)
 
     from playwright.sync_api import sync_playwright
 
@@ -230,13 +225,13 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
         page = context.new_page()
         try:
-            result = run_shared_jobserve_flow(page, browser, args, TerminalProgress(pause_each_step=args.pause_each_step, submit_enabled=args.submit))
+            result = run_shared_jobserve_flow(page, browser, args, TerminalProgress(pause_each_step=args.pause_each_step, submit_enabled=submit_requested(args)))
             if result.submitted:
                 print("[jobserve-debug] submitted successfully", flush=True)
                 print(f"[jobserve-debug] confirmation text: {result.confirmation_text or '(not captured)'}", flush=True)
                 print(f"[jobserve-debug] registration toggle disabled: {result.registration_toggle_disabled}", flush=True)
                 print(f"[jobserve-debug] modal closed: {result.modal_closed}", flush=True)
-            elif args.submit:
+            elif submit_requested(args):
                 reason = None
                 if isinstance(result.jobserve_flow_diagnostics, dict):
                     reason = result.jobserve_flow_diagnostics.get("blocked_reason")
@@ -265,6 +260,20 @@ def run_visible_browser(args: argparse.Namespace) -> AssistApplyResult:
             print(f"[jobserve-debug] videos saved under: {VIDEO_DIR}", flush=True)
             if result is not None:
                 print("[jobserve-debug] result:", json.dumps(result.model_dump(), default=str, indent=2)[:8000], flush=True)
+
+
+def print_startup_config(args: argparse.Namespace, trace_path: Path) -> None:
+    submit_enabled = submit_requested(args)
+    print("[jobserve-debug] opening search page", flush=True)
+    print(f"[jobserve-debug] submit flag received: {str(submit_enabled).lower()}", flush=True)
+    print(f"[jobserve-debug] mode selected: {mode_from_args(args)}", flush=True)
+    print(f"[jobserve-debug] final apply click enabled: {str(submit_enabled).lower()}", flush=True)
+    if submit_enabled:
+        print("[jobserve-debug] submit mode enabled: final JobServe Apply will be clicked only after safety checks pass", flush=True)
+    else:
+        print("[jobserve-debug] review-only mode selected: pass --submit or --auto-submit to click final Apply", flush=True)
+    print(f"[jobserve-debug] video directory: {VIDEO_DIR}", flush=True)
+    print(f"[jobserve-debug] trace path: {trace_path}", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.schemas.database import AssistApplyResult
 
@@ -41,6 +41,7 @@ def test_jobserve_visible_debug_cli_args_parse_and_submit_defaults_false(tmp_pat
     assert args.posted == "Within 7 days"
     assert args.job_type == "Any"
     assert args.submit is False
+    assert args.auto_submit is False
     assert args.pause_each_step is False
     assert args.slow_mo_ms == 500
 
@@ -53,6 +54,18 @@ def test_jobserve_visible_debug_cli_submit_sets_explicit_submit_mode(tmp_path) -
     args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit"])
 
     assert args.submit is True
+    assert module.mode_from_args(args) == "submit_with_confirmation"
+
+
+def test_jobserve_visible_debug_cli_auto_submit_sets_explicit_submit_mode(tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--auto-submit"])
+
+    assert args.auto_submit is True
+    assert module.submit_requested(args) is True
     assert module.mode_from_args(args) == "submit_with_confirmation"
 
 
@@ -223,3 +236,31 @@ def test_jobserve_visible_debug_hardcoded_review_only_cannot_override_submit(mon
 
     assert captured["mode"] == module.mode_from_args(args)
     assert captured["mode"] != "review_only"
+
+
+def test_jobserve_visible_debug_startup_output_includes_selected_mode(capsys, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit"])
+
+    module.print_startup_config(args, tmp_path / "trace.zip")
+
+    output = capsys.readouterr().out
+    assert "submit flag received: true" in output
+    assert "mode selected: submit_with_confirmation" in output
+    assert "final apply click enabled: true" in output
+
+
+def test_jobserve_visible_debug_startup_output_includes_review_mode(capsys, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path)])
+
+    module.print_startup_config(args, tmp_path / "trace.zip")
+
+    output = capsys.readouterr().out
+    assert "submit flag received: false" in output
+    assert "mode selected: review_only" in output
+    assert "final apply click enabled: false" in output
