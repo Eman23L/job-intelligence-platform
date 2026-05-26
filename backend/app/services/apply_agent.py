@@ -712,6 +712,8 @@ def _all_contexts(page, browser) -> list[Any]:
 def _find_apply_target(page, browser):
     for context in _all_contexts(page, browser):
         locators = [
+            context.locator('[id*="detail" i] button, [id*="detail" i] a, [id*="detail" i] input[type=button], [id*="detail" i] input[type=submit], [class*="detail" i] button, [class*="detail" i] a, [class*="detail" i] input[type=button], [class*="detail" i] input[type=submit]').filter(has_text=re.compile(r"^apply(\s+now)?$", re.I)).first,
+            context.locator('main button, main a, main input[type=button], main input[type=submit]').filter(has_text=re.compile(r"^apply(\s+now)?$", re.I)).first,
             context.get_by_role("button", name=re.compile(r"^apply(\s+now)?$", re.I)).first,
             context.get_by_role("link", name=re.compile(r"^apply(\s+now)?$", re.I)).first,
             context.locator("button, input[type=button], input[type=submit], a").filter(has_text=re.compile(r"^apply(\s+now)?$", re.I)).first,
@@ -856,6 +858,14 @@ def _run_jobserve_search_to_apply(
         "search_button_clicked": False,
         "results_loaded": False,
         "first_job_selected": False,
+        "intended_job_identity": job_context,
+        "auto_selected_result_identity": None,
+        "auto_selected_matched": False,
+        "selected_result_identity": None,
+        "verified_detail_panel_identity": None,
+        "modal_identity": None,
+        "submitted_identity": None,
+        "blocked_reason": None,
         "target_job_match_candidates": [],
         "selected_job": None,
         "apply_button_clicked": False,
@@ -915,23 +925,37 @@ def _run_jobserve_search_to_apply(
     debug.step("jobserve_results_loaded", jobserve_flow_diagnostics=flow)
 
     match_started = time.perf_counter()
-    apply_target = _find_apply_target(page, browser)
-    if apply_target is not None:
-        selected = {"selection": "first_job_already_opened", "score": 1}
-        flow["first_job_selected"] = True
-    else:
-        selected = _select_jobserve_result(page, job_context, flow)
+    verified_identity = _verify_or_select_intended_jobserve_result(page, browser, job_context, flow)
+    selected = verified_identity
     timing_diagnostics["result_matching_ms"] = int((time.perf_counter() - match_started) * 1000)
     if selected is None:
-        debug.final_error = "No matching JobServe search result found."
+        debug.final_error = flow.get("blocked_reason") or "Intended JobServe job not found in results"
         debug.html("no_matching_job_found", page)
-        raise RuntimeError(debug.final_error)
+        warnings.append(debug.final_error)
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=False,
+            submitted=False,
+            warnings=_dedupe(warnings),
+            screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+            profile_diagnostics=profile_diagnostics,
+            jobserve_flow_diagnostics=flow,
+            timing_diagnostics={**timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
+            progress={"current_step": "review_required", "elapsed_ms": int((time.perf_counter() - flow_started) * 1000), "last_heartbeat_at": utcnow().isoformat()},
+            upload_diagnostics=upload_diagnostics,
+            select_diagnostics=select_diagnostics,
+            exceptions=exceptions,
+            **debug.result_kwargs(page),
+        )
     flow["selected_job"] = selected
     debug.step("jobserve_target_job_selected", jobserve_flow_diagnostics=flow)
 
     page.wait_for_timeout(1200)
     debug.screenshot("job_details_loaded")
-    apply_target = apply_target or _find_apply_target(page, browser)
+    apply_target = _find_apply_target(page, browser)
     if apply_target is None:
         debug.final_error = "Apply button missing after selecting JobServe search result."
         debug.html("apply_button_missing", page)
@@ -951,6 +975,30 @@ def _run_jobserve_search_to_apply(
         debug.final_error = "JobServe application modal missing."
         debug.html("modal_missing", page)
         raise RuntimeError(debug.final_error)
+    modal_identity = _jobserve_modal_identity(context)
+    flow["modal_identity"] = modal_identity
+    if _jobserve_identity_clear_mismatch(modal_identity, verified_identity):
+        flow["blocked_reason"] = "JobServe application modal does not match intended job"
+        warnings.append(flow["blocked_reason"])
+        debug.html("modal_identity_mismatch", context)
+        return AssistApplyResult(
+            status="review_required",
+            filled_fields=[],
+            unfilled_fields=[],
+            unfilled_required_fields=[],
+            uploaded_cv=False,
+            submitted=False,
+            warnings=_dedupe(warnings),
+            screenshot_path=debug.screenshot_paths[-1] if debug.screenshot_paths else None,
+            profile_diagnostics=profile_diagnostics,
+            jobserve_flow_diagnostics=flow,
+            timing_diagnostics={**timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - flow_started) * 1000)},
+            progress={"current_step": "review_required", "elapsed_ms": int((time.perf_counter() - flow_started) * 1000), "last_heartbeat_at": utcnow().isoformat()},
+            upload_diagnostics=upload_diagnostics,
+            select_diagnostics=select_diagnostics,
+            exceptions=exceptions,
+            **debug.result_kwargs(page),
+        )
 
     fill_result = _fill_jobserve_application_form(
         context,
@@ -995,6 +1043,7 @@ def _run_jobserve_search_to_apply(
             _wait_for_jobserve_submission_success(page, browser)
             timing_diagnostics["submit_wait_ms"] = int((time.perf_counter() - submit_started) * 1000)
             flow["submitted_confirmation_detected"] = True
+            flow["submitted_identity"] = _jobserve_modal_identity(page)
             submitted = True
             status = "submitted"
             debug.step("jobserve_submitted_message_seen", jobserve_flow_diagnostics=flow)
@@ -1030,6 +1079,10 @@ def _run_jobserve_search_to_apply(
         upload_diagnostics=upload_diagnostics,
         select_diagnostics=select_diagnostics,
         exceptions=exceptions,
+        submitted_job_title=str((flow.get("submitted_identity") or flow.get("verified_detail_panel_identity") or {}).get("title") or "") or None,
+        submitted_job_company=str((flow.get("submitted_identity") or flow.get("verified_detail_panel_identity") or {}).get("company") or "") or None,
+        submitted_job_reference=str((flow.get("submitted_identity") or flow.get("verified_detail_panel_identity") or {}).get("reference") or "") or None,
+        submitted_job_external_id=str((flow.get("submitted_identity") or flow.get("verified_detail_panel_identity") or {}).get("reference") or "") or None,
         **debug.result_kwargs(page),
     )
 
@@ -1802,6 +1855,106 @@ def _select_jobserve_result(page, job_context: dict[str, Any], flow: dict[str, A
         return None
 
 
+def _verify_or_select_intended_jobserve_result(page, browser, job_context: dict[str, Any], flow: dict[str, Any]) -> dict[str, Any] | None:
+    if not _jobserve_target_has_identity(job_context):
+        flow["blocked_reason"] = "Intended JobServe job identity missing"
+        flow["target_job_match_candidates"] = _jobserve_result_candidates(page)[:10]
+        return None
+    candidates = _rank_jobserve_candidates(_jobserve_result_candidates(page), job_context)
+    flow["target_job_match_candidates"] = candidates[:10]
+    auto_identity = _jobserve_detail_panel_identity(page)
+    flow["auto_selected_result_identity"] = auto_identity
+    if auto_identity and _jobserve_identity_matches(auto_identity, job_context):
+        flow["auto_selected_matched"] = True
+        flow["first_job_selected"] = True
+        flow["selected_result_identity"] = auto_identity
+        flow["verified_detail_panel_identity"] = auto_identity
+        return auto_identity
+    flow["auto_selected_matched"] = False
+    if not candidates or int(candidates[0].get("score") or 0) <= 0:
+        flow["blocked_reason"] = "Intended JobServe job not found in results"
+        return None
+    selected = candidates[0]
+    href = selected.get("href")
+    try:
+        if href:
+            page.locator(f'a[href="{href}"]').first.click(timeout=5000)
+        else:
+            page.get_by_text(str(selected.get("title") or selected.get("text") or ""), exact=False).first.click(timeout=5000)
+        page.wait_for_timeout(1200)
+    except Exception as exc:  # noqa: BLE001
+        flow["blocked_reason"] = f"Could not click intended JobServe result: {exc}"
+        return None
+    detail_identity = _jobserve_detail_panel_identity(page) or selected
+    flow["selected_result_identity"] = selected
+    flow["verified_detail_panel_identity"] = detail_identity
+    if detail_identity and not _jobserve_identity_matches(detail_identity, job_context):
+        flow["blocked_reason"] = "Selected JobServe detail panel does not match intended job"
+        return None
+    if not detail_identity and not _jobserve_identity_matches(selected, job_context):
+        flow["blocked_reason"] = "Selected JobServe result does not match intended job"
+        return None
+    return detail_identity
+
+
+def _jobserve_detail_panel_identity(page) -> dict[str, Any] | None:
+    try:
+        identity = page.evaluate(
+            """() => {
+                const visible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                };
+                const candidates = Array.from(document.querySelectorAll('[id*="detail" i], [class*="detail" i], [id*="job" i], [class*="job" i], main, body')).filter(visible);
+                const panel = candidates.find((el) => /apply/i.test(el.innerText || el.textContent || '')) || document.body;
+                const text = (panel.innerText || panel.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 3000);
+                const link = panel.querySelector('a[href*="/job/"], a[href*="jobserve.com"]');
+                const heading = panel.querySelector('h1,h2,h3,.job-title,.title');
+                const company = panel.querySelector('.company,.recruiter,.employer,[class*="company" i],[class*="recruiter" i]');
+                const refMatch = text.match(/(?:ref(?:erence)?\\s*[:#]?\\s*)([A-Z0-9-]{3,})/i);
+                return {
+                    text,
+                    title: heading ? heading.innerText.trim() : '',
+                    company: company ? company.innerText.trim() : '',
+                    href: link ? link.href : location.href,
+                    reference: refMatch ? refMatch[1] : ''
+                };
+            }""",
+            timeout=1500,
+        )
+        return identity if identity and any(identity.get(key) for key in ["text", "title", "href", "reference"]) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _jobserve_modal_identity(context) -> dict[str, Any]:
+    try:
+        text = context.locator("body").inner_text(timeout=1500)
+    except Exception:  # noqa: BLE001
+        text = ""
+    title_match = re.search(r"(?:Job Title|Position|Role)\s*:?\s*([^\n\r]+)", text, re.I)
+    ref_match = re.search(r"(?:ref(?:erence)?|job id)\s*[:#]?\s*([A-Z0-9-]{3,})", text, re.I)
+    return {
+        "text": re.sub(r"\s+", " ", text).strip()[:2000],
+        "title": title_match.group(1).strip() if title_match else "",
+        "reference": ref_match.group(1).strip() if ref_match else "",
+        "href": _safe_url(context),
+    }
+
+
+def _jobserve_identity_clear_mismatch(modal_identity: dict[str, Any], verified_identity: dict[str, Any]) -> bool:
+    if not modal_identity or not verified_identity:
+        return False
+    modal_ref = _normalize_select_text(str(modal_identity.get("reference") or ""))
+    verified_ref = _normalize_select_text(str(verified_identity.get("reference") or ""))
+    if modal_ref and verified_ref and modal_ref != verified_ref:
+        return True
+    modal_title = _normalize_select_text(str(modal_identity.get("title") or ""))
+    verified_title = _normalize_select_text(str(verified_identity.get("title") or ""))
+    return bool(modal_title and verified_title and modal_title not in verified_title and verified_title not in modal_title)
+
+
 def _jobserve_target_has_identity(target: dict[str, Any]) -> bool:
     return any(str(target.get(key) or "").strip() for key in ["source_job_id", "original_external_id", "title", "original_title", "company_name", "original_company"])
 
@@ -1834,13 +1987,20 @@ def _rank_jobserve_candidates(candidates: list[dict[str, Any]], target: dict[str
 
 
 def _jobserve_match_score(candidate: dict[str, Any], target: dict[str, Any]) -> int:
-    haystack = _normalize_select_text(" ".join(str(candidate.get(key) or "") for key in ["text", "href", "title", "company", "reference"]))
+    haystack = _normalize_select_text(" ".join(str(candidate.get(key) or "") for key in ["text", "href", "title", "company", "company_name", "reference"]))
     score = 0
-    for key, weight in [("source_job_id", 50), ("original_external_id", 50), ("title", 30), ("original_title", 30), ("company_name", 20), ("original_company", 20)]:
+    for key, weight in [("source_job_id", 60), ("original_external_id", 60), ("canonical_url", 50), ("title", 30), ("original_title", 30), ("company_name", 20), ("original_company", 20)]:
         value = _normalize_select_text(str(target.get(key) or ""))
         if value and value in haystack:
             score += weight
     return score
+
+
+def _jobserve_identity_matches(identity: dict[str, Any], target: dict[str, Any]) -> bool:
+    return _jobserve_match_score(identity, target) >= 50 or (
+        _jobserve_match_score(identity, target) >= 30
+        and any(_normalize_select_text(str(target.get(key) or "")) in _normalize_select_text(str(identity.get("text") or "")) for key in ["company_name", "original_company"] if target.get(key))
+    )
 
 
 def _fill_jobserve_application_form(

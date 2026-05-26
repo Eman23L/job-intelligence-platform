@@ -304,6 +304,43 @@ def test_jobserve_results_target_matching_prefers_reference_title_and_company() 
     assert ranked[0]["score"] > ranked[1]["score"]
 
 
+def test_jobserve_auto_selected_identity_matching_allows_intended_job() -> None:
+    intended = {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"}
+    auto_selected = {"title": "Senior AI Engineer", "company": "Acme", "reference": "D8DF", "text": "Senior AI Engineer Acme Ref D8DF"}
+
+    assert apply_agent._jobserve_identity_matches(auto_selected, intended) is True
+
+
+def test_jobserve_auto_selected_identity_mismatch_requires_result_selection() -> None:
+    intended = {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"}
+    auto_selected = {"title": "Data Analyst", "company": "Other", "reference": "ZZZ", "text": "Data Analyst Other Ref ZZZ"}
+    candidates = [
+        auto_selected,
+        {"title": "Senior AI Engineer", "company": "Acme", "reference": "D8DF", "text": "Senior AI Engineer Acme Ref D8DF", "href": "/job/D8DF"},
+    ]
+
+    ranked = apply_agent._rank_jobserve_candidates(candidates, intended)
+
+    assert apply_agent._jobserve_identity_matches(auto_selected, intended) is False
+    assert ranked[0]["reference"] == "D8DF"
+
+
+def test_jobserve_intended_result_missing_blocks() -> None:
+    intended = {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"}
+    candidates = [{"title": "Data Analyst", "company": "Other", "reference": "ZZZ", "text": "Data Analyst Other Ref ZZZ"}]
+
+    ranked = apply_agent._rank_jobserve_candidates(candidates, intended)
+
+    assert ranked[0]["score"] == 0
+
+
+def test_jobserve_modal_mismatch_blocks_submit() -> None:
+    verified = {"title": "Senior AI Engineer", "reference": "D8DF"}
+    modal = {"title": "Data Analyst", "reference": "ZZZ"}
+
+    assert apply_agent._jobserve_identity_clear_mismatch(modal, verified) is True
+
+
 def test_jobserve_dropdown_helper_normalizes_visible_option_text() -> None:
     assert apply_agent._normalize_select_text("  Within   50 miles ") == apply_agent._normalize_select_text("within-50-miles")
 

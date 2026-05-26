@@ -154,7 +154,13 @@ class TerminalProgress:
         elif "jobserve_flow_diagnostics" in payload:
             flow = payload["jobserve_flow_diagnostics"]
             selected = flow.get("selected_job") if isinstance(flow, dict) else None
-            if selected:
+            if step == "jobserve_target_job_selected":
+                auto = "matched" if flow.get("auto_selected_matched") else "did not match"
+                replacement = flow.get("selected_result_identity") or selected
+                suffix = f" auto-selected {auto}; selected={replacement}"
+            elif step == "jobserve_results_loaded":
+                suffix = " checking intended job identity"
+            elif selected:
                 suffix = f" selected={selected.get('title') or selected.get('text') or selected.get('href')}"
         print(f"[jobserve-debug] {message}{suffix}", flush=True)
         if self.pause_each_step and step not in self.seen:

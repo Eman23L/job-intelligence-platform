@@ -737,6 +737,10 @@ class AssistApplyResult(BaseModel):
     upload_diagnostics: dict[str, Any] = Field(default_factory=dict)
     select_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     exceptions: list[dict[str, Any]] = Field(default_factory=list)
+    submitted_job_title: str | None = None
+    submitted_job_company: str | None = None
+    submitted_job_reference: str | None = None
+    submitted_job_external_id: str | None = None
 
 
 class AssistApplyRequest(BaseModel):
