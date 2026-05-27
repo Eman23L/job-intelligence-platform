@@ -355,6 +355,7 @@ def run_playwright_assist(
     profile_diagnostics: dict[str, Any] | None = None,
     job_context: dict[str, Any] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    use_current_selected_job_as_intended: bool = False,
 ) -> AssistApplyResult:
     total_started = time.perf_counter()
     timing_diagnostics: dict[str, Any] = {}
@@ -442,6 +443,7 @@ def run_playwright_assist(
                             debug_mode=debug_mode,
                             profile_diagnostics=profile_diagnostics,
                             progress_callback=progress_callback,
+                            use_current_selected_job_as_intended=use_current_selected_job_as_intended,
                         )
                         result.timing_diagnostics = {**result.timing_diagnostics, **timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)}
                         return result
@@ -2100,6 +2102,8 @@ def _jobserve_target_has_identity(target: dict[str, Any]) -> bool:
 
 def _jobserve_use_current_selected_job_as_intended(page, flow: dict[str, Any]) -> dict[str, Any]:
     current_identity = _jobserve_detail_panel_identity(page)
+    if not current_identity:
+        current_identity = _jobserve_visible_job_fallback_identity(page)
     flow["auto_selected_result_identity"] = current_identity
     flow["selected_result_identity"] = current_identity
     flow["verified_detail_panel_identity"] = current_identity
@@ -2109,14 +2113,41 @@ def _jobserve_use_current_selected_job_as_intended(page, flow: dict[str, Any]) -
         flow["selected_detail_title"] = current_identity.get("title") or ""
         flow["selected_detail_company"] = current_identity.get("company") or ""
         flow["selected_detail_reference"] = current_identity.get("reference") or ""
-    if not current_identity or not str(current_identity.get("title") or "").strip():
+    if not current_identity:
         flow["blocked_reason"] = "Could not read current selected JobServe job identity"
         flow["target_job_match_candidates"] = _jobserve_result_candidates(page)[:10]
         return {}
+    if not str(current_identity.get("title") or "").strip():
+        current_identity["title"] = "Currently visible JobServe job"
+        current_identity["text"] = str(current_identity.get("text") or "LOCAL DEBUG ONLY: applying to currently visible JobServe job.")
+        flow["local_debug_visible_job_warning"] = "LOCAL DEBUG ONLY: applying to currently visible JobServe job."
     target = _jobserve_target_from_current_identity(current_identity)
     flow["auto_selected_matched"] = True
     flow["first_job_selected"] = True
     return target
+
+
+def _jobserve_visible_job_fallback_identity(page) -> dict[str, Any] | None:
+    try:
+        return page.evaluate(
+            """() => {
+                const text = (document.body.innerText || document.body.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 3000);
+                const selected = document.querySelector('[aria-selected="true"], .selected, .active, [class*="selected" i], [class*="active" i]');
+                const selectedText = selected ? (selected.innerText || selected.textContent || '').trim().replace(/\\s+/g, ' ') : '';
+                const titleNode = selected?.querySelector?.('h1,h2,h3,.job-title,.title,[class*="title" i]') || document.querySelector('h1,h2,h3,.job-title,.title,[class*="title" i]');
+                const companyNode = selected?.querySelector?.('.company,.recruiter,.employer,[class*="company" i],[class*="recruiter" i]') || document.querySelector('.company,.recruiter,.employer,[class*="company" i],[class*="recruiter" i]');
+                const refMatch = text.match(/(?:ref(?:erence)?|job\\s*id)\\s*[:#]?\\s*([A-Z0-9-]{3,})/i) || location.href.match(/(?:jobid|job|shid)[=/:-]([A-Z0-9-]{3,})/i);
+                return {
+                    text: selectedText || text,
+                    title: titleNode ? titleNode.innerText.trim() : '',
+                    company: companyNode ? companyNode.innerText.trim() : '',
+                    href: location.href,
+                    reference: refMatch ? refMatch[1] : ''
+                };
+            }""",
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _jobserve_target_from_current_identity(identity: dict[str, Any]) -> dict[str, Any]:

@@ -376,6 +376,61 @@ def test_jobserve_direct_job_url_is_preferred_over_search_url() -> None:
     assert apply_agent._jobserve_should_try_direct_url("https://www.jobserve.com/gb/en/Job-Search/") is False
 
 
+def test_run_playwright_assist_default_visible_job_flag_is_false() -> None:
+    assert apply_agent.run_playwright_assist.__kwdefaults__["use_current_selected_job_as_intended"] is False
+
+
+def test_run_playwright_assist_passes_visible_job_flag(monkeypatch) -> None:
+    captured: dict[str, bool] = {}
+
+    class FakePage:
+        def set_default_timeout(self, timeout):
+            pass
+
+        def set_default_navigation_timeout(self, timeout):
+            pass
+
+    class FakeBrowser:
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            pass
+
+    class FakeChromium:
+        def launch(self, **kwargs):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    class FakeManager:
+        def __enter__(self):
+            return FakePlaywright()
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_search(page, browser, candidates, profile, job_context, **kwargs):
+        captured["use_current_selected_job_as_intended"] = kwargs["use_current_selected_job_as_intended"]
+        return AssistApplyResult(status="review_required", filled_fields=[], unfilled_fields=[], unfilled_required_fields=[], uploaded_cv=False, submitted=False, warnings=[], screenshot_path=None)
+
+    monkeypatch.setattr(apply_agent, "validate_browser_automation_availability", lambda require_worker=False: SimpleNamespace(available=True, error=None, message=None))
+    monkeypatch.setattr(apply_agent, "chromium_diagnostics", lambda: {"playwright_browsers_path": "", "chromium_executable_path": "", "chromium_file_exists": True, "chromium_file_executable": True})
+    monkeypatch.setattr(apply_agent, "chromium_executable_path", lambda: None)
+    monkeypatch.setitem(__import__("sys").modules, "playwright.sync_api", SimpleNamespace(Error=Exception, sync_playwright=lambda: FakeManager()))
+    monkeypatch.setattr(apply_agent, "_run_jobserve_search_to_apply", fake_search)
+
+    apply_agent.run_playwright_assist(
+        "https://www.jobserve.com/gb/en/Job-Search/",
+        {},
+        apply_strategy="jobserve_apply_easy",
+        use_current_selected_job_as_intended=True,
+    )
+
+    assert captured["use_current_selected_job_as_intended"] is True
+
+
 def test_jobserve_intended_result_missing_blocks() -> None:
     intended = {"title": "Senior AI Engineer", "company_name": "Acme", "source_job_id": "D8DF"}
     candidates = [{"title": "Data Analyst", "company": "Other", "reference": "ZZZ", "text": "Data Analyst Other Ref ZZZ"}]
@@ -486,9 +541,8 @@ def test_jobserve_current_selected_missing_title_returns_specific_block_reason()
 
     target = apply_agent._jobserve_use_current_selected_job_as_intended(_FakeJobServeDetailPage({"text": "Apply now"}), flow)
 
-    assert target == {}
-    assert flow["blocked_reason"] == "Could not read current selected JobServe job identity"
-    assert flow["target_job_match_candidates"] == []
+    assert target["title"] == "Currently visible JobServe job"
+    assert flow["local_debug_visible_job_warning"] == "LOCAL DEBUG ONLY: applying to currently visible JobServe job."
 
 
 def test_jobserve_local_selected_identity_shortcut_does_not_change_production_missing_identity_block() -> None:

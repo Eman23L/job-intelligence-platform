@@ -215,9 +215,10 @@ def test_jobserve_visible_debug_use_current_selected_aliases_parse(tmp_path) -> 
     cv_path = tmp_path / "cv.pdf"
     cv_path.write_bytes(b"%PDF")
 
-    for flag in ["--use-current-selected-job", "--use-selected-job", "--use-visible-job"]:
+    for flag in ["--use-current-selected-job", "--use-selected-job", "--use-visible-job", "--debug-apply-visible-job"]:
         args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit", flag])
         assert args.use_current_selected_job is True
+        assert module.use_current_selected_job_as_intended(args) is True
         module.validate_local_submit_identity(args)
 
 
@@ -348,6 +349,21 @@ def test_jobserve_visible_debug_use_current_selected_job_flag_is_passed(monkeypa
 
     assert captured["use_current_selected_job_as_intended"] is True
     assert captured["job_context"]["identity_source"] == "current_selected_job"
+
+
+def test_jobserve_visible_debug_startup_prints_visible_job_flag(capsys, tmp_path) -> None:
+    module = _load_script_module()
+    cv_path = tmp_path / "cv.pdf"
+    cv_path.write_bytes(b"%PDF")
+    args = module.parse_args(["--email", "me@example.com", "--cv-path", str(cv_path), "--submit", "--debug-apply-visible-job"])
+
+    module.print_startup_config(args, tmp_path / "trace.zip", cv_path.resolve())
+
+    output = capsys.readouterr().out
+    assert "use_current_selected_job flag received: true" in output
+    assert "use_current_selected_job_as_intended passed to apply agent: true" in output
+    assert "mode selected: submit_with_confirmation" in output
+    assert "final apply click enabled: true" in output
 
 
 def test_jobserve_visible_debug_job_url_uses_direct_modal_flow(monkeypatch, tmp_path) -> None:
