@@ -121,6 +121,8 @@ def extract_jobserve_job_ids(html: str) -> list[str]:
     if field is None:
         field = soup.find("input", attrs={"name": "ctl00$main$jobIDs"})
     value = str(field.get("value") or "") if field else ""
+    if not value:
+        value = "#".join(result["job_id"] for result in extract_jobserve_visible_results(html) if result.get("job_id"))
     seen: set[str] = set()
     job_ids: list[str] = []
     for item in re.split(r"[#%,\|;\s]+", value):
@@ -130,6 +132,57 @@ def extract_jobserve_job_ids(html: str) -> list[str]:
         seen.add(job_id)
         job_ids.append(job_id)
     return job_ids
+
+
+def extract_jobserve_visible_results(html: str) -> list[dict[str, str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for node in soup.select("[data-jobid], [data-job-id], [jobid], [id^=job_]"):
+        job_id = _job_id_from_node(node)
+        if not job_id or job_id in seen:
+            continue
+        seen.add(job_id)
+        results.append(_visible_result_summary(node, job_id))
+    for node in soup.find_all(attrs={"onclick": True}):
+        onclick = str(node.get("onclick") or "")
+        if "JobDetails" not in onclick and "JobDetail" not in onclick:
+            continue
+        match = re.search(r"['\"]([A-F0-9]{8,})['\"]", onclick, flags=re.I)
+        if not match:
+            continue
+        job_id = match.group(1)
+        if job_id in seen:
+            continue
+        seen.add(job_id)
+        results.append(_visible_result_summary(node, job_id))
+    return results
+
+
+def _job_id_from_node(node) -> str:
+    for attr in ["data-jobid", "data-job-id", "jobid"]:
+        value = str(node.get(attr) or "").strip()
+        if value:
+            return value
+    node_id = str(node.get("id") or "")
+    match = re.search(r"([A-F0-9]{8,})", node_id, flags=re.I)
+    return match.group(1) if match else ""
+
+
+def _visible_result_summary(node, job_id: str) -> dict[str, str]:
+    title = _select_text(node, [".job-title", ".jobTitle", ".result-title", ".resultbold", "h2", "h3", "a"])
+    company = _select_text(node, [".company", ".recruiter", ".job-company", ".resultcompany", "[data-testid*=company]"])
+    href = ""
+    anchor = node.find("a", href=True)
+    if anchor:
+        href = urljoin(JOBSERVE_ROOT, str(anchor["href"]))
+    return {
+        "job_id": job_id,
+        "title": title or "",
+        "company": company or "",
+        "url": href or f"{JOBSERVE_ROOT}/gb/en/job/{job_id}",
+        "text": _clean(node.get_text(" ", strip=True)) or "",
+    }
 
 
 def discover_jobserve_pagination_urls(html: str, page_url: str) -> list[str]:

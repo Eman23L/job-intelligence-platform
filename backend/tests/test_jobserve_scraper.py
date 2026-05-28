@@ -4,6 +4,7 @@ from app.scrapers.jobserve import (
     discover_jobserve_pagination_urls,
     extract_jobserve_detail_html,
     extract_jobserve_job_ids,
+    extract_jobserve_visible_results,
     is_jobserve_search_page,
     parse_jobserve_detail_html,
 )
@@ -34,6 +35,29 @@ def test_extract_jobserve_job_ids_accepts_multiple_delimiters() -> None:
     html = '<input id="jobIDs" value="ONE,TWO|THREE;FOUR FIVE" />'
 
     assert extract_jobserve_job_ids(html) == ["ONE", "TWO", "THREE", "FOUR", "FIVE"]
+
+
+def test_jobserve_scraper_parses_visible_result_list_html() -> None:
+    html = """
+    <section id="results">
+      <article class="job-result" data-jobid="ABC123">
+        <a class="job-title" href="/gb/en/search-jobs-in-London/AI-ENGINEER-ABC123/">AI Engineer</a>
+        <span class="company">Example Recruiter</span>
+      </article>
+      <article class="job-result" onclick="javascript:GetJobDetails('DEF456789', 'False')">
+        <h3>ML Platform Engineer</h3>
+        <span class="recruiter">Another Recruiter</span>
+      </article>
+    </section>
+    """
+
+    visible = extract_jobserve_visible_results(html)
+
+    assert [item["job_id"] for item in visible] == ["ABC123", "DEF456789"]
+    assert visible[0]["title"] == "AI Engineer"
+    assert visible[0]["company"] == "Example Recruiter"
+    assert visible[0]["url"] == "https://www.jobserve.com/gb/en/search-jobs-in-London/AI-ENGINEER-ABC123/"
+    assert extract_jobserve_job_ids(html) == ["ABC123", "DEF456789"]
 
 
 def test_extract_jobserve_detail_html_from_ajax_payload() -> None:

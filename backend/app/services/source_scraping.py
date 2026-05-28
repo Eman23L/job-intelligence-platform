@@ -1,9 +1,11 @@
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -31,7 +33,7 @@ from app.scrapers.parsers.job_detail import extract_page_title
 from app.scrapers.policies.robots import check_robots_allowed
 from app.scrapers.registry import adapter_registry
 from app.scrapers.job_boards import JobRecord
-from app.scrapers.jobserve import JobServeAdapter, JobServeSourceAdapter, is_jobserve_search_page
+from app.scrapers.jobserve import JobServeAdapter, JobServeSourceAdapter, extract_jobserve_visible_results, is_jobserve_search_page
 from app.scrapers.jobserve import extract_jobserve_job_ids
 from app.scrapers.utils.hashing import content_hash
 from app.services.analysis import analyse_job
@@ -49,6 +51,7 @@ BROWSER_USER_AGENT = (
 )
 DEFAULT_DELAY_SECONDS = 8.0
 JOBSERVE_SEARCH_SOURCE_NAME = "JobServe Search"
+JOBSERVE_SCRAPE_DEBUG_DIR = Path("backend/debug_artifacts/jobserve_scrape")
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class JobServeSearchResultPage:
     job_ids: list[str]
     status_code: int
     cookies: dict[str, str]
+    diagnostics: dict[str, Any] | None = None
 
 
 def create_source_from_url(db: Session, payload) -> JobSource:
@@ -160,6 +164,7 @@ def search_scrape_jobserve(
     try:
         search_page = _fetch_jobserve_search_results(payload)
     except Exception as exc:  # noqa: BLE001
+        diagnostics = {"fetch_exception": type(exc).__name__, "message": str(exc)}
         return JobServeSearchScrapeResult(
             source_id=source.id,
             search_url=build_jobserve_search_url(payload),
@@ -169,13 +174,15 @@ def search_scrape_jobserve(
             jobs_skipped=0,
             parsed_jobs=[],
             errors=[str(exc)],
-            warnings=[],
+            warnings=[f"JobServe search diagnostics: {diagnostics}"],
+            diagnostics=diagnostics,
         )
     search_url = search_page.url
     warnings: list[str] = []
     errors: list[str] = []
     created = updated = skipped = 0
     parsed_jobs: list[dict[str, str | None]] = []
+    diagnostics = search_page.diagnostics or _jobserve_search_diagnostics(search_page.html, search_url, search_page.status_code, payload)
 
     if search_page.status_code >= 400:
         return JobServeSearchScrapeResult(
@@ -188,6 +195,7 @@ def search_scrape_jobserve(
             parsed_jobs=[],
             errors=[f"JobServe search returned HTTP {search_page.status_code}"],
             warnings=warnings,
+            diagnostics=diagnostics,
         )
 
     page_size = _hidden_int(search_page.html, "pgSize", default=25)
@@ -195,6 +203,7 @@ def search_scrape_jobserve(
     _update_scrape_run_progress(db, scrape_run_id, found=len(job_ids), created=created, updated=updated, skipped=skipped)
     if not job_ids:
         warnings.append("JobServe search completed but no hidden job IDs were found in the result HTML.")
+        warnings.append(f"JobServe search diagnostics: {diagnostics}")
 
     detail_started = time.perf_counter()
     records, detail_errors = _fetch_jobserve_detail_records(
@@ -257,6 +266,7 @@ def search_scrape_jobserve(
         parsed_jobs=parsed_jobs,
         errors=errors,
         warnings=warnings,
+        diagnostics=diagnostics,
     )
 
 
@@ -309,7 +319,14 @@ def run_jobserve_search_scrape_background(scrape_run_id: int, payload_data: dict
             run.jobs_updated = result.jobs_updated
             run.jobs_skipped = result.jobs_skipped
             run.parsed_jobs = [
-                {"search_metadata": _jobserve_search_metadata(payload, final_search_url=result.search_url, result_count=result.jobs_found)},
+                {
+                    "search_metadata": _jobserve_search_metadata(
+                        payload,
+                        final_search_url=result.search_url,
+                        result_count=result.jobs_found,
+                        diagnostics=result.diagnostics,
+                    )
+                },
                 *[item.model_dump() if hasattr(item, "model_dump") else item for item in result.parsed_jobs],
             ]
             run.errors = result.errors
@@ -363,6 +380,7 @@ def get_source_scrape_run_status(db: Session, run_id: int) -> SourceScrapeRunSta
         search_params=metadata.get("search_params", {}),
         final_search_url=metadata.get("final_search_url"),
         result_count=int(metadata.get("result_count") or run.jobs_found or 0),
+        diagnostics=metadata.get("diagnostics", {}),
     )
 
 
@@ -400,7 +418,13 @@ def build_jobserve_search_url(payload: JobServeSearchScrapeRequest) -> str:
     return "https://www.jobserve.com/gb/en/Job-Search/"
 
 
-def _jobserve_search_metadata(payload: JobServeSearchScrapeRequest, *, final_search_url: str | None = None, result_count: int = 0) -> dict[str, Any]:
+def _jobserve_search_metadata(
+    payload: JobServeSearchScrapeRequest,
+    *,
+    final_search_url: str | None = None,
+    result_count: int = 0,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     search_params = {
         "keywords": payload.keywords,
         "location": payload.location,
@@ -421,6 +445,7 @@ def _jobserve_search_metadata(payload: JobServeSearchScrapeRequest, *, final_sea
         "remote_only": payload.remote_only,
         "final_search_url": final_search_url,
         "result_count": result_count,
+        "diagnostics": diagnostics or {},
     }
 
 
@@ -446,13 +471,122 @@ def _fetch_jobserve_search_results(payload: JobServeSearchScrapeRequest) -> JobS
         timeout=30,
         allow_redirects=True,
     )
+    diagnostics = _jobserve_search_diagnostics(response.text, response.url, response.status_code, payload, form_data=form_data)
     return JobServeSearchResultPage(
         url=response.url,
         html=response.text,
         job_ids=extract_jobserve_job_ids(response.text),
         status_code=response.status_code,
         cookies=session.cookies.get_dict(),
+        diagnostics=diagnostics,
     )
+
+
+def _jobserve_search_diagnostics(
+    html: str,
+    final_url: str,
+    status_code: int,
+    payload: JobServeSearchScrapeRequest,
+    *,
+    form_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    soup = BeautifulSoup(html, "html.parser")
+    job_ids = extract_jobserve_job_ids(html)
+    visible_results = extract_jobserve_visible_results(html)
+    diagnostics: dict[str, Any] = {
+        "final_url": final_url,
+        "status_code": status_code,
+        "page_title": extract_page_title(html),
+        "visible_result_count_text": _jobserve_visible_result_count_text(soup),
+        "hidden_job_id_count": len(job_ids),
+        "detected_result_rows": len(visible_results) or len(job_ids),
+        "first_visible_results": visible_results[:10],
+        "cookie_or_consent_present": _jobserve_page_has_any(html, ["cookie", "consent", "privacy settings"]),
+        "captcha_present": _jobserve_page_has_any(html, ["captcha", "recaptcha", "verify you are human"]),
+        "no_results_present": _jobserve_no_results_present(html),
+        "search_form": _jobserve_search_form_diagnostics(form_data or {}, payload),
+    }
+    diagnostics["search_form"]["results_loaded"] = bool(job_ids or visible_results or diagnostics["visible_result_count_text"] or diagnostics["no_results_present"])
+    capture_screenshot = not job_ids or os.environ.get("JOBSERVE_SCRAPE_SCREENSHOT") == "1"
+    if not job_ids:
+        diagnostics["html_snapshot_path"] = _write_jobserve_debug_html(html, "zero-results")
+    diagnostics["screenshot_path"] = _capture_jobserve_debug_screenshot(final_url) if capture_screenshot and final_url else None
+    diagnostics["screenshot_capture"] = "captured" if diagnostics["screenshot_path"] else ("skipped_nonzero_results" if not capture_screenshot else "unavailable")
+    LOGGER.info("JobServe search diagnostics %s", diagnostics)
+    return diagnostics
+
+
+def _jobserve_visible_result_count_text(soup: BeautifulSoup) -> str:
+    result_number = soup.select_one(".resultnumber, #resultnumber, [class*=resultnumber]")
+    if result_number:
+        parent_text = result_number.parent.get_text(" ", strip=True) if result_number.parent else result_number.get_text(" ", strip=True)
+        return parent_text[:300]
+    body_text = soup.get_text(" ", strip=True)
+    match = re.search(r"\b\d[\d,]*\s+(?:jobs?|results?)\b(?:\s+for\s+[^.]{0,120})?", body_text, flags=re.I)
+    return match.group(0) if match else ""
+
+
+def _jobserve_no_results_present(html: str) -> bool:
+    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True).lower()
+    if any(marker in text for marker in ["no matching jobs found", "no jobs found", "did not match any jobs"]):
+        return True
+    return bool(re.search(r"\b0\s+(?:jobs?|results?)\b", text))
+
+
+def _jobserve_page_has_any(html: str, markers: list[str]) -> bool:
+    lowered = html.lower()
+    return any(marker.lower() in lowered for marker in markers)
+
+
+def _jobserve_search_form_diagnostics(form_data: dict[str, Any], payload: JobServeSearchScrapeRequest) -> dict[str, Any]:
+    remote_name = "ctl00$main$srch$ctl_qs$RemoteWorking$chkRemoteWorking"
+    return {
+        "keyword_filled": form_data.get("ctl00$main$srch$ctl_qs$txtKey") == payload.keywords.strip(),
+        "location_filled": form_data.get("ctl00$main$srch$ctl_qs$txtLoc") == (payload.location or "").strip(),
+        "distance_selected": str(form_data.get("selRad") or "") == _distance_value(payload.distance),
+        "posted_selected": str(form_data.get("selAge") or "") == _posted_within_value(payload),
+        "job_type_selected": bool(str(form_data.get("selJType") or "")) or _normalize_jobserve_form_text(payload.job_type) == "any",
+        "select_all_industries_applied": bool(form_data.get("selInd")) if payload.select_all_industries else True,
+        "remote_only_unchecked": remote_name not in form_data if not payload.remote_only else remote_name in form_data,
+        "search_button_clicked": form_data.get("ctl00$main$srch$ctl_qs$btnSearch") == "Search",
+        "results_loaded": False,
+    }
+
+
+def _write_jobserve_debug_html(html: str, label: str) -> str | None:
+    try:
+        JOBSERVE_SCRAPE_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        path = JOBSERVE_SCRAPE_DEBUG_DIR / f"{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{label}.html"
+        path.write_text(html, encoding="utf-8")
+        return str(path)
+    except OSError:
+        LOGGER.exception("Could not write JobServe scrape HTML diagnostic")
+        return None
+
+
+def _capture_jobserve_debug_screenshot(url: str) -> str | None:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        JOBSERVE_SCRAPE_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        path = JOBSERVE_SCRAPE_DEBUG_DIR / f"{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-results.png"
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(1000)
+                page.screenshot(path=str(path), full_page=False)
+            finally:
+                browser.close()
+        return str(path)
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("Could not capture JobServe scrape screenshot diagnostic")
+        return None
 
 
 def _jobserve_search_form_payload(html: str, base_url: str, payload: JobServeSearchScrapeRequest) -> tuple[dict[str, Any], str]:

@@ -52,6 +52,7 @@ pnpm-debug.log*
 *.pid
 *.seed
 backend/runtime/
+backend/debug_artifacts/
 storage/
 
 # Generated scraper exports and temporary data

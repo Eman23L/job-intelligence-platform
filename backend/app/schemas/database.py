@@ -226,6 +226,7 @@ class JobServeSearchScrapeResult(BaseModel):
     parsed_jobs: list[ParsedJobSummary] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 class SourceScrapeRunStart(BaseModel):
@@ -244,6 +245,7 @@ class SourceScrapeRunStatus(BaseModel):
     search_params: dict[str, Any] = Field(default_factory=dict)
     final_search_url: str | None = None
     result_count: int = 0
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 class SourceDeleteResult(BaseModel):

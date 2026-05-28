@@ -540,6 +540,7 @@ export interface SourceScrapeRunStatus {
   search_params?: Record<string, unknown>;
   final_search_url?: string | null;
   result_count?: number;
+  diagnostics?: Record<string, unknown>;
 }
 
 export interface SourceDeleteResult {

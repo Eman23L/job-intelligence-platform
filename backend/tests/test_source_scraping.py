@@ -378,6 +378,144 @@ def test_jobserve_search_form_payload_maps_full_real_form_controls() -> None:
     assert "ctl00$main$srch$ctl_qs$RemoteWorking$chkRemoteWorking" not in data
 
 
+def test_jobserve_search_diagnostics_detects_real_no_results_page(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(source_scraping, "JOBSERVE_SCRAPE_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(source_scraping, "_capture_jobserve_debug_screenshot", lambda url: str(tmp_path / "results.png"))
+    html = """
+    <html>
+      <head><title>Find AI Jobs with JobServe.com</title></head>
+      <body>
+        <span class="resultnumber">0</span> jobs for <strong>zzzz-no-match</strong>
+        <div>No matching jobs found</div>
+      </body>
+    </html>
+    """
+    payload = JobServeSearchScrapeRequest(keywords="zzzz-no-match", location="London")
+
+    diagnostics = source_scraping._jobserve_search_diagnostics(
+        html,
+        "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=noresults",
+        200,
+        payload,
+        form_data={
+            "ctl00$main$srch$ctl_qs$txtKey": "zzzz-no-match",
+            "ctl00$main$srch$ctl_qs$txtLoc": "London",
+            "selRad": "50",
+            "selAge": "7",
+            "selJType": "15",
+            "selInd": ["00"],
+            "ctl00$main$srch$ctl_qs$btnSearch": "Search",
+        },
+    )
+
+    assert diagnostics["no_results_present"] is True
+    assert diagnostics["hidden_job_id_count"] == 0
+    assert diagnostics["detected_result_rows"] == 0
+    assert diagnostics["html_snapshot_path"]
+    assert diagnostics["search_form"]["keyword_filled"] is True
+    assert diagnostics["search_form"]["location_filled"] is True
+    assert diagnostics["search_form"]["distance_selected"] is True
+    assert diagnostics["search_form"]["posted_selected"] is True
+    assert diagnostics["search_form"]["select_all_industries_applied"] is True
+    assert diagnostics["search_form"]["remote_only_unchecked"] is True
+    assert diagnostics["search_form"]["search_button_clicked"] is True
+    assert diagnostics["search_form"]["results_loaded"] is True
+
+
+def test_jobserve_search_diagnostics_does_not_call_results_zero_when_rows_exist(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(source_scraping, "JOBSERVE_SCRAPE_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(source_scraping, "_capture_jobserve_debug_screenshot", lambda url: None)
+    html = """
+    <html>
+      <head><title>Find AI Jobs in London with JobServe.com</title></head>
+      <body>
+        <span class="resultnumber">12</span> jobs for <strong>AI</strong>
+        <article data-jobid="ABC123"><a class="job-title" href="/gb/en/job/ABC123">AI Engineer</a><span class="company">Acme</span></article>
+      </body>
+    </html>
+    """
+    payload = JobServeSearchScrapeRequest(keywords="AI", location="London")
+
+    diagnostics = source_scraping._jobserve_search_diagnostics(html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=results", 200, payload)
+
+    assert diagnostics["no_results_present"] is False
+    assert diagnostics["hidden_job_id_count"] == 1
+    assert diagnostics["detected_result_rows"] == 1
+    assert diagnostics["first_visible_results"][0]["title"] == "AI Engineer"
+    assert "html_snapshot_path" not in diagnostics
+
+
+def test_jobserve_search_diagnostics_does_not_treat_ten_jobs_as_zero(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(source_scraping, "JOBSERVE_SCRAPE_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(source_scraping, "_capture_jobserve_debug_screenshot", lambda url: None)
+    html = """
+    <html>
+      <body>
+        <span class="resultnumber">10</span> jobs for <strong>AI</strong>
+        <input type="hidden" id="jobIDs" value="ABC123" />
+      </body>
+    </html>
+    """
+
+    diagnostics = source_scraping._jobserve_search_diagnostics(html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=results", 200, JobServeSearchScrapeRequest(keywords="AI"))
+
+    assert diagnostics["no_results_present"] is False
+
+
+def test_jobserve_search_scrape_persists_diagnostics_in_run_status(monkeypatch) -> None:
+    jobserve_html = """
+    <html>
+      <head><title>Find AI Jobs in London with JobServe.com</title></head>
+      <body>
+        <span class="resultnumber">1</span> jobs for <strong>AI</strong>
+        <input type="hidden" id="jobIDs" value="ABC123" />
+      </body>
+    </html>
+    """
+
+    monkeypatch.setattr(source_scraping, "_capture_jobserve_debug_screenshot", lambda url: "backend/debug_artifacts/jobserve_scrape/results.png")
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_search_results",
+        lambda payload: source_scraping.JobServeSearchResultPage(
+            url="https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture",
+            html=jobserve_html,
+            job_ids=["ABC123"],
+            status_code=200,
+            cookies={},
+            diagnostics=source_scraping._jobserve_search_diagnostics(jobserve_html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture", 200, payload),
+        ),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_detail_records",
+        lambda job_ids, **kwargs: (
+            [
+                JobRecord(
+                    source_job_id="ABC123",
+                    title="AI Engineer",
+                    recruiter="Search Recruiter",
+                    location="London",
+                    description="Build AI services.",
+                    url="https://www.jobserve.com/gb/en/job/ABC123",
+                )
+            ],
+            [],
+        ),
+    )
+
+    with scraping_client() as (client, _):
+        response = client.post("/sources/jobserve/search-scrape", json={"keywords": "AI", "location": "London", "max_pages": 3})
+        status = client.get(f"/sources/scrape-runs/{response.json()['run_id']}")
+
+        assert status.status_code == 200
+        body = status.json()
+        assert body["found"] == 1
+        assert body["diagnostics"]["final_url"] == "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture"
+        assert body["diagnostics"]["page_title"] == "Find AI Jobs in London with JobServe.com"
+        assert body["diagnostics"]["hidden_job_id_count"] == 1
+
+
 def test_jobserve_search_scrape_summary_dedupe_and_fingerprints(monkeypatch) -> None:
     jobserve_html = (FIXTURES / "jobserve_search.html").read_text(encoding="utf-8")
 
