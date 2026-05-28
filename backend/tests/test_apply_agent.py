@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import timedelta
 from types import SimpleNamespace
 from pathlib import Path
 import time
@@ -15,6 +16,7 @@ from app.db.session import get_db
 from app.main import app
 from app.schemas.database import AssistApplyResult
 from app.api import applications as applications_api
+from app.services import applications as applications_service
 from app.services import apply_agent
 
 
@@ -151,6 +153,95 @@ def test_assist_apply_uses_saved_job_url(monkeypatch) -> None:
     assert seen["url"] == "https://www.jobserve.com/gb/en/job/D8DF"
     assert seen["strategy"] == "jobserve_apply_easy"
     assert "Job-Search" not in seen["url"]
+
+
+def test_jobserve_missing_saved_specific_url_fails_before_browser_launch(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True, url="https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture")
+    called = False
+
+    def runner(*args, **kwargs):
+        nonlocal called
+        called = True
+        return AssistApplyResult(status="review_required")
+
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+
+    with pytest.raises(ValueError, match="missing_saved_jobserve_url"):
+        apply_agent.assist_apply_application(db_session, job, user, browser_runner=runner)
+
+    db_session.refresh(job)
+    assert called is False
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "missing_saved_jobserve_url"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["canonical_url"] == "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture"
+
+
+def test_browser_launch_exception_persists_failed_result(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True, url="https://www.jobserve.com/gb/en/job/D8DF")
+
+    def fake_run(*args, **kwargs):
+        raise apply_agent.BrowserAutomationError("browser_startup_timeout", "Browser startup timed out after 30 seconds.")
+
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+    monkeypatch.setattr(apply_agent, "run_playwright_assist", fake_run)
+
+    with pytest.raises(apply_agent.BrowserAutomationError):
+        apply_agent.assist_apply_application(db_session, job, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "Browser startup timed out after 30 seconds."
+    assert job.assisted_result["jobserve_flow_diagnostics"]["browser_diagnostics"]["playwright_enabled"] in {True, False}
+
+
+def test_job_url_resolution_is_persisted_in_progress(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True, url="https://www.jobserve.com/gb/en/job/D8DF")
+
+    def runner(url, candidates, profile, mode, apply_strategy):
+        return AssistApplyResult(status="review_required", progress={"current_step": "review_required"})
+
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+
+    apply_agent.assist_apply_application(db_session, job, user, browser_runner=runner)
+
+    db_session.refresh(job)
+    steps = job.assisted_result["debug_steps"]
+    resolved = next(step for step in steps if step["step"] == "job_url_resolved")
+    assert resolved["resolved_job_url"] == "https://www.jobserve.com/gb/en/job/D8DF"
+
+
+def test_worker_early_crash_does_not_leave_application_running(monkeypatch) -> None:
+    with apply_client(jobserve=True) as (_client, ids):
+        monkeypatch.setattr(apply_agent, "SessionLocal", ids["Session"])
+
+        def crash(*args, **kwargs):
+            raise RuntimeError("early crash")
+
+        monkeypatch.setattr(apply_agent, "assist_apply_application", crash)
+        apply_agent.run_assist_apply_background(ids["job"], ids["user"], "review_only", False)
+
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+            assert job.assisted_result["status"] == "failed"
+            assert job.assisted_result["final_error"] == "early crash"
+
+
+def test_stale_browser_launch_progress_fails_on_applications_list(db_session) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    job.assisted_result = {
+        "status": "running",
+        "warnings": [],
+        "progress": {"current_step": "browser_launch_start", "message": "browser startup"},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow() - timedelta(seconds=31)
+    db_session.commit()
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "browser_startup_timeout"
+    assert job.assisted_result["progress"]["current_step"] == "browser_startup_timeout"
 
 
 def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:
@@ -429,6 +520,67 @@ def test_run_playwright_assist_passes_visible_job_flag(monkeypatch) -> None:
     )
 
     assert captured["use_current_selected_job_as_intended"] is True
+
+
+def test_run_playwright_assist_reports_browser_launch_success(monkeypatch) -> None:
+    steps: list[str] = []
+
+    class FakePage:
+        url = "about:blank"
+
+        def set_default_timeout(self, timeout):
+            pass
+
+        def set_default_navigation_timeout(self, timeout):
+            pass
+
+        def goto(self, *args, **kwargs):
+            self.url = args[0]
+
+        def locator(self, selector):
+            return SimpleNamespace(all=lambda: [])
+
+    class FakeBrowser:
+        contexts = []
+
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            pass
+
+    class FakeChromium:
+        def launch(self, **kwargs):
+            assert kwargs["timeout"] == 30000
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    class FakeManager:
+        def __enter__(self):
+            return FakePlaywright()
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(apply_agent, "validate_browser_automation_availability", lambda require_worker=False: SimpleNamespace(available=True, error=None, message=None))
+    monkeypatch.setattr(apply_agent, "chromium_diagnostics", lambda: {"playwright_browsers_path": "", "chromium_executable_path": "", "chromium_file_exists": True, "chromium_file_executable": True})
+    monkeypatch.setattr(apply_agent, "chromium_executable_path", lambda: None)
+    monkeypatch.setattr(apply_agent, "_captcha_visible", lambda page: False)
+    monkeypatch.setattr(apply_agent, "_submit_visible", lambda page: False)
+    monkeypatch.setitem(__import__("sys").modules, "playwright.sync_api", SimpleNamespace(Error=Exception, sync_playwright=lambda: FakeManager()))
+
+    apply_agent.run_playwright_assist(
+        "https://example.invalid/apply",
+        {},
+        progress_callback=lambda step, payload: steps.append(step),
+    )
+
+    assert "browser_launch_start" in steps
+    assert "browser_launch_success" in steps
+    assert "page_created" in steps
+    assert "navigating_to_job_url" in steps
 
 
 def test_jobserve_intended_result_missing_blocks() -> None:
@@ -1294,7 +1446,9 @@ def apply_client(
         app.dependency_overrides.clear()
 
 
-def _seed_application(db_session, *, url: str = "https://example.invalid/apply", jobserve: bool = False) -> tuple[User, Job]:
+def _seed_application(db_session, *, url: str | None = None, jobserve: bool = False) -> tuple[User, Job]:
+    if url is None:
+        url = "https://www.jobserve.com/gb/en/job/D8DF" if jobserve else "https://example.invalid/apply"
     user = User(email="apply-agent@example.invalid")
     source = JobSource(name=f"Apply Agent Source {id(db_session)}", base_url="https://example.invalid", source_type="fixture")
     db_session.add_all([user, source])

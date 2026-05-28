@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import timedelta
 import logging
 
 from sqlalchemy import select
@@ -170,6 +171,7 @@ def run_prepare_applications_background(run_id: int, user_id: int) -> None:
 
 
 def list_applications(db: Session, user: User | None = None) -> list[ApplicationItem]:
+    _fail_stale_browser_startups(db)
     score_query = select(
         JobScore.job_id.label("job_id"),
         JobScore.total_score.label("total_score"),
@@ -238,6 +240,33 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
         )
         for row in rows
     ]
+
+
+def _fail_stale_browser_startups(db: Session) -> None:
+    cutoff = utcnow() - timedelta(seconds=30)
+    jobs = db.scalars(select(Job).where(Job.assisted_result.is_not(None), Job.last_apply_attempt_at < cutoff)).all()
+    changed = False
+    for job in jobs:
+        result = job.assisted_result or {}
+        if result.get("status") != "running":
+            continue
+        progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+        step = progress.get("current_step") or result.get("running_step")
+        if step not in {"browser_startup", "browser_launch_start"}:
+            continue
+        result = {
+            **result,
+            "status": "failed",
+            "final_error": "browser_startup_timeout",
+            "warnings": [*result.get("warnings", []), "browser_startup_timeout"],
+            "progress": {**progress, "current_step": "browser_startup_timeout", "message": "browser_startup_timeout", "last_heartbeat_at": utcnow().isoformat()},
+        }
+        job.assisted_result = result
+        job.assisted_warnings = result["warnings"]
+        job.application_status = "failed"
+        changed = True
+    if changed:
+        db.commit()
 
 
 def _candidate_application_rows(db: Session, user: User | None = None):

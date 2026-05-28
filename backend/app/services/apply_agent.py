@@ -65,32 +65,42 @@ class FieldCandidate:
 def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "review_only", debug_mode: bool = False, browser_runner=None) -> AssistApplyResult:
     if mode not in ASSIST_MODES:
         raise ValueError("Invalid assisted apply mode.")
-    _validate_application(job)
-    availability = check_job_availability(db, job)
-    if availability.availability_status != "active":
-        raise ValueError(f"Application assistance blocked because job is {availability.availability_status}. {availability.availability_reason or ''}".strip())
-    _validate_application(job)
-
-    started_at = utcnow()
-    job.assisted_started_at = started_at
-    job.last_apply_attempt_at = started_at
-    db.commit()
     progress_started = time.perf_counter()
 
     def progress_callback(step: str, payload: dict[str, Any]) -> None:
         _persist_assist_progress(db, job, step, payload, progress_started)
 
-    profile = get_profile(db, user)
-    if mode == "submit_with_confirmation":
-        _validate_jobserve_submit(db, job, user, profile)
-    candidates = profile_field_candidates(user, profile)
-    warnings = _safety_warnings(job)
+    progress_callback("worker_started", _assist_job_payload(job, user, mode, debug_mode))
     try:
+        _validate_application(job)
+        availability = check_job_availability(db, job)
+        if availability.availability_status != "active":
+            raise ValueError(f"Application assistance blocked because job is {availability.availability_status}. {availability.availability_reason or ''}".strip())
+        _validate_application(job)
+    except Exception as exc:
+        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
+        raise
+
+    started_at = utcnow()
+    job.assisted_started_at = started_at
+    job.last_apply_attempt_at = started_at
+    db.commit()
+
+    try:
+        progress_callback("job_loaded", _assist_job_payload(job, user, mode, debug_mode))
+        profile = get_profile(db, user)
+        progress_callback("profile_loaded", {"profile_loaded": profile is not None, **_assist_job_payload(job, user, mode, debug_mode)})
+        resolved_url = _resolve_assist_apply_url(job)
+        progress_callback("job_url_resolved", {**_assist_job_payload(job, user, mode, debug_mode), "resolved_job_url": resolved_url})
+        if mode == "submit_with_confirmation":
+            _validate_jobserve_submit(db, job, user, profile)
+        candidates = profile_field_candidates(user, profile)
+        warnings = _safety_warnings(job)
         if browser_runner:
-            result = browser_runner(job.canonical_url, candidates, profile, mode, job.apply_strategy)
+            result = browser_runner(resolved_url, candidates, profile, mode, job.apply_strategy)
         elif debug_mode:
             result = run_playwright_assist(
-                job.canonical_url,
+                resolved_url,
                 candidates,
                 profile=profile,
                 mode=mode,
@@ -102,7 +112,7 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
             )
         else:
             result = run_playwright_assist(
-                job.canonical_url,
+                resolved_url,
                 candidates,
                 profile=profile,
                 mode=mode,
@@ -111,12 +121,24 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
                 job_context=jobserve_job_context(job),
                 progress_callback=progress_callback,
             )
-    except BrowserAutomationError:
+    except BrowserAutomationError as exc:
+        _store_assist_failure(db, job, exc.message, error=exc.error, exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
         raise
     except RuntimeError as exc:
+        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
         raise ValueError(str(exc)) from exc
+    except Exception as exc:
+        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
+        raise
 
+    existing_result = job.assisted_result or {}
     result.warnings[:] = [*warnings, *result.warnings]
+    if not result.debug_steps and isinstance(existing_result, dict):
+        result.debug_steps = list(existing_result.get("debug_steps") or [])
+    if not result.progress and isinstance(existing_result, dict):
+        result.progress = existing_result.get("progress")
+    if not result.jobserve_flow_diagnostics and isinstance(existing_result, dict):
+        result.jobserve_flow_diagnostics = existing_result.get("jobserve_flow_diagnostics")
     job.assisted_result = result.model_dump()
     job.assisted_warnings = result.warnings
     logger.info(
@@ -156,10 +178,25 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
         if job is None or user is None:
             logger.error("assist_apply_worker_missing_record service_type=%s application_id=%s user_id=%s", settings.service_type, application_id, user_id)
             return
+        logger.info(
+            "assist_apply_worker_context service_type=%s application_id=%s user_id=%s title=%s company=%s canonical_url=%s apply_url=%s source_job_id=%s original_external_id=%s apply_strategy=%s mode=%s debug_mode=%s",
+            settings.service_type,
+            application_id,
+            user_id,
+            job.title,
+            job.company_name,
+            job.canonical_url,
+            job.canonical_url,
+            job.source_job_id,
+            job.original_external_id,
+            job.apply_strategy,
+            mode,
+            debug_mode,
+        )
         try:
             assist_apply_application(db, job, user, mode=mode, debug_mode=debug_mode)
         except BrowserAutomationError as exc:
-            _store_assist_failure(db, job, exc.message, error=exc.error)
+            _store_assist_failure(db, job, exc.message, error=exc.error, exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
             logger.exception(
                 "assist_apply_worker_browser_error service_type=%s application_id=%s error_code=%s error=%s",
                 settings.service_type,
@@ -168,7 +205,7 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
                 exc.message,
             )
         except Exception as exc:  # noqa: BLE001
-            _store_assist_failure(db, job, str(exc))
+            _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
             logger.exception("assist_apply_worker_failed service_type=%s application_id=%s error=%s", settings.service_type, application_id, exc)
         else:
             logger.info("assist_apply_worker_completed service_type=%s application_id=%s", settings.service_type, application_id)
@@ -188,7 +225,22 @@ def queued_assist_apply_result() -> AssistApplyResult:
     )
 
 
-def _store_assist_failure(db: Session, job: Job, message: str, *, error: str | None = None) -> None:
+def _store_assist_failure(
+    db: Session,
+    job: Job,
+    message: str,
+    *,
+    error: str | None = None,
+    exc: BaseException | None = None,
+    running_step: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    exception_payload = _exception_payload(running_step or "assist_apply", exc) if exc is not None else None
+    diagnostics = {
+        **(extra or {}),
+        "browser_diagnostics": _browser_startup_diagnostics(),
+        "running_step": running_step,
+    }
     result = AssistApplyResult(
         status="failed",
         filled_fields=[],
@@ -198,6 +250,11 @@ def _store_assist_failure(db: Session, job: Job, message: str, *, error: str | N
         submitted=False,
         warnings=[f"{error}: {message}" if error else message],
         screenshot_path=None,
+        final_error=message,
+        progress={"current_step": running_step or "failed", "last_heartbeat_at": utcnow().isoformat(), "message": message},
+        timing_diagnostics={"total_runtime_ms": 0},
+        jobserve_flow_diagnostics=diagnostics,
+        exceptions=[exception_payload] if exception_payload else [],
     )
     job.assisted_result = result.model_dump()
     job.assisted_warnings = result.warnings
@@ -223,10 +280,20 @@ def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str
         "submitted": existing.get("submitted", False),
         "warnings": existing.get("warnings", []),
         "screenshot_path": existing.get("screenshot_path"),
+        "running_step": step,
         "progress": progress,
         "timing_diagnostics": {**existing.get("timing_diagnostics", {}), "total_runtime_ms": progress["elapsed_ms"]},
         "debug_steps": [*existing.get("debug_steps", []), {"step": step, **payload}][-100:],
     }
+    job.last_apply_attempt_at = utcnow()
+    db.commit()
+
+
+def mark_queued_assist(db: Session, job: Job, *, mode: str, debug_mode: bool) -> None:
+    result = queued_assist_apply_result().model_dump()
+    result["debug_steps"] = [{"step": "queued", **_assist_job_payload(job, None, mode, debug_mode)}]
+    result["jobserve_flow_diagnostics"] = _assist_failure_context(job, mode, debug_mode)
+    job.assisted_result = result
     job.last_apply_attempt_at = utcnow()
     db.commit()
 
@@ -306,6 +373,16 @@ def jobserve_job_context(job: Job) -> dict[str, Any]:
     }
 
 
+def _resolve_assist_apply_url(job: Job) -> str:
+    url = str(job.canonical_url or "").strip()
+    if "jobserve" in str(job.apply_strategy or "").lower() or "jobserve.com" in url.lower():
+        if not _jobserve_should_try_direct_url(url):
+            raise ValueError("missing_saved_jobserve_url")
+    if not url:
+        raise ValueError("Missing apply URL.")
+    return url
+
+
 def _jobserve_should_try_direct_url(url: str | None) -> bool:
     if not url:
         return False
@@ -315,6 +392,56 @@ def _jobserve_should_try_direct_url(url: str | None) -> bool:
     if "job-search" in lowered or "jobsearch" in lowered:
         return False
     return any(token in lowered for token in ["/job/", "jobid", "job=", "fasttrack", "apply"])
+
+
+def _assist_job_payload(job: Job, user: User | None, mode: str, debug_mode: bool) -> dict[str, Any]:
+    return {
+        "application_id": job.id,
+        "user_id": getattr(user, "id", None),
+        "job_title": job.title,
+        "job_company": job.company_name,
+        "canonical_url": job.canonical_url,
+        "apply_url": job.canonical_url,
+        "source_job_id": job.source_job_id,
+        "original_external_id": job.original_external_id,
+        "apply_strategy": job.apply_strategy,
+        "mode": mode,
+        "debug_mode": debug_mode,
+    }
+
+
+def _assist_failure_context(job: Job, mode: str, debug_mode: bool) -> dict[str, Any]:
+    return {
+        **_assist_job_payload(job, None, mode, debug_mode),
+        "resolved_job_url": str(job.canonical_url or "").strip(),
+        "browser_diagnostics": _browser_startup_diagnostics(),
+    }
+
+
+def _browser_startup_diagnostics(*, browser_launch_succeeded: bool | None = None, launch_duration_ms: int | None = None, headless: bool | None = None) -> dict[str, Any]:
+    diagnostics = chromium_diagnostics()
+    return {
+        "playwright_enabled": settings.playwright_enabled,
+        "service_type": settings.service_type,
+        "app_env": settings.app_env,
+        "render": bool(os.environ.get("RENDER")),
+        "chromium_executable_path": diagnostics.get("chromium_executable_path"),
+        "chromium_file_exists": diagnostics.get("chromium_file_exists"),
+        "chromium_file_executable": diagnostics.get("chromium_file_executable"),
+        "playwright_browsers_path": diagnostics.get("playwright_browsers_path"),
+        "browser_launch_succeeded": browser_launch_succeeded,
+        "launch_duration_ms": launch_duration_ms,
+        "headless": headless,
+        "timeout_ms": 30000,
+    }
+
+
+def _current_assist_step(job: Job) -> str | None:
+    existing = job.assisted_result or {}
+    progress = existing.get("progress") if isinstance(existing, dict) else {}
+    if isinstance(progress, dict):
+        return progress.get("current_step") or existing.get("running_step")
+    return existing.get("running_step") if isinstance(existing, dict) else None
 
 
 def classify_form_field(label_text: str, input_type: str = "", autocomplete: str = "", name: str = "", placeholder: str = "") -> str | None:
@@ -385,21 +512,30 @@ def run_playwright_assist(
         with sync_playwright() as playwright:
             executable_path = chromium_executable_path()
             launch_options = {"headless": headless}
+            launch_options["timeout"] = 30000
             if executable_path:
                 launch_options["executable_path"] = executable_path
             browser_started = time.perf_counter()
             if progress_callback:
-                progress_callback("browser_startup", {"launch_options": {key: value for key, value in launch_options.items() if key != "executable_path"}})
+                progress_callback("browser_launch_start", {"launch_options": {key: value for key, value in launch_options.items() if key != "executable_path"}, "browser_diagnostics": _browser_startup_diagnostics(headless=headless)})
             browser = playwright.chromium.launch(**launch_options)
             timing_diagnostics["browser_startup_ms"] = int((time.perf_counter() - browser_started) * 1000)
+            if progress_callback:
+                progress_callback("browser_launch_success", {"browser_diagnostics": _browser_startup_diagnostics(browser_launch_succeeded=True, launch_duration_ms=timing_diagnostics["browser_startup_ms"], headless=headless)})
             keep_open_for_review = not headless
             try:
+                if progress_callback:
+                    progress_callback("context_created", {"context_count": len(getattr(browser, "contexts", []) or [])})
                 page = browser.new_page()
+                if progress_callback:
+                    progress_callback("page_created", {"url": page.url})
                 page.set_default_timeout(settings.playwright_step_timeout_ms)
                 page.set_default_navigation_timeout(settings.page_navigation_timeout_ms)
                 if apply_strategy == "jobserve_apply_easy":
                     if _jobserve_should_try_direct_url(url):
                         try:
+                            if progress_callback:
+                                progress_callback("navigating_to_job_url", {"url": url, "job_context": job_context or {"canonical_url": url}})
                             result = _run_jobserve_modal(
                                 page,
                                 browser,
@@ -413,6 +549,8 @@ def run_playwright_assist(
                                 job_context=job_context or {"canonical_url": url},
                                 direct_url=url,
                             )
+                            if progress_callback:
+                                progress_callback("job_page_loaded", {"final_url": result.final_url, "jobserve_flow_diagnostics": result.jobserve_flow_diagnostics})
                             result.timing_diagnostics = {**result.timing_diagnostics, **timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)}
                             return result
                         except RuntimeError as exc:
@@ -432,6 +570,8 @@ def run_playwright_assist(
                             )
 
                     try:
+                        if progress_callback:
+                            progress_callback("jobserve_flow_started", {"mode": "search_to_apply", "url": url, "job_context": job_context or {"canonical_url": url}})
                         result = _run_jobserve_search_to_apply(
                             page,
                             browser,
@@ -465,7 +605,11 @@ def run_playwright_assist(
                         )
                         result.timing_diagnostics = {**result.timing_diagnostics, **timing_diagnostics, "total_runtime_ms": int((time.perf_counter() - total_started) * 1000)}
                         return result
+                if progress_callback:
+                    progress_callback("navigating_to_job_url", {"url": url})
                 page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                if progress_callback:
+                    progress_callback("job_page_loaded", {"final_url": page.url})
                 if _captcha_visible(page):
                     warnings.append("Captcha detected; manual review required.")
                 fields = page.locator("input, textarea, select").all()
@@ -518,6 +662,8 @@ def run_playwright_assist(
         message = str(exc)
         if "Executable doesn't exist" in message or "playwright install" in message:
             raise BrowserAutomationError("chromium_not_installed", "Playwright Chromium is not installed in this environment.") from exc
+        if "timeout" in message.lower() and "30000" in message:
+            raise BrowserAutomationError("browser_startup_timeout", "Browser startup timed out after 30 seconds.") from exc
         raise BrowserAutomationError("worker_unavailable", "Browser automation worker is offline.") from exc
 
 

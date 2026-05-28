@@ -10,7 +10,7 @@ from app.config import settings
 from app.db.models import Job, User
 from app.db.session import get_db
 from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyRequest, AssistApplyResult
-from app.services.apply_agent import BrowserAutomationError, assist_apply_application, queued_assist_apply_result, run_assist_apply_background
+from app.services.apply_agent import BrowserAutomationError, assist_apply_application, mark_queued_assist, queued_assist_apply_result, run_assist_apply_background
 from app.services.applications import (
     get_prepare_applications_run_status,
     list_applications,
@@ -76,6 +76,7 @@ def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload
     mode = payload.mode if payload else "review_only"
     debug_mode = bool(payload.debug_mode) if payload else False
     if queue_enabled():
+        mark_queued_assist(db, job, mode=mode, debug_mode=debug_mode)
         enqueue_or_background(
             background_tasks,
             run_assist_apply_background,
