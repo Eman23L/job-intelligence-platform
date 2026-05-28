@@ -174,6 +174,46 @@ def test_jobserve_missing_saved_specific_url_fails_before_browser_launch(db_sess
     assert job.assisted_result["status"] == "failed"
     assert job.assisted_result["final_error"] == "missing_saved_jobserve_url"
     assert job.assisted_result["jobserve_flow_diagnostics"]["canonical_url"] == "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["url_resolution"]["rejected_urls"][0]["reason"] == "generic_jobserve_search_url"
+
+
+def test_jobserve_seo_style_url_is_accepted(db_session, monkeypatch) -> None:
+    seo_url = "https://www.jobserve.com/gb/en/search-jobs-in-London,-London,-United-Kingdom/SC-CLEARED-AI-ML-ENGINEER-327CC8F570D6AB55A"
+    user, job = _seed_application(db_session, jobserve=True, url=seo_url)
+    job.source_job_id = "327CC8F570D6AB55A"
+    db_session.commit()
+    seen: dict[str, str] = {}
+
+    def runner(url, candidates, profile, mode, apply_strategy):
+        seen["url"] = url
+        return AssistApplyResult(status="review_required")
+
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+
+    apply_agent.assist_apply_application(db_session, job, user, browser_runner=runner)
+
+    assert seen["url"] == seo_url
+
+
+def test_jobserve_url_resolution_prefers_apply_url_then_canonical_url(db_session) -> None:
+    apply_url = "https://www.jobserve.com/gb/en/search-jobs-in-London,-London,-United-Kingdom/APPLY-URL-327CC8F570D6AB55A"
+    canonical_url = "https://www.jobserve.com/gb/en/search-jobs-in-London,-London,-United-Kingdom/CANONICAL-URL-327CC8F570D6AB55A"
+    _user, job = _seed_application(db_session, jobserve=True, url=canonical_url)
+    job.source_job_id = "327CC8F570D6AB55A"
+    job.apply_url = apply_url
+    db_session.commit()
+
+    assert apply_agent._resolve_assist_apply_url(job) == apply_url
+    diagnostics = apply_agent._resolve_assist_apply_url_diagnostics(job)
+    assert diagnostics["selected_url_source"] == "apply_url"
+
+
+def test_jobserve_url_resolution_reconstructs_from_source_id_only_when_needed(db_session) -> None:
+    _user, job = _seed_application(db_session, jobserve=True, url="https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture")
+    job.source_job_id = "327CC8F570D6AB55A"
+    db_session.commit()
+
+    assert apply_agent._resolve_assist_apply_url(job) == "https://www.jobserve.com/gb/en/job/327CC8F570D6AB55A"
 
 
 def test_browser_launch_exception_persists_failed_result(db_session, monkeypatch) -> None:
@@ -464,6 +504,7 @@ def test_jobserve_auto_selected_identity_mismatch_requires_result_selection() ->
 def test_jobserve_direct_job_url_is_preferred_over_search_url() -> None:
     assert apply_agent._jobserve_should_try_direct_url("https://www.jobserve.com/gb/en/job/ABC123") is True
     assert apply_agent._jobserve_should_try_direct_url("https://www.jobserve.com/FastTrack/Apply.aspx?jobid=ABC123") is True
+    assert apply_agent._jobserve_should_try_direct_url("https://www.jobserve.com/gb/en/search-jobs-in-London,-London,-United-Kingdom/SC-CLEARED-AI-ML-ENGINEER-327CC8F570D6AB55A") is True
     assert apply_agent._jobserve_should_try_direct_url("https://www.jobserve.com/gb/en/Job-Search/") is False
 
 

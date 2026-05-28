@@ -9,6 +9,7 @@ import re
 import time
 import traceback
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -178,6 +179,7 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
         if job is None or user is None:
             logger.error("assist_apply_worker_missing_record service_type=%s application_id=%s user_id=%s", settings.service_type, application_id, user_id)
             return
+        url_resolution = _resolve_assist_apply_url_diagnostics(job)
         logger.info(
             "assist_apply_worker_context service_type=%s application_id=%s user_id=%s title=%s company=%s canonical_url=%s apply_url=%s source_job_id=%s original_external_id=%s apply_strategy=%s mode=%s debug_mode=%s",
             settings.service_type,
@@ -186,7 +188,7 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
             job.title,
             job.company_name,
             job.canonical_url,
-            job.canonical_url,
+            url_resolution["raw_apply_url"],
             job.source_job_id,
             job.original_external_id,
             job.apply_strategy,
@@ -370,38 +372,133 @@ def jobserve_job_context(job: Job) -> dict[str, Any]:
         "source_job_id": job.source_job_id,
         "original_external_id": job.original_external_id,
         "canonical_url": job.canonical_url,
+        "apply_url": getattr(job, "apply_url", None) or job.canonical_url,
     }
 
 
 def _resolve_assist_apply_url(job: Job) -> str:
-    url = str(job.canonical_url or "").strip()
-    if "jobserve" in str(job.apply_strategy or "").lower() or "jobserve.com" in url.lower():
-        if not _jobserve_should_try_direct_url(url):
-            raise ValueError("missing_saved_jobserve_url")
-    if not url:
+    diagnostics = _resolve_assist_apply_url_diagnostics(job)
+    selected_url = str(diagnostics.get("selected_url") or "").strip()
+    if selected_url:
+        logger.info(
+            "assist_apply_url_resolved application_id=%s selected_url=%s raw_apply_url=%s raw_canonical_url=%s raw_job_url=%s source_job_id=%s rejected_urls=%s",
+            job.id,
+            selected_url,
+            diagnostics.get("raw_apply_url"),
+            diagnostics.get("raw_canonical_url"),
+            diagnostics.get("raw_job_url"),
+            diagnostics.get("source_job_id"),
+            diagnostics.get("rejected_urls"),
+        )
+        return selected_url
+    if diagnostics.get("is_jobserve"):
+        logger.warning(
+            "assist_apply_url_resolution_failed application_id=%s reason=missing_saved_jobserve_url raw_apply_url=%s raw_canonical_url=%s raw_job_url=%s source_job_id=%s rejected_urls=%s",
+            job.id,
+            diagnostics.get("raw_apply_url"),
+            diagnostics.get("raw_canonical_url"),
+            diagnostics.get("raw_job_url"),
+            diagnostics.get("source_job_id"),
+            diagnostics.get("rejected_urls"),
+        )
+        raise ValueError("missing_saved_jobserve_url")
+    if not str(job.canonical_url or "").strip():
         raise ValueError("Missing apply URL.")
-    return url
+    raise ValueError("Missing apply URL.")
 
 
-def _jobserve_should_try_direct_url(url: str | None) -> bool:
+def _resolve_assist_apply_url_diagnostics(job: Job) -> dict[str, Any]:
+    raw_apply_url = str(getattr(job, "apply_url", None) or "").strip()
+    raw_canonical_url = str(getattr(job, "canonical_url", None) or "").strip()
+    raw_job_url = str(getattr(job, "url", None) or "").strip()
+    identifiers = [str(value).strip() for value in [getattr(job, "source_job_id", None), getattr(job, "original_external_id", None)] if str(value or "").strip()]
+    is_jobserve = "jobserve" in str(getattr(job, "apply_strategy", "") or "").lower() or any("jobserve.com" in url.lower() for url in [raw_apply_url, raw_canonical_url, raw_job_url])
+    diagnostics: dict[str, Any] = {
+        "raw_apply_url": raw_apply_url,
+        "raw_canonical_url": raw_canonical_url,
+        "raw_job_url": raw_job_url,
+        "source_job_id": getattr(job, "source_job_id", None),
+        "original_external_id": getattr(job, "original_external_id", None),
+        "selected_url": None,
+        "selected_url_source": None,
+        "is_jobserve": is_jobserve,
+        "rejected_urls": [],
+    }
+    seen: set[str] = set()
+    candidates = [("apply_url", raw_apply_url), ("canonical_url", raw_canonical_url), ("job_url", raw_job_url)]
+    for source, url in candidates:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        if not is_jobserve:
+            diagnostics["selected_url"] = url
+            diagnostics["selected_url_source"] = source
+            return diagnostics
+        valid, reason = _jobserve_specific_url_status(url, identifiers=identifiers)
+        if valid:
+            diagnostics["selected_url"] = url
+            diagnostics["selected_url_source"] = source
+            return diagnostics
+        diagnostics["rejected_urls"].append({"source": source, "url": url, "reason": reason})
+    if is_jobserve:
+        reconstructed = _jobserve_reconstruct_url_from_id(identifiers)
+        if reconstructed:
+            diagnostics["selected_url"] = reconstructed
+            diagnostics["selected_url_source"] = "source_job_id"
+    return diagnostics
+
+
+def _jobserve_should_try_direct_url(url: str | None, *, source_job_id: str | None = None, original_external_id: str | None = None) -> bool:
+    valid, _reason = _jobserve_specific_url_status(url, identifiers=[source_job_id, original_external_id])
+    return valid
+
+
+def _jobserve_specific_url_status(url: str | None, *, identifiers: list[str | None] | None = None) -> tuple[bool, str | None]:
     if not url:
-        return False
+        return False, "empty_url"
     lowered = url.lower()
     if "jobserve.com" not in lowered:
-        return False
-    if "job-search" in lowered or "jobsearch" in lowered:
-        return False
-    return any(token in lowered for token in ["/job/", "jobid", "job=", "fasttrack", "apply"])
+        return False, "not_jobserve"
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    if "jobsearch.aspx" in path or path.rstrip("/").endswith("/job-search"):
+        return False, "generic_jobserve_search_url"
+    cleaned_identifiers = [str(identifier).strip().lower() for identifier in identifiers or [] if str(identifier or "").strip()]
+    if any(identifier and identifier in lowered for identifier in cleaned_identifiers):
+        return True, None
+    if any(token in lowered for token in ["/job/", "jobid", "job=", "fasttrack", "apply"]):
+        return True, None
+    slug = path.rstrip("/").split("/")[-1]
+    if "search-jobs-in-" in path and re.search(r"-[a-z0-9]{8,}$", slug, re.I):
+        return True, None
+    if re.search(r"(?:^|[?&])job(?:id)?=[a-z0-9-]{6,}", query, re.I):
+        return True, None
+    return False, "jobserve_url_not_specific"
+
+
+def _jobserve_reconstruct_url_from_id(identifiers: list[str]) -> str | None:
+    for identifier in identifiers:
+        if re.fullmatch(r"[A-Za-z0-9]{8,}", identifier):
+            return f"https://www.jobserve.com/gb/en/job/{identifier}"
+    return None
 
 
 def _assist_job_payload(job: Job, user: User | None, mode: str, debug_mode: bool) -> dict[str, Any]:
+    url_resolution = _resolve_assist_apply_url_diagnostics(job)
     return {
         "application_id": job.id,
         "user_id": getattr(user, "id", None),
         "job_title": job.title,
         "job_company": job.company_name,
         "canonical_url": job.canonical_url,
-        "apply_url": job.canonical_url,
+        "apply_url": url_resolution["raw_apply_url"] or job.canonical_url,
+        "raw_apply_url": url_resolution["raw_apply_url"],
+        "raw_canonical_url": url_resolution["raw_canonical_url"],
+        "raw_job_url": url_resolution["raw_job_url"],
+        "selected_url": url_resolution["selected_url"],
+        "selected_url_source": url_resolution["selected_url_source"],
+        "rejected_urls": url_resolution["rejected_urls"],
         "source_job_id": job.source_job_id,
         "original_external_id": job.original_external_id,
         "apply_strategy": job.apply_strategy,
@@ -411,9 +508,11 @@ def _assist_job_payload(job: Job, user: User | None, mode: str, debug_mode: bool
 
 
 def _assist_failure_context(job: Job, mode: str, debug_mode: bool) -> dict[str, Any]:
+    url_resolution = _resolve_assist_apply_url_diagnostics(job)
     return {
         **_assist_job_payload(job, None, mode, debug_mode),
-        "resolved_job_url": str(job.canonical_url or "").strip(),
+        "resolved_job_url": url_resolution["selected_url"] or str(job.canonical_url or "").strip(),
+        "url_resolution": url_resolution,
         "browser_diagnostics": _browser_startup_diagnostics(),
     }
 
