@@ -2,6 +2,7 @@ import logging
 from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -96,6 +97,15 @@ def source_scrape_run_status(run_id: int, db: Session = Depends(get_db)):
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scrape run not found")
     return result
+
+
+@router.get("/jobserve/debug-artifacts/{filename}")
+def jobserve_debug_artifact(filename: str):
+    path = source_scraping.jobserve_debug_artifact_path(filename)
+    if path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    media_type = "image/png" if path.suffix.lower() == ".png" else "text/html"
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @router.post("/from-url", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED)

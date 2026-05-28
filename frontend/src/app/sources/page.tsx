@@ -417,6 +417,80 @@ export default function SourcesPage() {
                 <strong>{jobServeResult.skipped}</strong>
               </div>
             </div>
+            {jobServeResult.diagnostics ? (
+              <div className="debug-panel">
+                <h4>JobServe debug</h4>
+                <div className="metric-list">
+                  <div className="metric-row">
+                    <span>Page title</span>
+                    <strong>{String(jobServeResult.diagnostics.page_title ?? "Unknown")}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Jobs text</span>
+                    <strong>{String(jobServeResult.diagnostics.detected_jobs_for_text ?? jobServeResult.diagnostics.visible_result_count_text ?? "None")}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>.jobItem count</span>
+                    <strong>{String(jobServeResult.diagnostics.job_item_count ?? jobServeResult.diagnostics.left_list_result_cards_detected ?? 0)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Candidate cards</span>
+                    <strong>{String(jobServeResult.diagnostics.possible_result_list_item_count ?? 0)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Parser mode</span>
+                    <strong>{String(jobServeResult.diagnostics.parser_mode ?? "unknown")}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Zero reason</span>
+                    <strong>{String(jobServeResult.diagnostics.zero_result_reason ?? "none")}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Cookie banner</span>
+                    <strong>{String(Boolean(jobServeResult.diagnostics.cookie_banner_exists ?? jobServeResult.diagnostics.cookie_or_consent_present))}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Blocked flags</span>
+                    <strong>
+                      {[
+                        jobServeResult.diagnostics.captcha_present ? "captcha" : null,
+                        jobServeResult.diagnostics.cloudflare_present ? "cloudflare" : null,
+                        jobServeResult.diagnostics.access_denied_present ? "access denied" : null,
+                        jobServeResult.diagnostics.no_results_present ? "no results" : null
+                      ]
+                        .filter(Boolean)
+                        .join(", ") || "none"}
+                    </strong>
+                  </div>
+                </div>
+                {Array.isArray(jobServeResult.diagnostics.artifact_urls) && jobServeResult.diagnostics.artifact_urls.length ? (
+                  <div className="artifact-links">
+                    {(jobServeResult.diagnostics.artifact_urls as string[]).map((url) => (
+                      <a key={url} className="table-link" href={url} target="_blank" rel="noreferrer">
+                        {url.endsWith(".png") ? "Open screenshot" : "Open HTML snapshot"}
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
+                <details>
+                  <summary>Visible text</summary>
+                  <pre>{String(jobServeResult.diagnostics.visible_text_first_2000 ?? "")}</pre>
+                </details>
+                <details>
+                  <summary>First result texts</summary>
+                  <pre>
+                    {JSON.stringify(
+                      jobServeResult.diagnostics.first_10_job_item_texts ??
+                        jobServeResult.diagnostics.first_10_candidate_job_card_texts ??
+                        jobServeResult.diagnostics.first_10_visible_left_list_result_texts ??
+                        [],
+                      null,
+                      2
+                    )}
+                  </pre>
+                </details>
+              </div>
+            ) : null}
             <a className="table-link" href="/jobs">
               View jobs from this source
             </a>

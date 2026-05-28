@@ -420,6 +420,57 @@ def test_jobserve_search_diagnostics_detects_real_no_results_page(monkeypatch, t
     assert diagnostics["search_form"]["remote_only_unchecked"] is True
     assert diagnostics["search_form"]["search_button_clicked"] is True
     assert diagnostics["search_form"]["results_loaded"] is True
+    assert diagnostics["zero_result_reason"] == "jobserve_no_results"
+    assert diagnostics["html_snapshot_url"].startswith("/sources/jobserve/debug-artifacts/")
+    assert diagnostics["screenshot_url"].startswith("/sources/jobserve/debug-artifacts/")
+    assert diagnostics["artifact_urls"]
+
+
+def test_jobserve_search_diagnostics_detects_cookie_banner(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(source_scraping, "JOBSERVE_SCRAPE_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(source_scraping, "_capture_jobserve_debug_screenshot", lambda url: None)
+    html = """
+    <html><body>
+      <div>This website works best using cookies which are currently disabled.</div>
+      <button>Allow essential cookies</button>
+      <button>Allow all cookies</button>
+    </body></html>
+    """
+
+    diagnostics = source_scraping._jobserve_search_diagnostics(html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=cookie", 200, JobServeSearchScrapeRequest(keywords="AI"))
+
+    assert diagnostics["cookie_banner_exists"] is True
+    assert diagnostics["allow_all_cookies_exists"] is True
+    assert diagnostics["allow_essential_cookies_exists"] is True
+
+
+def test_jobserve_zero_extraction_with_jobs_text_is_parser_failure(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(source_scraping, "JOBSERVE_SCRAPE_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(source_scraping, "_capture_jobserve_debug_screenshot", lambda url: None)
+    html = "<html><body><h4 class='jobshead'>495 jobs for AI</h4><div>layout changed</div></body></html>"
+
+    diagnostics = source_scraping._jobserve_search_diagnostics(html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=parserfail", 200, JobServeSearchScrapeRequest(keywords="AI"))
+
+    assert diagnostics["job_item_count"] == 0
+    assert diagnostics["possible_result_list_item_count"] == 0
+    assert diagnostics["zero_result_reason"] == "parser_failure_result_count_without_cards"
+    assert diagnostics["html_snapshot_url"].startswith("/sources/jobserve/debug-artifacts/")
+
+
+def test_jobserve_wait_for_delayed_result_markers() -> None:
+    calls: list[str] = []
+
+    class FakePage:
+        def wait_for_function(self, script, timeout):
+            calls.append(script)
+            assert timeout == 12000
+
+        def wait_for_timeout(self, timeout):
+            raise AssertionError("fallback wait should not run")
+
+    source_scraping._wait_for_jobserve_result_markers(FakePage())
+
+    assert calls and ".jobItem" in calls[0]
 
 
 def test_jobserve_search_diagnostics_does_not_call_results_zero_when_rows_exist(monkeypatch, tmp_path) -> None:

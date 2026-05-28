@@ -37,6 +37,7 @@ from app.scrapers.jobserve import JobServeAdapter, JobServeSourceAdapter, extrac
 from app.scrapers.jobserve import extract_jobserve_job_ids
 from app.scrapers.utils.hashing import content_hash
 from app.services.analysis import analyse_job
+from app.services.browser_automation import chromium_diagnostics
 from app.services.job_validation import validate_normalised_job
 from app.services.job_availability import check_jobs_availability
 from app.services.link_discovery import discover_links
@@ -475,6 +476,17 @@ def _fetch_jobserve_search_results(payload: JobServeSearchScrapeRequest) -> JobS
     base_url = build_jobserve_search_url(payload)
     session = requests.Session()
     headers = {"User-Agent": BROWSER_USER_AGENT}
+    LOGGER.info(
+        "JobServe search scrape starting keywords=%s location=%s distance=%s posted=%s job_type=%s remote_only=%s max_pages=%s user_agent=%s",
+        payload.keywords,
+        payload.location,
+        payload.distance,
+        _posted_within_label(payload),
+        payload.job_type,
+        payload.remote_only,
+        payload.max_pages,
+        BROWSER_USER_AGENT,
+    )
     initial = session.get(base_url, headers=headers, timeout=20)
     initial.raise_for_status()
     form_data, action_url = _jobserve_search_form_payload(initial.text, base_url, payload)
@@ -495,6 +507,17 @@ def _fetch_jobserve_search_results(payload: JobServeSearchScrapeRequest) -> JobS
             visible_results = rendered["visible_results"]
             job_ids = extract_jobserve_job_ids(html)
     diagnostics = _jobserve_search_diagnostics(html, response.url, response.status_code, payload, form_data=form_data)
+    LOGGER.info(
+        "JobServe search scrape parsed final_url=%s title=%s result_count_text=%s job_ids=%s job_items=%s possible_cards=%s parser_mode=%s zero_result_reason=%s",
+        response.url,
+        diagnostics.get("page_title"),
+        diagnostics.get("visible_result_count_text"),
+        diagnostics.get("job_id_count"),
+        diagnostics.get("job_item_count"),
+        diagnostics.get("possible_result_list_item_count"),
+        diagnostics.get("parser_mode"),
+        diagnostics.get("zero_result_reason"),
+    )
     return JobServeSearchResultPage(
         url=response.url,
         html=html,
@@ -519,32 +542,56 @@ def _jobserve_search_diagnostics(
     hidden_job_ids = _extract_jobserve_hidden_job_ids(html)
     visible_results = extract_jobserve_visible_results(html)
     selected_detail = _jobserve_selected_detail_diagnostics(soup)
+    page_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    job_item_texts = _jobserve_selector_texts(soup, ".jobItem")
+    candidate_card_texts = _jobserve_candidate_card_texts(soup)
+    cookie_banner_exists = _jobserve_page_has_any(html, ["cookie policy", "allow all cookies", "allow essential cookies"])
+    blocked_flags = _jobserve_blocked_page_flags(page_text, html)
+    parser_mode = "hidden_job_ids" if hidden_job_ids else ("left_list_job_items" if visible_results else "none")
+    zero_result_reason = _jobserve_zero_result_reason(job_ids, visible_results, blocked_flags, diagnostics_result_count := _jobserve_visible_result_count_text(soup))
     diagnostics: dict[str, Any] = {
         "final_url": final_url,
         "current_url": final_url,
         "status_code": status_code,
         "page_title": extract_page_title(html),
+        "visible_text_first_2000": page_text[:2000],
         "visible_text_around_jobs_for": _jobserve_text_around_jobs_for(soup),
-        "visible_result_count_text": _jobserve_visible_result_count_text(soup),
+        "detected_jobs_for_text": _jobserve_text_around_jobs_for(soup),
+        "visible_result_count_text": diagnostics_result_count,
+        "detected_result_count_text": diagnostics_result_count,
         "hidden_job_id_count": len(hidden_job_ids),
         "job_id_count": len(job_ids),
         "detected_result_rows": len(visible_results) or len(job_ids),
         "left_list_result_cards_detected": len(visible_results),
+        "job_item_count": len(soup.select(".jobItem")),
+        "possible_result_list_item_count": len(candidate_card_texts),
         "first_visible_results": visible_results[:10],
         "first_10_visible_left_list_result_texts": [item.get("text", "") for item in visible_results[:10]],
+        "first_10_job_item_texts": job_item_texts[:10],
+        "first_10_candidate_job_card_texts": candidate_card_texts[:10],
         "selected_detail_title": selected_detail.get("title", ""),
         "selected_detail_company": selected_detail.get("company", ""),
         "selected_detail_reference": selected_detail.get("reference", ""),
         "cookie_or_consent_present": _jobserve_page_has_any(html, ["cookie", "consent", "privacy settings"]),
-        "captcha_present": _jobserve_page_has_any(html, ["captcha", "recaptcha", "verify you are human"]),
+        "cookie_banner_exists": cookie_banner_exists,
+        "allow_all_cookies_exists": "allow all cookies" in page_text.lower(),
+        "allow_essential_cookies_exists": "allow essential cookies" in page_text.lower(),
+        "captcha_present": blocked_flags["captcha"],
+        "cloudflare_present": blocked_flags["cloudflare"],
+        "access_denied_present": blocked_flags["access_denied"],
         "no_results_present": _jobserve_no_results_present(html),
+        "parser_mode": parser_mode,
+        "zero_result_reason": zero_result_reason,
         "search_form": _jobserve_search_form_diagnostics(form_data or {}, payload),
     }
     diagnostics["search_form"]["results_loaded"] = bool(job_ids or visible_results or diagnostics["visible_result_count_text"] or diagnostics["no_results_present"])
     capture_screenshot = not job_ids or os.environ.get("JOBSERVE_SCRAPE_SCREENSHOT") == "1"
     if not job_ids:
         diagnostics["html_snapshot_path"] = _write_jobserve_debug_html(html, "zero-results")
+        diagnostics["html_snapshot_url"] = _jobserve_artifact_url(diagnostics.get("html_snapshot_path"))
     diagnostics["screenshot_path"] = _capture_jobserve_debug_screenshot(final_url) if capture_screenshot and final_url else None
+    diagnostics["screenshot_url"] = _jobserve_artifact_url(diagnostics.get("screenshot_path"))
+    diagnostics["artifact_urls"] = [url for url in [diagnostics.get("html_snapshot_url"), diagnostics.get("screenshot_url")] if url]
     diagnostics["screenshot_capture"] = "captured" if diagnostics["screenshot_path"] else ("skipped_nonzero_results" if not capture_screenshot else "unavailable")
     LOGGER.info("JobServe search diagnostics %s", diagnostics)
     return diagnostics
@@ -570,6 +617,64 @@ def _extract_jobserve_hidden_job_ids(html: str) -> list[str]:
     field = soup.find("input", id="jobIDs") or soup.find("input", attrs={"name": "ctl00$main$jobIDs"})
     value = str(field.get("value") or "") if field else ""
     return _dedupe_strings([item.strip() for item in re.split(r"[#%,\|;\s]+", value) if item.strip()])
+
+
+def _jobserve_selector_texts(soup: BeautifulSoup, selector: str) -> list[str]:
+    texts: list[str] = []
+    for node in soup.select(selector):
+        text = re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+        if text:
+            texts.append(text[:1000])
+    return texts
+
+
+def _jobserve_candidate_card_texts(soup: BeautifulSoup) -> list[str]:
+    selectors = [
+        ".jobItem",
+        ".jobsum",
+        "[class*=jobResults]",
+        "[class*=job-result]",
+        "[class*=result]",
+        "[data-jobid]",
+        "[data-job-id]",
+    ]
+    seen: set[str] = set()
+    texts: list[str] = []
+    for selector in selectors:
+        for text in _jobserve_selector_texts(soup, selector):
+            if text in seen or len(text) < 10:
+                continue
+            seen.add(text)
+            texts.append(text)
+            if len(texts) >= 25:
+                return texts
+    return texts
+
+
+def _jobserve_blocked_page_flags(page_text: str, html: str) -> dict[str, bool]:
+    target = f"{page_text} {html[:5000]}".lower()
+    return {
+        "captcha": any(marker in target for marker in ["captcha", "recaptcha", "verify you are human"]),
+        "cloudflare": any(marker in target for marker in ["cloudflare", "cf-ray", "checking your browser"]),
+        "access_denied": any(marker in target for marker in ["access denied", "forbidden", "not authorized", "temporarily blocked"]),
+        "no_results": "no matching jobs found" in target or "no jobs found" in target or bool(re.search(r"\b0\s+jobs?\b", target)),
+    }
+
+
+def _jobserve_zero_result_reason(job_ids: list[str], visible_results: list[dict[str, str]], blocked_flags: dict[str, bool], result_count_text: str) -> str | None:
+    if job_ids or visible_results:
+        return None
+    if blocked_flags["captcha"]:
+        return "captcha_or_human_verification"
+    if blocked_flags["cloudflare"]:
+        return "cloudflare_or_browser_check"
+    if blocked_flags["access_denied"]:
+        return "access_denied"
+    if blocked_flags["no_results"]:
+        return "jobserve_no_results"
+    if result_count_text:
+        return "parser_failure_result_count_without_cards"
+    return "no_result_markers_detected"
 
 
 def _jobserve_text_around_jobs_for(soup: BeautifulSoup) -> str:
@@ -627,20 +732,35 @@ def _fetch_jobserve_rendered_result_page(final_url: str, payload: JobServeSearch
     except Exception:  # noqa: BLE001
         return None
     try:
+        browser_diag = chromium_diagnostics()
+        LOGGER.info(
+            "JobServe rendered fallback starting url=%s headless=true viewport=%s user_agent=%s chromium_executable_path=%s chromium_file_exists=%s chromium_file_executable=%s",
+            final_url,
+            {"width": 1440, "height": 1000},
+            BROWSER_USER_AGENT,
+            browser_diag.get("chromium_executable_path"),
+            browser_diag.get("chromium_file_exists"),
+            browser_diag.get("chromium_file_executable"),
+        )
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
-                page = browser.new_page(viewport={"width": 1440, "height": 1000})
+                page = browser.new_page(viewport={"width": 1440, "height": 1000}, user_agent=BROWSER_USER_AGENT)
                 page.goto(final_url, wait_until="domcontentloaded", timeout=30000)
-                try:
-                    page.wait_for_selector(".jobItem, #jobIDs, .resultnumber, .jobshead", timeout=10000)
-                except Exception:  # noqa: BLE001
-                    page.wait_for_timeout(2000)
+                _wait_for_jobserve_result_markers(page)
                 html = page.content()
+                visible_results = extract_jobserve_visible_results(html)
+                LOGGER.info(
+                    "JobServe rendered fallback loaded current_url=%s title=%s job_items=%s possible_cards=%s",
+                    page.url,
+                    page.title(),
+                    len(BeautifulSoup(html, "html.parser").select(".jobItem")),
+                    len(_jobserve_candidate_card_texts(BeautifulSoup(html, "html.parser"))),
+                )
                 return {
                     "url": page.url,
                     "html": html,
-                    "visible_results": extract_jobserve_visible_results(html),
+                    "visible_results": visible_results,
                     "diagnostics": _jobserve_search_diagnostics(html, page.url, 200, payload),
                 }
             finally:
@@ -707,22 +827,58 @@ def _write_jobserve_debug_html(html: str, label: str) -> str | None:
         return None
 
 
+def _jobserve_artifact_url(path_value: Any) -> str | None:
+    if not path_value:
+        return None
+    try:
+        path = Path(str(path_value)).resolve()
+        root = JOBSERVE_SCRAPE_DEBUG_DIR.resolve()
+        if not path.is_relative_to(root):
+            return None
+        return f"/sources/jobserve/debug-artifacts/{path.name}"
+    except Exception:
+        return None
+
+
+def jobserve_debug_artifact_path(filename: str) -> Path | None:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", filename):
+        return None
+    path = (JOBSERVE_SCRAPE_DEBUG_DIR / filename).resolve()
+    root = JOBSERVE_SCRAPE_DEBUG_DIR.resolve()
+    try:
+        if not path.is_relative_to(root):
+            return None
+    except ValueError:
+        return None
+    return path if path.exists() and path.is_file() else None
+
+
 def _capture_jobserve_debug_screenshot(url: str) -> str | None:
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return None
     try:
         from playwright.sync_api import sync_playwright
     except Exception:  # noqa: BLE001
+        LOGGER.warning("JobServe screenshot unavailable: Playwright is not installed")
         return None
     try:
+        browser_diag = chromium_diagnostics()
         JOBSERVE_SCRAPE_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         path = JOBSERVE_SCRAPE_DEBUG_DIR / f"{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-results.png"
+        LOGGER.info(
+            "JobServe screenshot capture starting url=%s headless=true viewport=%s chromium_executable_path=%s chromium_file_exists=%s chromium_file_executable=%s",
+            url,
+            {"width": 1440, "height": 1000},
+            browser_diag.get("chromium_executable_path"),
+            browser_diag.get("chromium_file_exists"),
+            browser_diag.get("chromium_file_executable"),
+        )
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
-                page = browser.new_page()
+                page = browser.new_page(viewport={"width": 1440, "height": 1000}, user_agent=BROWSER_USER_AGENT)
                 page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(1000)
+                _wait_for_jobserve_result_markers(page)
                 page.screenshot(path=str(path), full_page=False)
             finally:
                 browser.close()
@@ -730,6 +886,25 @@ def _capture_jobserve_debug_screenshot(url: str) -> str | None:
     except Exception:  # noqa: BLE001
         LOGGER.exception("Could not capture JobServe scrape screenshot diagnostic")
         return None
+
+
+def _wait_for_jobserve_result_markers(page) -> None:
+    try:
+        page.wait_for_function(
+            """() => {
+                const text = (document.body.innerText || document.body.textContent || '').toLowerCase();
+                return document.querySelectorAll('.jobItem').length > 0
+                    || /\\b\\d[\\d,]*\\s+jobs?\\s+for\\b/i.test(text)
+                    || text.includes('no matching jobs found')
+                    || text.includes('no jobs found')
+                    || text.includes('access denied')
+                    || text.includes('captcha')
+                    || text.includes('cloudflare');
+            }""",
+            timeout=12000,
+        )
+    except Exception:
+        page.wait_for_timeout(2500)
 
 
 def _jobserve_search_form_payload(html: str, base_url: str, payload: JobServeSearchScrapeRequest) -> tuple[dict[str, Any], str]:

@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db.models import Base, Job, JobScore, JobSource, SavedJob, User
 from app.db.session import get_db
 from app.main import app
+from app.services import source_scraping
 
 
 def test_sources_endpoints() -> None:
@@ -153,6 +154,19 @@ def test_demo_scrape_endpoint_uses_fixture_only() -> None:
             assert len(db.scalars(select(Job)).all()) == 2
     finally:
         app.dependency_overrides.clear()
+
+
+def test_jobserve_debug_artifact_endpoint_serves_snapshot(tmp_path, monkeypatch) -> None:
+    artifact_dir = tmp_path / "jobserve_scrape"
+    artifact_dir.mkdir()
+    artifact = artifact_dir / "20260528T120000Z-zero-results.html"
+    artifact.write_text("<html><body>debug</body></html>", encoding="utf-8")
+    monkeypatch.setattr(source_scraping, "JOBSERVE_SCRAPE_DEBUG_DIR", artifact_dir)
+
+    response = TestClient(app).get(f"/sources/jobserve/debug-artifacts/{artifact.name}")
+
+    assert response.status_code == 200
+    assert "debug" in response.text
 
 
 def test_delete_source_defaults_to_disable_only() -> None:
