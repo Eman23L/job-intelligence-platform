@@ -60,6 +60,46 @@ def test_jobserve_scraper_parses_visible_result_list_html() -> None:
     assert extract_jobserve_job_ids(html) == ["ABC123", "DEF456789"]
 
 
+def test_jobserve_scraper_parses_jobserve_left_list_job_items() -> None:
+    html = """
+    <html>
+      <body>
+        <h4 class="cutout2 cct2 jobshead">495 jobs for AI</h4>
+        <div id="B2640B418B54EFF002" class="jobItem">
+          <div class="jobsum jobSelected">
+            <h3 class="jobResultsTitle">AI & Power Platform Solutions Engineer</h3>
+            <p class="jobResultsSalary">GBP 80k - GBP 95k - depending on experience</p>
+            <p class="jobResultsLoc">London</p>
+            <p>Permanent</p>
+            <p>6 hours ago</p>
+          </div>
+        </div>
+        <div id="C409B81B016FCBB60F" class="jobItem">
+          <div class="jobsum newjobsum">
+            <h3 class="jobResultsTitle">AI Architect</h3>
+            <p>550-600</p>
+            <p class="jobResultsLoc">London</p>
+            <p>Contract</p>
+            <p>1 day ago</p>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+
+    visible = extract_jobserve_visible_results(html)
+
+    assert [item["job_id"] for item in visible] == ["B2640B418B54EFF002", "C409B81B016FCBB60F"]
+    assert visible[0]["title"] == "AI & Power Platform Solutions Engineer"
+    assert visible[0]["salary"] == "GBP 80k - GBP 95k - depending on experience"
+    assert visible[0]["location"] == "London"
+    assert visible[0]["employment_type"] == "Permanent"
+    assert visible[0]["posted"] == "6 hours ago"
+    assert visible[0]["reference"] == "B2640B418B54EFF002"
+    assert visible[0]["url"] == "https://www.jobserve.com/gb/en/job/B2640B418B54EFF002"
+    assert extract_jobserve_job_ids(html) == ["B2640B418B54EFF002", "C409B81B016FCBB60F"]
+
+
 def test_extract_jobserve_detail_html_from_ajax_payload() -> None:
     payload = {"d": {"JobDetailHtml": "<h1>Python Developer</h1>"}}
 

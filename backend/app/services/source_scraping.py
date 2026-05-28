@@ -70,6 +70,7 @@ class JobServeSearchResultPage:
     status_code: int
     cookies: dict[str, str]
     diagnostics: dict[str, Any] | None = None
+    visible_results: list[dict[str, str]] | None = None
 
 
 def create_source_from_url(db: Session, payload) -> JobSource:
@@ -199,10 +200,12 @@ def search_scrape_jobserve(
         )
 
     page_size = _hidden_int(search_page.html, "pgSize", default=25)
-    job_ids = search_page.job_ids[: max(1, payload.max_pages) * page_size]
+    visible_results = search_page.visible_results or extract_jobserve_visible_results(search_page.html)
+    visible_ids = [item["job_id"] for item in visible_results if item.get("job_id")]
+    job_ids = _dedupe_strings([*search_page.job_ids, *visible_ids])[: max(1, payload.max_pages) * page_size]
     _update_scrape_run_progress(db, scrape_run_id, found=len(job_ids), created=created, updated=updated, skipped=skipped)
     if not job_ids:
-        warnings.append("JobServe search completed but no hidden job IDs were found in the result HTML.")
+        warnings.append("JobServe search completed but no JobServe result IDs were found in the result HTML.")
         warnings.append(f"JobServe search diagnostics: {diagnostics}")
 
     detail_started = time.perf_counter()
@@ -212,6 +215,17 @@ def search_scrape_jobserve(
         delay_seconds=1,
         max_workers=1,
     )
+    records_by_id = {record.source_job_id: record for record in records if record.source_job_id}
+    visible_fallback_records = [
+        _jobserve_record_from_visible_result(item, search_url)
+        for item in visible_results
+        if item.get("job_id") in job_ids and item.get("job_id") not in records_by_id
+    ]
+    if visible_fallback_records:
+        fallback_ids = {str(record.source_job_id) for record in visible_fallback_records if record.source_job_id}
+        warnings.append(f"JobServe detail endpoint failed or omitted {len(visible_fallback_records)} jobs; using visible left-list result data.")
+        detail_errors = [error for error in detail_errors if not any(f"JobServe {job_id}:" in error for job_id in fallback_ids)]
+        records.extend(visible_fallback_records)
     LOGGER.info(
         "JobServe search detail fetch completed search_url=%s detail_requests=%s records=%s failures=%s duration_ms=%s",
         search_url,
@@ -471,14 +485,24 @@ def _fetch_jobserve_search_results(payload: JobServeSearchScrapeRequest) -> JobS
         timeout=30,
         allow_redirects=True,
     )
-    diagnostics = _jobserve_search_diagnostics(response.text, response.url, response.status_code, payload, form_data=form_data)
+    html = response.text
+    visible_results = extract_jobserve_visible_results(html)
+    job_ids = extract_jobserve_job_ids(html)
+    if not job_ids and response.status_code < 400 and not _jobserve_no_results_present(html):
+        rendered = _fetch_jobserve_rendered_result_page(response.url, payload)
+        if rendered is not None:
+            html = rendered["html"]
+            visible_results = rendered["visible_results"]
+            job_ids = extract_jobserve_job_ids(html)
+    diagnostics = _jobserve_search_diagnostics(html, response.url, response.status_code, payload, form_data=form_data)
     return JobServeSearchResultPage(
         url=response.url,
-        html=response.text,
-        job_ids=extract_jobserve_job_ids(response.text),
+        html=html,
+        job_ids=job_ids,
         status_code=response.status_code,
         cookies=session.cookies.get_dict(),
         diagnostics=diagnostics,
+        visible_results=visible_results,
     )
 
 
@@ -492,15 +516,25 @@ def _jobserve_search_diagnostics(
 ) -> dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
     job_ids = extract_jobserve_job_ids(html)
+    hidden_job_ids = _extract_jobserve_hidden_job_ids(html)
     visible_results = extract_jobserve_visible_results(html)
+    selected_detail = _jobserve_selected_detail_diagnostics(soup)
     diagnostics: dict[str, Any] = {
         "final_url": final_url,
+        "current_url": final_url,
         "status_code": status_code,
         "page_title": extract_page_title(html),
+        "visible_text_around_jobs_for": _jobserve_text_around_jobs_for(soup),
         "visible_result_count_text": _jobserve_visible_result_count_text(soup),
-        "hidden_job_id_count": len(job_ids),
+        "hidden_job_id_count": len(hidden_job_ids),
+        "job_id_count": len(job_ids),
         "detected_result_rows": len(visible_results) or len(job_ids),
+        "left_list_result_cards_detected": len(visible_results),
         "first_visible_results": visible_results[:10],
+        "first_10_visible_left_list_result_texts": [item.get("text", "") for item in visible_results[:10]],
+        "selected_detail_title": selected_detail.get("title", ""),
+        "selected_detail_company": selected_detail.get("company", ""),
+        "selected_detail_reference": selected_detail.get("reference", ""),
         "cookie_or_consent_present": _jobserve_page_has_any(html, ["cookie", "consent", "privacy settings"]),
         "captcha_present": _jobserve_page_has_any(html, ["captcha", "recaptcha", "verify you are human"]),
         "no_results_present": _jobserve_no_results_present(html),
@@ -517,6 +551,11 @@ def _jobserve_search_diagnostics(
 
 
 def _jobserve_visible_result_count_text(soup: BeautifulSoup) -> str:
+    heading = soup.select_one(".jobshead")
+    if heading:
+        text = " ".join(heading.get_text(" ", strip=True).split())
+        if re.search(r"\b\d[\d,]*\s+jobs?\s+for\b", text, flags=re.I):
+            return text[:300]
     result_number = soup.select_one(".resultnumber, #resultnumber, [class*=resultnumber]")
     if result_number:
         parent_text = result_number.parent.get_text(" ", strip=True) if result_number.parent else result_number.get_text(" ", strip=True)
@@ -524,6 +563,33 @@ def _jobserve_visible_result_count_text(soup: BeautifulSoup) -> str:
     body_text = soup.get_text(" ", strip=True)
     match = re.search(r"\b\d[\d,]*\s+(?:jobs?|results?)\b(?:\s+for\s+[^.]{0,120})?", body_text, flags=re.I)
     return match.group(0) if match else ""
+
+
+def _extract_jobserve_hidden_job_ids(html: str) -> list[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    field = soup.find("input", id="jobIDs") or soup.find("input", attrs={"name": "ctl00$main$jobIDs"})
+    value = str(field.get("value") or "") if field else ""
+    return _dedupe_strings([item.strip() for item in re.split(r"[#%,\|;\s]+", value) if item.strip()])
+
+
+def _jobserve_text_around_jobs_for(soup: BeautifulSoup) -> str:
+    body_text = soup.get_text(" ", strip=True)
+    normalized = re.sub(r"\s+", " ", body_text)
+    match = re.search(r".{0,180}\b\d[\d,]*\s+jobs?\s+for\b.{0,240}", normalized, flags=re.I)
+    return match.group(0) if match else ""
+
+
+def _jobserve_selected_detail_diagnostics(soup: BeautifulSoup) -> dict[str, str]:
+    panel = soup.select_one("#JobDetailPanel, .JobDetailPanel, #jobdisplaypanel, .jobdisplaypanel")
+    if panel is None:
+        return {"title": "", "company": "", "reference": ""}
+    text = panel.get_text(" ", strip=True)
+    ref_match = re.search(r"\b(?:Job\s*)?(?:Ref(?:erence)?|ID)\s*[:#]?\s*([A-Z0-9]{6,})\b", text, flags=re.I)
+    return {
+        "title": _select_text(panel, ["#td_jobpositionnolink", ".jobTitle", ".job-title", "h1", "h2"]) or "",
+        "company": _select_text(panel, [".company", ".recruiter", ".job-company", "[class*=recruiter i]"]) or _regex_group(text, r"Posted by:\s*([^|]+?)\s+Posted:") or "",
+        "reference": ref_match.group(1) if ref_match else "",
+    }
 
 
 def _jobserve_no_results_present(html: str) -> bool:
@@ -551,6 +617,83 @@ def _jobserve_search_form_diagnostics(form_data: dict[str, Any], payload: JobSer
         "search_button_clicked": form_data.get("ctl00$main$srch$ctl_qs$btnSearch") == "Search",
         "results_loaded": False,
     }
+
+
+def _fetch_jobserve_rendered_result_page(final_url: str, payload: JobServeSearchScrapeRequest) -> dict[str, Any] | None:
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("JOBSERVE_RENDER_IN_TESTS") != "1":
+        return None
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1440, "height": 1000})
+                page.goto(final_url, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page.wait_for_selector(".jobItem, #jobIDs, .resultnumber, .jobshead", timeout=10000)
+                except Exception:  # noqa: BLE001
+                    page.wait_for_timeout(2000)
+                html = page.content()
+                return {
+                    "url": page.url,
+                    "html": html,
+                    "visible_results": extract_jobserve_visible_results(html),
+                    "diagnostics": _jobserve_search_diagnostics(html, page.url, 200, payload),
+                }
+            finally:
+                browser.close()
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("Could not render JobServe search results page for left-list scraping")
+        return None
+
+
+def _jobserve_record_from_visible_result(item: dict[str, str], search_url: str) -> JobRecord:
+    job_id = item.get("job_id") or item.get("reference") or content_hash(item.get("title") or item.get("text") or search_url)
+    url = item.get("url") or f"https://www.jobserve.com/gb/en/job/{job_id}"
+    if "jobserve.com/gb/en/job/" in url and job_id:
+        url = f"https://www.jobserve.com/gb/en/job/{job_id}"
+    return JobRecord(
+        source_job_id=job_id,
+        title=item.get("title") or None,
+        recruiter=item.get("company") or None,
+        location=item.get("location") or None,
+        salary=item.get("salary") or None,
+        employment_type=item.get("employment_type") or None,
+        posted_date=item.get("posted") or None,
+        description=item.get("text") or item.get("title") or None,
+        url=url,
+        apply_link=None,
+    )
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        cleaned = str(value or "").strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        deduped.append(cleaned)
+    return deduped
+
+
+def _select_text(soup: BeautifulSoup, selectors: list[str]) -> str | None:
+    for selector in selectors:
+        found = soup.select_one(selector)
+        if found:
+            text = " ".join(found.get_text(" ", strip=True).split())
+            if text:
+                return text
+    return None
+
+
+def _regex_group(text: str, pattern: str) -> str | None:
+    match = re.search(pattern, text, flags=re.I)
+    return " ".join(match.group(1).split()) if match else None
 
 
 def _write_jobserve_debug_html(html: str, label: str) -> str | None:

@@ -138,7 +138,7 @@ def extract_jobserve_visible_results(html: str) -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, str]] = []
     seen: set[str] = set()
-    for node in soup.select("[data-jobid], [data-job-id], [jobid], [id^=job_]"):
+    for node in soup.select(".jobItem, [data-jobid], [data-job-id], [jobid], [id^=job_]"):
         job_id = _job_id_from_node(node)
         if not job_id or job_id in seen:
             continue
@@ -146,6 +146,8 @@ def extract_jobserve_visible_results(html: str) -> list[dict[str, str]]:
         results.append(_visible_result_summary(node, job_id))
     for node in soup.find_all(attrs={"onclick": True}):
         onclick = str(node.get("onclick") or "")
+        if "GetFeaturedJobDetails" in onclick:
+            continue
         if "JobDetails" not in onclick and "JobDetail" not in onclick:
             continue
         match = re.search(r"['\"]([A-F0-9]{8,})['\"]", onclick, flags=re.I)
@@ -170,8 +172,18 @@ def _job_id_from_node(node) -> str:
 
 
 def _visible_result_summary(node, job_id: str) -> dict[str, str]:
-    title = _select_text(node, [".job-title", ".jobTitle", ".result-title", ".resultbold", "h2", "h3", "a"])
+    title = _select_text(node, [".jobResultsTitle", ".job-title", ".jobTitle", ".result-title", ".resultbold", "h2", "h3", "a"])
     company = _select_text(node, [".company", ".recruiter", ".job-company", ".resultcompany", "[data-testid*=company]"])
+    location = _select_text(node, [".jobResultsLoc", ".location", ".job-location", "[data-testid*=location]"])
+    salary = _select_text(node, [".jobResultsSalary", ".salary", ".job-salary", "[data-testid*=salary]"])
+    employment_type = _select_text(node, [".jobResultsType", ".job-type", ".employment-type", "[data-testid*=type]"])
+    posted = _select_text(node, [".jobResultsAge", ".posted", ".job-posted", ".date-posted", "[data-testid*=posted]"])
+    text = _clean(node.get_text(" ", strip=True)) or ""
+    if not employment_type:
+        employment_type = _regex_value(text, r"\b(Permanent|Contract|Temporary|Part Time|Part-Time|Full Time|Full-Time)\b")
+    if not posted:
+        posted_match = re.search(r"\b(?:\d+\s+(?:minutes?|hours?|days?)\s+ago|Today|Yesterday)\b", text, flags=re.I)
+        posted = _clean(posted_match.group(0)) if posted_match else None
     href = ""
     anchor = node.find("a", href=True)
     if anchor:
@@ -180,8 +192,13 @@ def _visible_result_summary(node, job_id: str) -> dict[str, str]:
         "job_id": job_id,
         "title": title or "",
         "company": company or "",
+        "location": location or "",
+        "salary": salary or "",
+        "employment_type": employment_type or "",
+        "posted": posted or "",
+        "reference": job_id,
         "url": href or f"{JOBSERVE_ROOT}/gb/en/job/{job_id}",
-        "text": _clean(node.get_text(" ", strip=True)) or "",
+        "text": text,
     }
 
 

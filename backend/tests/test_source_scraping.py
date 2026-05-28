@@ -439,10 +439,49 @@ def test_jobserve_search_diagnostics_does_not_call_results_zero_when_rows_exist(
     diagnostics = source_scraping._jobserve_search_diagnostics(html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=results", 200, payload)
 
     assert diagnostics["no_results_present"] is False
-    assert diagnostics["hidden_job_id_count"] == 1
+    assert diagnostics["hidden_job_id_count"] == 0
+    assert diagnostics["job_id_count"] == 1
     assert diagnostics["detected_result_rows"] == 1
+    assert diagnostics["left_list_result_cards_detected"] == 1
     assert diagnostics["first_visible_results"][0]["title"] == "AI Engineer"
+    assert "12 jobs for AI AI Engineer Acme" in diagnostics["visible_text_around_jobs_for"]
     assert "html_snapshot_path" not in diagnostics
+
+
+def test_jobserve_search_diagnostics_reads_495_jobs_for_ai_and_selected_detail(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(source_scraping, "JOBSERVE_SCRAPE_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(source_scraping, "_capture_jobserve_debug_screenshot", lambda url: str(tmp_path / "results.png"))
+    html = """
+    <html>
+      <head><title>Find AI Jobs with JobServe.com</title></head>
+      <body>
+        <h4 class="cutout2 cct2 jobshead">495 jobs for AI</h4>
+        <div id="B2640B418B54EFF002" class="jobItem">
+          <h3 class="jobResultsTitle">AI Engineer</h3>
+          <p class="jobResultsSalary">GBP 600 per day</p>
+          <p class="jobResultsLoc">London</p>
+          <p>Contract</p>
+          <p>2 days ago</p>
+        </div>
+        <div id="JobDetailPanel">
+          <h1>AI Engineer</h1>
+          <p>Posted by: Example Recruiter Posted: Thursday, 28 May 2026</p>
+          <p>Reference: B2640B418B54EFF002</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    diagnostics = source_scraping._jobserve_search_diagnostics(html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture", 200, JobServeSearchScrapeRequest(keywords="AI"))
+
+    assert diagnostics["visible_result_count_text"] == "495 jobs for AI"
+    assert diagnostics["left_list_result_cards_detected"] == 1
+    assert diagnostics["first_10_visible_left_list_result_texts"][0].startswith("AI Engineer")
+    assert diagnostics["selected_detail_title"] == "AI Engineer"
+    assert diagnostics["selected_detail_company"] == "Example Recruiter"
+    assert diagnostics["selected_detail_reference"] == "B2640B418B54EFF002"
+    assert diagnostics["screenshot_path"] is None
+    assert diagnostics["screenshot_capture"] == "skipped_nonzero_results"
 
 
 def test_jobserve_search_diagnostics_does_not_treat_ten_jobs_as_zero(monkeypatch, tmp_path) -> None:
@@ -460,6 +499,68 @@ def test_jobserve_search_diagnostics_does_not_treat_ten_jobs_as_zero(monkeypatch
     diagnostics = source_scraping._jobserve_search_diagnostics(html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=results", 200, JobServeSearchScrapeRequest(keywords="AI"))
 
     assert diagnostics["no_results_present"] is False
+
+
+def test_jobserve_search_scrape_saves_visible_left_list_jobs_when_hidden_ids_missing(monkeypatch) -> None:
+    jobserve_html = """
+    <html>
+      <head><title>Find AI Jobs in London with JobServe.com</title></head>
+      <body>
+        <h4 class="jobshead">495 jobs for AI</h4>
+        <div id="B2640B418B54EFF002" class="jobItem">
+          <h3 class="jobResultsTitle">AI & Power Platform Solutions Engineer</h3>
+          <p class="jobResultsSalary">GBP 80k - GBP 95k - depending on experience</p>
+          <p class="jobResultsLoc">London</p>
+          <p>Permanent</p>
+          <p>6 hours ago</p>
+        </div>
+        <div id="C409B81B016FCBB60F" class="jobItem">
+          <h3 class="jobResultsTitle">AI Architect</h3>
+          <p class="jobResultsLoc">London</p>
+          <p>Contract</p>
+          <p>1 day ago</p>
+        </div>
+      </body>
+    </html>
+    """
+    visible = source_scraping.extract_jobserve_visible_results(jobserve_html)
+    diagnostics = source_scraping._jobserve_search_diagnostics(jobserve_html, "https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture", 200, JobServeSearchScrapeRequest(keywords="AI"))
+
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_search_results",
+        lambda payload: source_scraping.JobServeSearchResultPage(
+            url="https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture",
+            html=jobserve_html,
+            job_ids=[],
+            status_code=200,
+            cookies={},
+            diagnostics=diagnostics,
+            visible_results=visible,
+        ),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_detail_records",
+        lambda job_ids, **kwargs: ([], [f"JobServe {job_id}: detail endpoint unavailable" for job_id in job_ids]),
+    )
+
+    with scraping_client() as (client, TestingSession):
+        response = client.post("/sources/jobserve/search-scrape", json={"keywords": "AI", "location": "London", "max_pages": 3})
+        status = client.get(f"/sources/scrape-runs/{response.json()['run_id']}")
+
+        assert status.status_code == 200
+        body = status.json()
+        assert body["found"] == 2
+        assert body["created"] == 2
+        assert body["skipped"] == 0
+        assert body["error"] is None
+        with TestingSession() as db:
+            jobs = db.scalars(select(Job)).all()
+            assert {job.source_job_id for job in jobs} == {"B2640B418B54EFF002", "C409B81B016FCBB60F"}
+            assert {job.original_external_id for job in jobs} == {"B2640B418B54EFF002", "C409B81B016FCBB60F"}
+            assert all(job.canonical_url.startswith("https://www.jobserve.com/gb/en/job/") for job in jobs)
+            assert all("JobSearch.aspx" not in job.canonical_url for job in jobs)
 
 
 def test_jobserve_search_scrape_persists_diagnostics_in_run_status(monkeypatch) -> None:
