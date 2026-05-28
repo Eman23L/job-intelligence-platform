@@ -284,9 +284,55 @@ def test_stale_browser_launch_progress_fails_on_applications_list(db_session) ->
     assert job.assisted_result["progress"]["current_step"] == "browser_startup_timeout"
 
 
+def test_stale_queued_assist_is_reported_on_applications_list(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    job.assisted_result = {
+        "status": "queued",
+        "warnings": [],
+        "progress": {"current_step": "queued", "message": "queued", "rq_job_id": "assist-123"},
+        "jobserve_flow_diagnostics": {"rq_job_id": "assist-123"},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow() - timedelta(minutes=3)
+    db_session.commit()
+    monkeypatch.setattr(applications_service, "rq_job_failure", lambda rq_job_id: None)
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "stale_queue_timeout"
+    assert job.assisted_result["progress"]["current_step"] == "stale_queue_timeout"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["queue_failure"]["rq_job_id"] == "assist-123"
+
+
+def test_failed_rq_assist_job_is_persisted_on_applications_list(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    job.assisted_result = {
+        "status": "queued",
+        "warnings": [],
+        "progress": {"current_step": "queued", "message": "queued", "rq_job_id": "assist-123"},
+        "jobserve_flow_diagnostics": {"rq_job_id": "assist-123"},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow()
+    db_session.commit()
+    monkeypatch.setattr(
+        applications_service,
+        "rq_job_failure",
+        lambda rq_job_id: {"rq_job_id": rq_job_id, "rq_status": "failed", "failure_reason": "worker traceback"},
+    )
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "rq_job_failed"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["queue_failure"]["failure_reason"] == "worker traceback"
+
+
 def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:
     enqueued = []
     monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)
+    monkeypatch.setattr(applications_api, "redis_url_host", lambda: "redis.internal")
     monkeypatch.setattr(
         applications_api,
         "enqueue_or_background",
@@ -298,6 +344,9 @@ def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "queued"
+    assert response.json()["progress"]["rq_job_id"] == "rq-job"
+    assert response.json()["progress"]["queue_name"] == apply_agent.settings.queue_name
+    assert response.json()["progress"]["redis_host"] == "redis.internal"
     assert enqueued
     assert enqueued[0][0] is apply_agent.run_assist_apply_background
     assert enqueued[0][1][0] == ids["job"]
@@ -306,6 +355,7 @@ def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:
 def test_assist_apply_endpoint_queues_debug_mode(monkeypatch) -> None:
     enqueued = []
     monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)
+    monkeypatch.setattr(applications_api, "redis_url_host", lambda: "redis.internal")
     monkeypatch.setattr(
         applications_api,
         "enqueue_or_background",

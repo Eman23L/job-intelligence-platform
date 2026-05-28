@@ -300,6 +300,35 @@ def mark_queued_assist(db: Session, job: Job, *, mode: str, debug_mode: bool) ->
     db.commit()
 
 
+def update_queued_assist_metadata(db: Session, job: Job, *, rq_job_id: str, queue_name: str, redis_host: str) -> AssistApplyResult:
+    result = job.assisted_result or queued_assist_apply_result().model_dump()
+    progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+    diagnostics = result.get("jobserve_flow_diagnostics") if isinstance(result.get("jobserve_flow_diagnostics"), dict) else {}
+    result = {
+        **result,
+        "status": "queued",
+        "progress": {
+            **progress,
+            "current_step": "queued",
+            "message": "queued",
+            "last_heartbeat_at": utcnow().isoformat(),
+            "rq_job_id": rq_job_id,
+            "queue_name": queue_name,
+            "redis_host": redis_host,
+        },
+        "jobserve_flow_diagnostics": {
+            **diagnostics,
+            "rq_job_id": rq_job_id,
+            "queue_name": queue_name,
+            "redis_host": redis_host,
+        },
+        "debug_steps": [*result.get("debug_steps", []), {"step": "queued_to_rq", "rq_job_id": rq_job_id, "queue_name": queue_name, "redis_host": redis_host}][-100:],
+    }
+    job.assisted_result = result
+    db.commit()
+    return AssistApplyResult(**result)
+
+
 def _progress_message(step: str) -> str:
     if "browser" in step:
         return "browser startup"

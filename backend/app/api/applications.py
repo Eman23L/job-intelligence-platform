@@ -10,7 +10,7 @@ from app.config import settings
 from app.db.models import Job, User
 from app.db.session import get_db
 from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyRequest, AssistApplyResult
-from app.services.apply_agent import BrowserAutomationError, assist_apply_application, mark_queued_assist, queued_assist_apply_result, run_assist_apply_background
+from app.services.apply_agent import BrowserAutomationError, assist_apply_application, mark_queued_assist, update_queued_assist_metadata, run_assist_apply_background
 from app.services.applications import (
     get_prepare_applications_run_status,
     list_applications,
@@ -18,7 +18,7 @@ from app.services.applications import (
     run_prepare_applications_background,
     start_prepare_applications_run,
 )
-from app.services.queue import enqueue_or_background, queue_enabled
+from app.services.queue import enqueue_or_background, queue_enabled, redis_url_host
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 logger = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload
     debug_mode = bool(payload.debug_mode) if payload else False
     if queue_enabled():
         mark_queued_assist(db, job, mode=mode, debug_mode=debug_mode)
-        enqueue_or_background(
+        rq_job_id = enqueue_or_background(
             background_tasks,
             run_assist_apply_background,
             application_id,
@@ -88,15 +88,19 @@ def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload
             result_ttl=settings.rq_result_ttl_seconds,
             failure_ttl=settings.rq_failure_ttl_seconds,
         )
+        result = update_queued_assist_metadata(db, job, rq_job_id=rq_job_id, queue_name=settings.queue_name, redis_host=redis_url_host())
         logger.info(
-            "assist_apply_queued service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s",
+            "assist_apply_queued service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s queue=%s redis_host=%s rq_job_id=%s",
             settings.service_type,
             application_id,
             user.id,
             mode,
             debug_mode,
+            settings.queue_name,
+            redis_url_host(),
+            rq_job_id,
         )
-        return queued_assist_apply_result()
+        return result
 
     logger.info("assist_apply_running_inline service_type=%s application_id=%s mode=%s debug_mode=%s", settings.service_type, application_id, mode, debug_mode)
     try:

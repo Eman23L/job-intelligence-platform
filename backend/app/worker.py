@@ -4,7 +4,7 @@ from rq import Worker
 
 from app.config import settings
 from app.services.browser_automation import browser_status, chromium_diagnostics
-from app.services.queue import redis_connection
+from app.services.queue import redis_connection, redis_url_host
 
 
 logging.basicConfig(level=settings.log_level)
@@ -17,9 +17,10 @@ def main() -> None:
     status = browser_status()
     chromium = chromium_diagnostics()
     logger.info(
-        "worker_startup service_type=%s queue=%s queue_enabled=%s redis_connected=%s playwright_enabled=%s scrape_timeout_seconds=%s apply_timeout_seconds=%s playwright_step_timeout_ms=%s page_navigation_timeout_ms=%s result_ttl=%s failure_ttl=%s playwright_installed=%s chromium_available=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_path_source=%s chromium_file_exists=%s chromium_file_executable=%s",
+        "worker_startup service_type=%s queue=%s redis_host=%s queue_enabled=%s redis_connected=%s playwright_enabled=%s scrape_timeout_seconds=%s apply_timeout_seconds=%s playwright_step_timeout_ms=%s page_navigation_timeout_ms=%s result_ttl=%s failure_ttl=%s playwright_installed=%s chromium_available=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_path_source=%s chromium_file_exists=%s chromium_file_executable=%s",
         settings.service_type,
         settings.queue_name,
+        redis_url_host(),
         settings.queue_enabled,
         redis_connected,
         settings.playwright_enabled,

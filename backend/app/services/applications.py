@@ -1,5 +1,5 @@
 from decimal import Decimal
-from datetime import timedelta
+from datetime import timedelta, timezone
 import logging
 
 from sqlalchemy import select
@@ -12,6 +12,7 @@ from app.services.apply_strategy import classify_job, refresh_apply_readiness
 from app.services.job_availability import QUEUEABLE_AVAILABILITY_STATUSES, check_job_availability
 from app.services.profile import get_profile
 from app.services.run_tracking import finish_run, heartbeat, utcnow
+from app.services.queue import rq_job_failure
 
 APPLICATION_STATUSES = {"not_started", "ready_to_apply", "opened", "applied", "skipped", "failed"}
 QUEUEABLE_RECOMMENDATIONS = {"apply", "maybe"}
@@ -171,6 +172,7 @@ def run_prepare_applications_background(run_id: int, user_id: int) -> None:
 
 
 def list_applications(db: Session, user: User | None = None) -> list[ApplicationItem]:
+    _fail_stale_or_failed_assist_queue(db)
     _fail_stale_browser_startups(db)
     score_query = select(
         JobScore.job_id.label("job_id"),
@@ -267,6 +269,71 @@ def _fail_stale_browser_startups(db: Session) -> None:
         changed = True
     if changed:
         db.commit()
+
+
+def _fail_stale_or_failed_assist_queue(db: Session) -> None:
+    cutoff = utcnow() - timedelta(minutes=2)
+    jobs = db.scalars(select(Job).where(Job.assisted_result.is_not(None))).all()
+    changed = False
+    for job in jobs:
+        result = job.assisted_result or {}
+        if result.get("status") != "queued":
+            continue
+        progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+        diagnostics = result.get("jobserve_flow_diagnostics") if isinstance(result.get("jobserve_flow_diagnostics"), dict) else {}
+        rq_job_id = progress.get("rq_job_id") or diagnostics.get("rq_job_id")
+        failure = None
+        if rq_job_id:
+            try:
+                failure = rq_job_failure(str(rq_job_id))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("assist_apply_rq_status_check_failed application_id=%s rq_job_id=%s error=%s", job.id, rq_job_id, exc)
+        if failure:
+            result = _assist_queue_failure_result(result, "rq_job_failed", failure.get("failure_reason") or "RQ job failed.", failure)
+        elif job.last_apply_attempt_at and _aware_datetime(job.last_apply_attempt_at) < cutoff:
+            result = _assist_queue_failure_result(
+                result,
+                "stale_queue_timeout",
+                "Worker did not pick up the assisted apply job within 2 minutes.",
+                {"rq_job_id": rq_job_id, "queue_age_seconds": int((utcnow() - _aware_datetime(job.last_apply_attempt_at)).total_seconds())},
+            )
+        else:
+            continue
+        job.assisted_result = result
+        job.assisted_warnings = result["warnings"]
+        job.application_status = "failed"
+        changed = True
+    if changed:
+        db.commit()
+
+
+def _assist_queue_failure_result(result: dict, error: str, message: str, details: dict) -> dict:
+    progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+    diagnostics = result.get("jobserve_flow_diagnostics") if isinstance(result.get("jobserve_flow_diagnostics"), dict) else {}
+    warnings = [*result.get("warnings", []), message]
+    return {
+        **result,
+        "status": "failed",
+        "final_error": error,
+        "warnings": warnings,
+        "progress": {
+            **progress,
+            "current_step": error,
+            "message": message,
+            "last_heartbeat_at": utcnow().isoformat(),
+        },
+        "jobserve_flow_diagnostics": {
+            **diagnostics,
+            "queue_failure": {"error": error, "message": message, **details},
+        },
+        "debug_steps": [*result.get("debug_steps", []), {"step": error, "message": message, **details}][-100:],
+    }
+
+
+def _aware_datetime(value):
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _candidate_application_rows(db: Session, user: User | None = None):

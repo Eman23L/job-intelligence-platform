@@ -164,8 +164,8 @@ export default function ApplicationsPage() {
   };
 
   const pollAssistResult = async (item: ApplicationItem, fallback: AssistApplyResult, expectDebug: boolean) => {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      await sleep(2500);
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await sleep(2000);
       const latest = await api.applications();
       setData(latest);
       setThreshold(latest.minimum_apply_score);
@@ -180,7 +180,24 @@ export default function ApplicationsPage() {
         return persisted;
       }
     }
-    return fallback;
+    return {
+      ...normaliseAssistResult(fallback),
+      status: "failed",
+      final_error: "stale_queue_timeout",
+      warnings: [...(fallback.warnings ?? []), "Worker did not pick up the assisted apply job within 2 minutes."],
+      progress: {
+        ...(fallback.progress ?? {}),
+        current_step: "stale_queue_timeout",
+        message: "Worker did not pick up the assisted apply job within 2 minutes."
+      },
+      jobserve_flow_diagnostics: {
+        ...(fallback.jobserve_flow_diagnostics ?? {}),
+        queue_failure: {
+          error: "stale_queue_timeout",
+          message: "Worker did not pick up the assisted apply job within 2 minutes."
+        }
+      }
+    };
   };
 
   const assistApply = async (item: ApplicationItem, mode: "review_only" | "submit_with_confirmation") => {
@@ -211,6 +228,8 @@ export default function ApplicationsPage() {
           ? "JobServe application submitted."
           : displayedResult.status === "queued"
             ? "Assisted apply queued. Waiting for worker diagnostics."
+            : displayedResult.final_error === "stale_queue_timeout"
+              ? "Worker did not pick up the assisted apply job within 2 minutes."
             : "Assisted apply diagnostics loaded. Review the debug details before taking the next action."
       });
     } catch (err) {
