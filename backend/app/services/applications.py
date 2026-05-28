@@ -1,8 +1,9 @@
 from decimal import Decimal
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import Session
 
 from app.db.models import ApplicationPrepareRun, Job, JobScore, User
@@ -18,6 +19,8 @@ APPLICATION_STATUSES = {"not_started", "ready_to_apply", "opened", "applied", "s
 QUEUEABLE_RECOMMENDATIONS = {"apply", "maybe"}
 TERMINAL_APPLICATION_STATUSES = {"applied", "skipped"}
 ACTIVE_RUN_STATUSES = {"running", "queued"}
+ASSIST_QUEUE_TIMEOUT = timedelta(minutes=2)
+ASSIST_WORKER_RUNNING_TIMEOUT = timedelta(seconds=900)
 logger = logging.getLogger(__name__)
 
 
@@ -272,32 +275,70 @@ def _fail_stale_browser_startups(db: Session) -> None:
 
 
 def _fail_stale_or_failed_assist_queue(db: Session) -> None:
-    cutoff = utcnow() - timedelta(minutes=2)
+    queue_cutoff = utcnow() - ASSIST_QUEUE_TIMEOUT
+    running_cutoff = utcnow() - ASSIST_WORKER_RUNNING_TIMEOUT
     jobs = db.scalars(select(Job).where(Job.assisted_result.is_not(None))).all()
     changed = False
     for job in jobs:
         result = job.assisted_result or {}
-        if result.get("status") != "queued":
+        if result.get("status") not in {"queued", "running"}:
             continue
         progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
         diagnostics = result.get("jobserve_flow_diagnostics") if isinstance(result.get("jobserve_flow_diagnostics"), dict) else {}
+        worker_progress_seen = _assist_worker_progress_seen(result)
+        last_heartbeat_at = _parse_assist_datetime(progress.get("last_heartbeat_at"))
         rq_job_id = progress.get("rq_job_id") or diagnostics.get("rq_job_id")
         failure = None
+        rq_status = None
         if rq_job_id:
             try:
                 failure = rq_job_failure(str(rq_job_id))
+                rq_status = failure.get("rq_status") if failure else None
             except Exception as exc:  # noqa: BLE001
                 logger.warning("assist_apply_rq_status_check_failed application_id=%s rq_job_id=%s error=%s", job.id, rq_job_id, exc)
         if failure:
-            result = _assist_queue_failure_result(result, "rq_job_failed", failure.get("failure_reason") or "RQ job failed.", failure)
-        elif job.last_apply_attempt_at and _aware_datetime(job.last_apply_attempt_at) < cutoff:
+            result = _assist_queue_failure_result(
+                result,
+                "rq_job_failed",
+                failure.get("failure_reason") or "RQ job failed.",
+                _assist_queue_decision_details(job, result, rq_job_id, rq_status, worker_progress_seen, "rq_job_failed", failure),
+            )
+        elif result.get("status") == "queued" and not worker_progress_seen and job.last_apply_attempt_at and _aware_datetime(job.last_apply_attempt_at) < queue_cutoff:
             result = _assist_queue_failure_result(
                 result,
                 "stale_queue_timeout",
                 "Worker did not pick up the assisted apply job within 2 minutes.",
-                {"rq_job_id": rq_job_id, "queue_age_seconds": int((utcnow() - _aware_datetime(job.last_apply_attempt_at)).total_seconds())},
+                _assist_queue_decision_details(
+                    job,
+                    result,
+                    rq_job_id,
+                    rq_status,
+                    worker_progress_seen,
+                    "queued_without_worker_progress_after_timeout",
+                    {"queue_age_seconds": int((utcnow() - _aware_datetime(job.last_apply_attempt_at)).total_seconds())},
+                ),
+            )
+        elif worker_progress_seen and last_heartbeat_at and last_heartbeat_at < running_cutoff:
+            result = _assist_queue_failure_result(
+                result,
+                "worker_running_timeout",
+                "Worker started assisted apply but stopped reporting progress.",
+                _assist_queue_decision_details(
+                    job,
+                    result,
+                    rq_job_id,
+                    rq_status,
+                    worker_progress_seen,
+                    "worker_progress_seen_but_heartbeat_stale",
+                    {"seconds_since_heartbeat": int((utcnow() - last_heartbeat_at).total_seconds())},
+                ),
             )
         else:
+            if result.get("status") == "queued":
+                _record_assist_queue_decision(result, job, rq_job_id, rq_status, worker_progress_seen, "not_stale")
+                job.assisted_result = {**result}
+                flag_modified(job, "assisted_result")
+                changed = True
             continue
         job.assisted_result = result
         job.assisted_warnings = result["warnings"]
@@ -325,9 +366,84 @@ def _assist_queue_failure_result(result: dict, error: str, message: str, details
         "jobserve_flow_diagnostics": {
             **diagnostics,
             "queue_failure": {"error": error, "message": message, **details},
+            "queue_diagnostics": details,
         },
         "debug_steps": [*result.get("debug_steps", []), {"step": error, "message": message, **details}][-100:],
     }
+
+
+def _record_assist_queue_decision(result: dict, job: Job, rq_job_id: str | None, rq_status: str | None, worker_progress_seen: bool, reason: str) -> None:
+    diagnostics = result.get("jobserve_flow_diagnostics") if isinstance(result.get("jobserve_flow_diagnostics"), dict) else {}
+    result["jobserve_flow_diagnostics"] = {
+        **diagnostics,
+        "queue_diagnostics": _assist_queue_decision_details(job, result, rq_job_id, rq_status, worker_progress_seen, reason, {}),
+    }
+
+
+def _assist_queue_decision_details(job: Job, result: dict, rq_job_id: str | None, rq_status: str | None, worker_progress_seen: bool, reason: str, extra: dict) -> dict:
+    progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+    return {
+        "rq_job_id": rq_job_id,
+        "rq_status": rq_status,
+        "queued_at": job.last_apply_attempt_at.isoformat() if job.last_apply_attempt_at else None,
+        "started_at": job.assisted_started_at.isoformat() if job.assisted_started_at else None,
+        "last_progress_step": progress.get("current_step") or result.get("running_step"),
+        "last_heartbeat_at": progress.get("last_heartbeat_at"),
+        "worker_progress_seen": worker_progress_seen,
+        "stale_queue_decision_reason": reason,
+        **extra,
+    }
+
+
+def _assist_worker_progress_seen(result: dict) -> bool:
+    progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+    step = str(progress.get("current_step") or result.get("running_step") or "")
+    if step and step != "queued":
+        return True
+    debug_steps = result.get("debug_steps") if isinstance(result.get("debug_steps"), list) else []
+    worker_markers = {
+        "worker_started",
+        "loading_application",
+        "application_loaded",
+        "loading_job",
+        "job_loaded",
+        "loading_profile",
+        "profile_loaded",
+        "resolving_job_url",
+        "job_url_resolved",
+        "browser_startup",
+        "browser_launch_start",
+        "browser_launch_success",
+        "page_created",
+        "navigating_to_job_url",
+        "job_page_loaded",
+        "jobserve_flow_started",
+        "jobserve_apply_button_clicked",
+        "jobserve_apply_modal_wait_complete",
+        "apply_button_clicked",
+        "modal_wait_complete",
+        "before_filling",
+        "jobserve_apply_email_filled",
+        "jobserve_apply_cv_uploaded",
+    }
+    for item in debug_steps:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("step") or "")
+        if name in worker_markers or name.startswith("jobserve_"):
+            return True
+    diagnostics = result.get("jobserve_flow_diagnostics") if isinstance(result.get("jobserve_flow_diagnostics"), dict) else {}
+    return any(bool(diagnostics.get(key)) for key in ["apply_button_clicked", "job_application_modal_found", "cv_upload_input_detected", "email_filled", "cv_uploaded"])
+
+
+def _parse_assist_datetime(value) -> object | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _aware_datetime(parsed)
 
 
 def _aware_datetime(value):

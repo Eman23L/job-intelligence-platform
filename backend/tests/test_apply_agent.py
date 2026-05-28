@@ -362,6 +362,99 @@ def test_stale_queued_assist_is_reported_on_applications_list(db_session, monkey
     assert job.assisted_result["final_error"] == "stale_queue_timeout"
     assert job.assisted_result["progress"]["current_step"] == "stale_queue_timeout"
     assert job.assisted_result["jobserve_flow_diagnostics"]["queue_failure"]["rq_job_id"] == "assist-123"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["queue_diagnostics"]["worker_progress_seen"] is False
+
+
+def test_queued_assist_with_worker_started_is_not_marked_stale(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    job.assisted_result = {
+        "status": "queued",
+        "warnings": [],
+        "progress": {"current_step": "worker_started", "message": "worker started", "rq_job_id": "assist-123", "last_heartbeat_at": apply_agent.utcnow().isoformat()},
+        "debug_steps": [{"step": "queued"}, {"step": "worker_started"}],
+        "jobserve_flow_diagnostics": {"rq_job_id": "assist-123"},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow() - timedelta(minutes=3)
+    db_session.commit()
+    monkeypatch.setattr(applications_service, "rq_job_failure", lambda rq_job_id: None)
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "queued"
+    assert job.assisted_result.get("final_error") is None
+    assert "queue_failure" not in job.assisted_result["jobserve_flow_diagnostics"]
+
+
+def test_queued_assist_with_jobserve_debug_steps_is_not_marked_stale(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    job.assisted_result = {
+        "status": "queued",
+        "warnings": [],
+        "progress": {"current_step": "queued", "message": "queued", "rq_job_id": "assist-123", "last_heartbeat_at": apply_agent.utcnow().isoformat()},
+        "debug_steps": [
+            {"step": "queued"},
+            {"step": "apply_button_clicked"},
+            {"step": "modal_wait_complete", "job_application_modal_found": True},
+            {"step": "before_filling", "form_fields_detected": 15, "cv_upload_input_detected": True},
+        ],
+        "jobserve_flow_diagnostics": {"rq_job_id": "assist-123", "job_application_modal_found": True, "cv_upload_input_detected": True},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow() - timedelta(minutes=3)
+    db_session.commit()
+    monkeypatch.setattr(applications_service, "rq_job_failure", lambda rq_job_id: None)
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "queued"
+    assert job.assisted_result.get("final_error") is None
+    assert job.assisted_result["debug_steps"][-1]["step"] == "before_filling"
+    assert "queue_failure" not in job.assisted_result["jobserve_flow_diagnostics"]
+
+
+def test_stale_checker_does_not_overwrite_worker_result(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    job.assisted_result = {
+        "status": "failed",
+        "final_error": "modal_fill_failed",
+        "warnings": ["modal_fill_failed"],
+        "progress": {"current_step": "before_filling", "message": "filling modal", "rq_job_id": "assist-123", "last_heartbeat_at": apply_agent.utcnow().isoformat()},
+        "debug_steps": [{"step": "apply_button_clicked"}, {"step": "modal_wait_complete"}, {"step": "before_filling"}],
+        "jobserve_flow_diagnostics": {"rq_job_id": "assist-123", "job_application_modal_found": True},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow() - timedelta(minutes=3)
+    db_session.commit()
+    monkeypatch.setattr(applications_service, "rq_job_failure", lambda rq_job_id: None)
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "modal_fill_failed"
+    assert "queue_failure" not in job.assisted_result["jobserve_flow_diagnostics"]
+
+
+def test_stale_worker_progress_gets_worker_running_timeout(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    stale_heartbeat = (apply_agent.utcnow() - timedelta(minutes=20)).isoformat()
+    job.assisted_result = {
+        "status": "running",
+        "warnings": [],
+        "progress": {"current_step": "before_filling", "message": "filling modal", "rq_job_id": "assist-123", "last_heartbeat_at": stale_heartbeat},
+        "debug_steps": [{"step": "apply_button_clicked"}, {"step": "modal_wait_complete"}, {"step": "before_filling"}],
+        "jobserve_flow_diagnostics": {"rq_job_id": "assist-123", "job_application_modal_found": True},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow() - timedelta(minutes=20)
+    db_session.commit()
+    monkeypatch.setattr(applications_service, "rq_job_failure", lambda rq_job_id: None)
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "worker_running_timeout"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["queue_diagnostics"]["worker_progress_seen"] is True
 
 
 def test_failed_rq_assist_job_is_persisted_on_applications_list(db_session, monkeypatch) -> None:

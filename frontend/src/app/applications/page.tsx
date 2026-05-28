@@ -164,6 +164,7 @@ export default function ApplicationsPage() {
   };
 
   const pollAssistResult = async (item: ApplicationItem, fallback: AssistApplyResult, expectDebug: boolean) => {
+    let latestPersisted: AssistApplyResult | null = null;
     for (let attempt = 0; attempt < 60; attempt += 1) {
       await sleep(2000);
       const latest = await api.applications();
@@ -175,10 +176,15 @@ export default function ApplicationsPage() {
       if (!persisted) {
         continue;
       }
-      setAssistResult({ jobTitle: current?.title ?? item.title, result: normaliseAssistResult(persisted) });
+      latestPersisted = persisted;
+      const displayedPersisted = workerProgressSeen(persisted) && persisted.status === "queued" ? { ...persisted, status: "running" } : persisted;
+      setAssistResult({ jobTitle: current?.title ?? item.title, result: normaliseAssistResult(displayedPersisted) });
       if (persisted.status !== "queued" && (!expectDebug || persisted.debug_mode || persisted.final_error || persisted.debug_steps?.length)) {
         return persisted;
       }
+    }
+    if (latestPersisted && workerProgressSeen(latestPersisted)) {
+      return latestPersisted.status === "queued" ? { ...latestPersisted, status: "running" } : latestPersisted;
     }
     return {
       ...normaliseAssistResult(fallback),
@@ -632,6 +638,47 @@ function normaliseAssistResult(result: AssistApplyResult): AssistApplyResult {
     select_diagnostics: result.select_diagnostics ?? [],
     exceptions: result.exceptions ?? []
   };
+}
+
+function workerProgressSeen(result: AssistApplyResult): boolean {
+  const progressStep = typeof result.progress?.current_step === "string" ? result.progress.current_step : "";
+  if (progressStep && progressStep !== "queued") {
+    return true;
+  }
+  const workerSteps = new Set([
+    "worker_started",
+    "loading_application",
+    "application_loaded",
+    "loading_job",
+    "job_loaded",
+    "loading_profile",
+    "profile_loaded",
+    "resolving_job_url",
+    "job_url_resolved",
+    "browser_launch_start",
+    "browser_launch_success",
+    "apply_button_clicked",
+    "modal_wait_complete",
+    "before_filling",
+    "jobserve_apply_button_clicked",
+    "jobserve_apply_modal_wait_complete",
+    "jobserve_apply_email_filled",
+    "jobserve_apply_cv_uploaded"
+  ]);
+  if ((result.debug_steps ?? []).some((step) => {
+    const value = typeof step.step === "string" ? step.step : "";
+    return workerSteps.has(value) || value.startsWith("jobserve_");
+  })) {
+    return true;
+  }
+  const diagnostics = result.jobserve_flow_diagnostics ?? {};
+  return Boolean(
+    diagnostics.apply_button_clicked ||
+    diagnostics.job_application_modal_found ||
+    diagnostics.cv_upload_input_detected ||
+    diagnostics.email_filled ||
+    diagnostics.cv_uploaded
+  );
 }
 
 function objectToList(value: Record<string, unknown> | undefined): Array<Record<string, unknown>> {

@@ -302,7 +302,7 @@ def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str
     }
     job.assisted_result = {
         **existing,
-        "status": existing.get("status") or "running",
+        "status": "running" if existing.get("status") in {None, "queued"} else existing.get("status"),
         "filled_fields": existing.get("filled_fields", []),
         "unfilled_fields": existing.get("unfilled_fields", []),
         "unfilled_required_fields": existing.get("unfilled_required_fields", []),
