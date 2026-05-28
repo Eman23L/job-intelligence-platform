@@ -71,15 +71,20 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     def progress_callback(step: str, payload: dict[str, Any]) -> None:
         _persist_assist_progress(db, job, step, payload, progress_started)
 
+    profile = None
     progress_callback("worker_started", _assist_job_payload(job, user, mode, debug_mode))
     try:
+        progress_callback("loading_application", _assist_lookup_payload(job, user, profile, mode, debug_mode))
+        progress_callback("application_loaded", _assist_lookup_payload(job, user, profile, mode, debug_mode))
+        progress_callback("loading_job", _assist_lookup_payload(job, user, profile, mode, debug_mode))
+        progress_callback("job_loaded", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         _validate_application(job)
         availability = check_job_availability(db, job)
         if availability.availability_status != "active":
             raise ValueError(f"Application assistance blocked because job is {availability.availability_status}. {availability.availability_reason or ''}".strip())
         _validate_application(job)
     except Exception as exc:
-        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
+        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=profile))
         raise
 
     started_at = utcnow()
@@ -88,11 +93,12 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     db.commit()
 
     try:
-        progress_callback("job_loaded", _assist_job_payload(job, user, mode, debug_mode))
+        progress_callback("loading_profile", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         profile = get_profile(db, user)
-        progress_callback("profile_loaded", {"profile_loaded": profile is not None, **_assist_job_payload(job, user, mode, debug_mode)})
+        progress_callback("profile_loaded", _assist_lookup_payload(job, user, profile, mode, debug_mode))
+        progress_callback("resolving_job_url", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         resolved_url = _resolve_assist_apply_url(job)
-        progress_callback("job_url_resolved", {**_assist_job_payload(job, user, mode, debug_mode), "resolved_job_url": resolved_url})
+        progress_callback("job_url_resolved", {**_assist_lookup_payload(job, user, profile, mode, debug_mode), "resolved_job_url": resolved_url})
         if mode == "submit_with_confirmation":
             _validate_jobserve_submit(db, job, user, profile)
         candidates = profile_field_candidates(user, profile)
@@ -123,13 +129,13 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
                 progress_callback=progress_callback,
             )
     except BrowserAutomationError as exc:
-        _store_assist_failure(db, job, exc.message, error=exc.error, exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
+        _store_assist_failure(db, job, exc.message, error=exc.error, exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=profile))
         raise
     except RuntimeError as exc:
-        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
+        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=profile))
         raise ValueError(str(exc)) from exc
     except Exception as exc:
-        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
+        _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=profile))
         raise
 
     existing_result = job.assisted_result or {}
@@ -165,23 +171,41 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
 
 
 def run_assist_apply_background(application_id: int, user_id: int, mode: str = "review_only", debug_mode: bool = False) -> None:
+    rq_job_id = _current_rq_job_id()
     logger.info(
-        "assist_apply_worker_start service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s",
+        "assist_apply_worker_start service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s rq_job_id=%s database_host=%s",
         settings.service_type,
         application_id,
         user_id,
         mode,
         debug_mode,
+        rq_job_id,
+        _database_url_host(),
     )
     with SessionLocal() as db:
-        job = db.get(Job, application_id)
-        user = db.get(User, user_id)
-        if job is None or user is None:
-            logger.error("assist_apply_worker_missing_record service_type=%s application_id=%s user_id=%s", settings.service_type, application_id, user_id)
+        job = None
+        user = None
+        try:
+            logger.info("assist_apply_worker_loading_application application_id=%s user_id=%s rq_job_id=%s database_host=%s", application_id, user_id, rq_job_id, _database_url_host())
+            job = db.get(Job, application_id)
+            logger.info("assist_apply_worker_application_loaded application_id=%s found=%s rq_job_id=%s", application_id, job is not None, rq_job_id)
+            if job is None:
+                logger.error("assist_apply_worker_missing_application error=application_not_found job_error=job_not_found service_type=%s application_id=%s user_id=%s rq_job_id=%s database_host=%s", settings.service_type, application_id, user_id, rq_job_id, _database_url_host())
+                return
+            logger.info("assist_apply_worker_loading_user application_id=%s user_id=%s rq_job_id=%s", application_id, user_id, rq_job_id)
+            user = db.get(User, user_id)
+        except Exception as exc:  # noqa: BLE001
+            if job is not None:
+                _store_assist_failure(db, job, "db_lookup_failed", error="db_lookup_failed", exc=exc, running_step="loading_application", extra=_assist_worker_failure_context(job, user, None, application_id, user_id, mode, debug_mode, rq_job_id))
+            logger.exception("assist_apply_worker_db_lookup_failed service_type=%s application_id=%s user_id=%s rq_job_id=%s", settings.service_type, application_id, user_id, rq_job_id)
+            return
+        if user is None:
+            _store_assist_failure(db, job, "user_not_found", error="user_not_found", running_step="loading_application", extra=_assist_worker_failure_context(job, user, None, application_id, user_id, mode, debug_mode, rq_job_id))
+            logger.error("assist_apply_worker_missing_user service_type=%s application_id=%s user_id=%s rq_job_id=%s", settings.service_type, application_id, user_id, rq_job_id)
             return
         url_resolution = _resolve_assist_apply_url_diagnostics(job)
         logger.info(
-            "assist_apply_worker_context service_type=%s application_id=%s user_id=%s title=%s company=%s canonical_url=%s apply_url=%s source_job_id=%s original_external_id=%s apply_strategy=%s mode=%s debug_mode=%s",
+            "assist_apply_worker_context service_type=%s application_id=%s user_id=%s title=%s company=%s canonical_url=%s apply_url=%s source_job_id=%s original_external_id=%s apply_strategy=%s mode=%s debug_mode=%s rq_job_id=%s database_host=%s",
             settings.service_type,
             application_id,
             user_id,
@@ -194,11 +218,14 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
             job.apply_strategy,
             mode,
             debug_mode,
+            rq_job_id,
+            _database_url_host(),
         )
         try:
             assist_apply_application(db, job, user, mode=mode, debug_mode=debug_mode)
         except BrowserAutomationError as exc:
-            _store_assist_failure(db, job, exc.message, error=exc.error, exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
+            if not _assist_already_failed(job):
+                _store_assist_failure(db, job, exc.message, error=exc.error, exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=None, rq_job_id=rq_job_id))
             logger.exception(
                 "assist_apply_worker_browser_error service_type=%s application_id=%s error_code=%s error=%s",
                 settings.service_type,
@@ -207,7 +234,8 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
                 exc.message,
             )
         except Exception as exc:  # noqa: BLE001
-            _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode))
+            if not _assist_already_failed(job):
+                _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=None, rq_job_id=rq_job_id))
             logger.exception("assist_apply_worker_failed service_type=%s application_id=%s error=%s", settings.service_type, application_id, exc)
         else:
             logger.info("assist_apply_worker_completed service_type=%s application_id=%s", settings.service_type, application_id)
@@ -536,14 +564,88 @@ def _assist_job_payload(job: Job, user: User | None, mode: str, debug_mode: bool
     }
 
 
-def _assist_failure_context(job: Job, mode: str, debug_mode: bool) -> dict[str, Any]:
+def _assist_lookup_payload(job: Job, user: User | None, profile, mode: str, debug_mode: bool) -> dict[str, Any]:
+    return {
+        **_assist_job_payload(job, user, mode, debug_mode),
+        "db_lookup": _assist_lookup_status(job, user, profile),
+        "queue_job_id": _queued_rq_job_id(job) or _current_rq_job_id(),
+        "database_host": _database_url_host(),
+    }
+
+
+def _assist_lookup_status(job: Job | None, user: User | None, profile) -> dict[str, Any]:
+    return {
+        "application_found": job is not None,
+        "job_found": job is not None,
+        "profile_found": profile is not None,
+        "cv_found": _profile_cv_present(profile),
+    }
+
+
+def _profile_cv_present(profile) -> bool:
+    return bool(profile and (getattr(profile, "cv_file_path", None) or getattr(profile, "cv_file_bytes", None)))
+
+
+def _assist_worker_failure_context(
+    job: Job | None,
+    user: User | None,
+    profile,
+    application_id: int,
+    user_id: int,
+    mode: str,
+    debug_mode: bool,
+    rq_job_id: str | None,
+) -> dict[str, Any]:
+    base = _assist_failure_context(job, mode, debug_mode, user=user, profile=profile, rq_job_id=rq_job_id) if job is not None else {}
+    return {
+        **base,
+        "application_id": application_id,
+        "job_id": getattr(job, "id", None),
+        "user_id": user_id,
+        "queue_job_id": rq_job_id,
+        "database_host": _database_url_host(),
+        "db_lookup": _assist_lookup_status(job, user, profile),
+    }
+
+
+def _assist_failure_context(job: Job, mode: str, debug_mode: bool, *, user: User | None = None, profile=None, rq_job_id: str | None = None) -> dict[str, Any]:
     url_resolution = _resolve_assist_apply_url_diagnostics(job)
     return {
         **_assist_job_payload(job, None, mode, debug_mode),
         "resolved_job_url": url_resolution["selected_url"] or str(job.canonical_url or "").strip(),
         "url_resolution": url_resolution,
+        "application_id": job.id,
+        "job_id": job.id,
+        "user_id": getattr(user, "id", None),
+        "queue_job_id": rq_job_id or _queued_rq_job_id(job) or _current_rq_job_id(),
+        "database_host": _database_url_host(),
+        "db_lookup": _assist_lookup_status(job, user, profile),
         "browser_diagnostics": _browser_startup_diagnostics(),
     }
+
+
+def _queued_rq_job_id(job: Job | None) -> str | None:
+    if job is None:
+        return None
+    result = job.assisted_result or {}
+    progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+    diagnostics = result.get("jobserve_flow_diagnostics") if isinstance(result.get("jobserve_flow_diagnostics"), dict) else {}
+    return progress.get("rq_job_id") or diagnostics.get("rq_job_id")
+
+
+def _current_rq_job_id() -> str | None:
+    try:
+        from rq import get_current_job
+
+        current = get_current_job()
+        return str(current.id) if current is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _database_url_host() -> str:
+    parsed = urlparse(settings.database_url)
+    return parsed.hostname or "unknown"
 
 
 def _browser_startup_diagnostics(*, browser_launch_succeeded: bool | None = None, launch_duration_ms: int | None = None, headless: bool | None = None) -> dict[str, Any]:
@@ -570,6 +672,11 @@ def _current_assist_step(job: Job) -> str | None:
     if isinstance(progress, dict):
         return progress.get("current_step") or existing.get("running_step")
     return existing.get("running_step") if isinstance(existing, dict) else None
+
+
+def _assist_already_failed(job: Job) -> bool:
+    existing = job.assisted_result or {}
+    return isinstance(existing, dict) and existing.get("status") == "failed"
 
 
 def classify_form_field(label_text: str, input_type: str = "", autocomplete: str = "", name: str = "", placeholder: str = "") -> str | None:
@@ -807,7 +914,9 @@ def _validate_application(job: Job) -> None:
 def _validate_jobserve_submit(db: Session, job: Job, user: User, profile) -> None:
     if job.apply_strategy != "jobserve_apply_easy":
         raise ValueError("Submit with confirmation is only available for JobServe easy apply.")
-    if not profile or not (getattr(profile, "cv_file_path", None) or getattr(profile, "cv_file_bytes", None)):
+    if not profile:
+        raise ValueError("profile_not_found")
+    if not (getattr(profile, "cv_file_path", None) or getattr(profile, "cv_file_bytes", None)):
         raise ValueError("Saved CV file is required before submitting a JobServe application.")
     if not (getattr(profile, "email", None) or ""):
         raise ValueError("Email is required before submitting a JobServe application.")

@@ -246,6 +246,7 @@ def test_job_url_resolution_is_persisted_in_progress(db_session, monkeypatch) ->
 
     db_session.refresh(job)
     steps = job.assisted_result["debug_steps"]
+    assert any(step["step"] == "profile_loaded" for step in steps)
     resolved = next(step for step in steps if step["step"] == "job_url_resolved")
     assert resolved["resolved_job_url"] == "https://www.jobserve.com/gb/en/job/D8DF"
 
@@ -264,6 +265,64 @@ def test_worker_early_crash_does_not_leave_application_running(monkeypatch) -> N
             job = db.get(Job, ids["job"])
             assert job.assisted_result["status"] == "failed"
             assert job.assisted_result["final_error"] == "early crash"
+            assert job.assisted_result["progress"]["current_step"] != "worker_started"
+
+
+def test_worker_missing_application_logs_not_found(monkeypatch, caplog) -> None:
+    with apply_client(jobserve=True) as (_client, ids):
+        monkeypatch.setattr(apply_agent, "SessionLocal", ids["Session"])
+
+        apply_agent.run_assist_apply_background(999999, ids["user"], "review_only", False)
+
+    assert "application_not_found" in caplog.text
+    assert "job_not_found" in caplog.text
+
+
+def test_worker_missing_user_persists_failure(monkeypatch) -> None:
+    with apply_client(jobserve=True) as (_client, ids):
+        monkeypatch.setattr(apply_agent, "SessionLocal", ids["Session"])
+
+        apply_agent.run_assist_apply_background(ids["job"], 999999, "review_only", False)
+
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+            assert job.assisted_result["status"] == "failed"
+            assert job.assisted_result["final_error"] == "user_not_found"
+            assert job.assisted_result["jobserve_flow_diagnostics"]["db_lookup"]["job_found"] is True
+
+
+def test_submit_missing_profile_fails_with_profile_not_found(monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+    with apply_client(jobserve=True, with_profile=False) as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "submit_with_confirmation"})
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "profile_not_found"
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["db_lookup"]["profile_found"] is False
+    assert job.assisted_result["jobserve_flow_diagnostics"]["db_lookup"]["cv_found"] is False
+
+
+def test_profile_lookup_exception_is_persisted_with_traceback(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+
+    def fail_profile(db, candidate_user):
+        raise RuntimeError("profile database failed")
+
+    monkeypatch.setattr(apply_agent, "get_profile", fail_profile)
+
+    with pytest.raises(ValueError, match="profile database failed"):
+        apply_agent.assist_apply_application(db_session, job, user, browser_runner=_fake_runner)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["progress"]["current_step"] == "loading_profile"
+    assert job.assisted_result["exceptions"][0]["type"] == "RuntimeError"
+    assert "profile database failed" in job.assisted_result["exceptions"][0]["traceback"]
+    assert job.assisted_result["jobserve_flow_diagnostics"]["db_lookup"]["profile_found"] is False
 
 
 def test_stale_browser_launch_progress_fails_on_applications_list(db_session) -> None:
