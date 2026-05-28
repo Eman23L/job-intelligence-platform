@@ -243,7 +243,7 @@ def search_scrape_jobserve(
             validation = validate_normalised_job(normalised, source_name=source.name)
             if not validation.is_valid:
                 skipped += 1
-                warnings.append(_rejection_message("JobServe search", normalised, validation.reasons))
+                warnings.append(_rejection_message("JobServe search", normalised, validation.reasons, diagnostics=validation.diagnostics))
                 _update_scrape_run_progress(db, scrape_run_id, found=len(job_ids), created=created, updated=updated, skipped=skipped)
                 continue
             db.add(
@@ -1051,7 +1051,7 @@ def execute_scrape_source_now(
                     validation = validate_normalised_job(normalised, source_name=source.name)
                     if not validation.is_valid:
                         skipped += 1
-                        message = _rejection_message("JobServe", normalised, validation.reasons)
+                        message = _rejection_message("JobServe", normalised, validation.reasons, diagnostics=validation.diagnostics)
                         warnings.append(message)
                         LOGGER.info(message)
                         if run:
@@ -1127,7 +1127,7 @@ def execute_scrape_source_now(
                 validation = validate_normalised_job(normalised, source_name=source.name)
                 if not validation.is_valid:
                     skipped += 1
-                    message = _rejection_message("generic", normalised, validation.reasons)
+                    message = _rejection_message("generic", normalised, validation.reasons, diagnostics=validation.diagnostics)
                     warnings.append(message)
                     LOGGER.info(message)
                     if run:
@@ -1365,11 +1365,17 @@ def _job_record_summary(record: JobRecord) -> dict[str, str | None]:
     }
 
 
-def _rejection_message(source_kind: str, item: dict[str, Any], reasons: list[str]) -> str:
-    return (
+def _rejection_message(source_kind: str, item: dict[str, Any], reasons: list[str], *, diagnostics: dict[str, Any] | None = None) -> str:
+    message = (
         f"Rejected {source_kind} candidate source_job_id={item.get('source_job_id')} "
         f"title={item.get('title')!r} url={item.get('canonical_url')} reasons={'; '.join(reasons)}"
     )
+    if diagnostics:
+        message = (
+            f"{message} positive_signals={diagnostics.get('positive_signals', {})} "
+            f"privacy_footer_only={diagnostics.get('privacy_footer_only')}"
+        )
+    return message
 
 
 def _upsert_job(db: Session, source: JobSource, item: dict) -> bool:

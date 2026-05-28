@@ -10,11 +10,17 @@ BLOCKED_JOB_PHRASES = (
     "why choose",
     "search jobs",
     "find jobs",
-    "terms",
-    "privacy",
     "sign in",
     "signin",
     "register",
+)
+
+POLICY_PAGE_PHRASES = (
+    "privacy",
+    "privacy policy",
+    "terms",
+    "terms and conditions",
+    "cookie policy",
 )
 
 NAVIGATION_PHRASES = (
@@ -46,6 +52,7 @@ GENERIC_TITLES = {
 class JobValidationResult:
     is_valid: bool
     reasons: list[str]
+    diagnostics: dict[str, Any] | None = None
 
 
 def validate_normalised_job(item: dict[str, Any], *, source_name: str | None = None) -> JobValidationResult:
@@ -58,6 +65,14 @@ def validate_normalised_job(item: dict[str, Any], *, source_name: str | None = N
     salary_max = item.get("salary_max") or item.get("salary_max_raw") or item.get("normalized_annual_max")
     url = _clean(item.get("canonical_url"))
     source = (source_name or "").lower()
+    positive_signals = _positive_job_signals(item, source_name=source_name)
+    privacy_footer_only = _privacy_footer_only(title=title, description=description, url=url)
+    diagnostics = {
+        "title": title,
+        "url": url,
+        "positive_signals": positive_signals,
+        "privacy_footer_only": privacy_footer_only,
+    }
 
     if not _has_real_title(title):
         reasons.append("missing real job title")
@@ -68,6 +83,9 @@ def validate_normalised_job(item: dict[str, Any], *, source_name: str | None = N
         target = navigation_target if phrase in {"sign in", "signin", "register"} else blocked_target
         if phrase in target:
             reasons.append(f"blocked phrase: {phrase}")
+    for phrase in POLICY_PAGE_PHRASES:
+        if _looks_like_policy_page(phrase, title=title, url=url):
+            reasons.append(f"blocked policy page: {phrase}")
 
     has_salary = _has_salary(salary_min) or _has_salary(salary_max)
     has_description = bool(description)
@@ -77,7 +95,7 @@ def validate_normalised_job(item: dict[str, Any], *, source_name: str | None = N
     if has_description and _word_count(description) < 6:
         reasons.append("description is extremely short")
 
-    if has_description and _looks_navigation_heavy(description):
+    if has_description and _looks_navigation_heavy(description) and not _has_strong_jobserve_job_signals(source, positive_signals):
         reasons.append("description appears navigation/footer-heavy")
 
     if (
@@ -90,7 +108,7 @@ def validate_normalised_job(item: dict[str, Any], *, source_name: str | None = N
     ):
         reasons.append("JobServe URL is not a job/apply URL")
 
-    return JobValidationResult(is_valid=not reasons, reasons=reasons)
+    return JobValidationResult(is_valid=not reasons, reasons=reasons, diagnostics=diagnostics)
 
 
 def _has_real_title(title: str) -> bool:
@@ -115,6 +133,53 @@ def _looks_navigation_heavy(description: str) -> bool:
     lines = [line.strip() for line in re.split(r"[\n\r]+", description) if line.strip()]
     short_lines = sum(1 for line in lines if len(line.split()) <= 4)
     return nav_hits >= 5 and (words < 40 or not lines or short_lines / len(lines) >= 0.45)
+
+
+def _looks_like_policy_page(phrase: str, *, title: str, url: str) -> bool:
+    normalized_title = title.lower()
+    normalized_url = url.lower()
+    if phrase in {"privacy", "terms"}:
+        return bool(
+            re.search(rf"\b{re.escape(phrase)}\b", normalized_title)
+            or re.search(rf"[/_-]{re.escape(phrase)}(?:[/_-]|$)", normalized_url)
+            or re.search(rf"\b{re.escape(phrase)}[-_\s]*(?:policy|conditions)\b", normalized_url)
+        )
+    return phrase in normalized_title or phrase.replace(" ", "-") in normalized_url or phrase.replace(" ", "_") in normalized_url
+
+
+def _positive_job_signals(item: dict[str, Any], *, source_name: str | None = None) -> dict[str, bool]:
+    url = _clean(item.get("canonical_url"))
+    source_job_id = _clean(item.get("source_job_id") or item.get("original_external_id"))
+    description = _clean(item.get("description_text"))
+    source = (source_name or "").lower()
+    return {
+        "job_title": _has_real_title(_clean(item.get("title"))),
+        "company": bool(_clean(item.get("company_name"))),
+        "location": bool(_clean(item.get("location"))),
+        "salary_or_rate": _has_salary(item.get("salary_min") or item.get("salary_min_raw") or item.get("normalized_annual_min"))
+        or _has_salary(item.get("salary_max") or item.get("salary_max_raw") or item.get("normalized_annual_max")),
+        "apply_button_text": "apply" in description.lower(),
+        "jobserve_reference": bool("jobserve" in source and source_job_id),
+        "specific_jobserve_url": bool("jobserve" in source and re.search(r"/(?:job|search-jobs-in|apply)[/-].*[A-Z0-9]{8,}", url, flags=re.I)),
+    }
+
+
+def _has_strong_jobserve_job_signals(source: str, signals: dict[str, bool]) -> bool:
+    if "jobserve" not in source:
+        return False
+    strong_count = sum(
+        1
+        for key in ["job_title", "company", "location", "salary_or_rate", "apply_button_text", "jobserve_reference", "specific_jobserve_url"]
+        if signals.get(key)
+    )
+    return strong_count >= 3 and signals.get("job_title", False)
+
+
+def _privacy_footer_only(*, title: str, description: str, url: str) -> bool:
+    combined = " ".join(value for value in [description] if value).lower()
+    if "privacy" not in combined:
+        return False
+    return not _looks_like_policy_page("privacy", title=title, url=url)
 
 
 def _word_count(value: str) -> int:
