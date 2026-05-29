@@ -20,7 +20,8 @@ QUEUEABLE_RECOMMENDATIONS = {"apply", "maybe"}
 TERMINAL_APPLICATION_STATUSES = {"applied", "skipped"}
 ACTIVE_RUN_STATUSES = {"running", "queued"}
 ASSIST_QUEUE_TIMEOUT = timedelta(minutes=2)
-ASSIST_WORKER_RUNNING_TIMEOUT = timedelta(seconds=900)
+ASSIST_WORKER_STARTED_HANDOFF_TIMEOUT = timedelta(seconds=30)
+ASSIST_WORKER_RUNNING_TIMEOUT = timedelta(minutes=2)
 logger = logging.getLogger(__name__)
 
 
@@ -318,10 +319,25 @@ def _fail_stale_or_failed_assist_queue(db: Session) -> None:
                     {"queue_age_seconds": int((utcnow() - _aware_datetime(job.last_apply_attempt_at)).total_seconds())},
                 ),
             )
+        elif _current_assist_progress_step(result) == "worker_started" and last_heartbeat_at and last_heartbeat_at < utcnow() - ASSIST_WORKER_STARTED_HANDOFF_TIMEOUT:
+            result = _assist_queue_failure_result(
+                result,
+                "worker_startup_handoff_timeout",
+                "Worker started assisted apply but did not reach loading_application within 30 seconds.",
+                _assist_queue_decision_details(
+                    job,
+                    result,
+                    rq_job_id,
+                    rq_status,
+                    worker_progress_seen,
+                    "worker_started_without_loading_application_after_timeout",
+                    {"seconds_since_heartbeat": int((utcnow() - last_heartbeat_at).total_seconds()), "last_successful_step": "worker_started"},
+                ),
+            )
         elif worker_progress_seen and last_heartbeat_at and last_heartbeat_at < running_cutoff:
             result = _assist_queue_failure_result(
                 result,
-                "worker_running_timeout",
+                "worker_progress_timeout",
                 "Worker started assisted apply but stopped reporting progress.",
                 _assist_queue_decision_details(
                     job,
@@ -356,6 +372,7 @@ def _assist_queue_failure_result(result: dict, error: str, message: str, details
         **result,
         "status": "failed",
         "final_error": error,
+        "running_step": error,
         "warnings": warnings,
         "progress": {
             **progress,
@@ -370,6 +387,11 @@ def _assist_queue_failure_result(result: dict, error: str, message: str, details
         },
         "debug_steps": [*result.get("debug_steps", []), {"step": error, "message": message, **details}][-100:],
     }
+
+
+def _current_assist_progress_step(result: dict) -> str:
+    progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+    return str(progress.get("current_step") or result.get("running_step") or "")
 
 
 def _record_assist_queue_decision(result: dict, job: Job, rq_job_id: str | None, rq_status: str | None, worker_progress_seen: bool, reason: str) -> None:
@@ -403,6 +425,10 @@ def _assist_worker_progress_seen(result: dict) -> bool:
     debug_steps = result.get("debug_steps") if isinstance(result.get("debug_steps"), list) else []
     worker_markers = {
         "worker_started",
+        "worker_handoff_entered",
+        "db_session_create_start",
+        "db_session_create_done",
+        "assist_apply_application_entered",
         "loading_application",
         "application_loaded",
         "loading_job",

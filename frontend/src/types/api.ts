@@ -246,6 +246,7 @@ export interface AssistApplyResult {
   debug_steps: Array<Record<string, unknown>>;
   final_url: string | null;
   final_error: string | null;
+  running_step?: string | null;
   debug_mode: boolean;
   timing_diagnostics?: Record<string, unknown>;
   progress?: Record<string, unknown>;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 import logging
 import mimetypes
@@ -50,6 +51,7 @@ JOBSERVE_REQUIRED_DROPDOWN_PATTERNS = {
     "work_authorization": [r"working status", r"work status", r"status in uk", r"eligible.*uk"],
 }
 DB_LOOKUP_TIMEOUT_SECONDS = 10.0
+DB_SESSION_CREATE_TIMEOUT_SECONDS = 10.0
 _ACTIVE_ASSIST_JOB: dict[str, Any] | None = None
 
 
@@ -80,8 +82,12 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
         _persist_assist_progress(db, job, step, payload, progress_started)
 
     profile = None
-    progress_callback("worker_started", _assist_job_payload(job, user, mode, debug_mode))
     try:
+        progress_callback("worker_started", _assist_job_payload(job, user, mode, debug_mode))
+        progress_callback("worker_handoff_entered", _assist_lookup_payload(job, user, profile, mode, debug_mode))
+        progress_callback("db_session_create_start", {**_assist_lookup_payload(job, user, profile, mode, debug_mode), "db_session_already_created": True})
+        progress_callback("db_session_create_done", {**_assist_lookup_payload(job, user, profile, mode, debug_mode), "db_session_already_created": True})
+        progress_callback("assist_apply_application_entered", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         _progress_with_db_timing(db, job, "loading_application", _assist_lookup_payload(job, user, profile, mode, debug_mode), progress_started)
         progress_callback("application_loaded", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         progress_callback("loading_job", _assist_lookup_payload(job, user, profile, mode, debug_mode))
@@ -193,7 +199,10 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
         _database_url_host(),
     )
     try:
-        with SessionLocal() as db:
+        logger.info("assist_apply_worker_db_session_create_start application_id=%s user_id=%s rq_job_id=%s database_host=%s", application_id, user_id, rq_job_id, _database_url_host())
+        db = _create_db_session_with_timeout(application_id, user_id, mode, debug_mode, rq_job_id)
+        logger.info("assist_apply_worker_db_session_create_done application_id=%s user_id=%s rq_job_id=%s database_host=%s", application_id, user_id, rq_job_id, _database_url_host())
+        try:
             job = None
             user = None
             try:
@@ -255,6 +264,8 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
                 logger.exception("assist_apply_worker_failed service_type=%s application_id=%s error=%s", settings.service_type, application_id, exc)
             else:
                 logger.info("assist_apply_worker_completed service_type=%s application_id=%s", settings.service_type, application_id)
+        finally:
+            db.close()
     finally:
         _restore_apply_shutdown_handler(shutdown_handler)
 
@@ -303,6 +314,7 @@ def _store_assist_failure(
         screenshot_path=None,
         final_error=message,
         progress={"current_step": running_step or "failed", "last_heartbeat_at": utcnow().isoformat(), "message": message},
+        running_step=running_step or "failed",
         timing_diagnostics={"total_runtime_ms": 0},
         jobserve_flow_diagnostics=diagnostics,
         exceptions=[*(existing.get("exceptions") or []), *([exception_payload] if exception_payload else [])],
@@ -324,6 +336,72 @@ def _store_assist_failure(
     job.assisted_warnings = result.warnings
     job.last_apply_attempt_at = utcnow()
     db.commit()
+
+
+def _create_db_session_with_timeout(application_id: int, user_id: int, mode: str, debug_mode: bool, rq_job_id: str | None) -> Session:
+    started = time.perf_counter()
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(SessionLocal)
+    try:
+        session = future.result(timeout=DB_SESSION_CREATE_TIMEOUT_SECONDS)
+    except FutureTimeoutError as exc:
+        logger.exception(
+            "assist_apply_worker_db_session_create_timeout application_id=%s user_id=%s rq_job_id=%s database_host=%s timeout_seconds=%s",
+            application_id,
+            user_id,
+            rq_job_id,
+            _database_url_host(),
+            DB_SESSION_CREATE_TIMEOUT_SECONDS,
+        )
+        _persist_worker_startup_failure(
+            application_id,
+            user_id,
+            mode,
+            debug_mode,
+            rq_job_id,
+            "db_session_create_timeout",
+            exc,
+            "db_session_create_start",
+        )
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise TimeoutError("db_session_create_timeout") from exc
+    finally:
+        if future.done():
+            executor.shutdown(wait=False)
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    if duration_ms > DB_SESSION_CREATE_TIMEOUT_SECONDS * 1000:
+        exc = TimeoutError("db_session_create_timeout")
+        _persist_worker_startup_failure(application_id, user_id, mode, debug_mode, rq_job_id, "db_session_create_timeout", exc, "db_session_create_start")
+        raise exc
+    return session
+
+
+def _persist_worker_startup_failure(
+    application_id: int,
+    user_id: int,
+    mode: str,
+    debug_mode: bool,
+    rq_job_id: str | None,
+    error: str,
+    exc: BaseException,
+    running_step: str,
+) -> None:
+    try:
+        with SessionLocal() as db:
+            job = db.get(Job, application_id)
+            if job is None or _assist_already_failed(job):
+                return
+            _store_assist_failure(
+                db,
+                job,
+                error,
+                error=error,
+                exc=exc,
+                running_step=running_step,
+                extra=_assist_worker_failure_context(job, None, None, application_id, user_id, mode, debug_mode, rq_job_id),
+            )
+    except Exception as persist_exc:  # noqa: BLE001
+        logger.exception("assist_apply_worker_startup_failure_persist_failed application_id=%s error=%s", application_id, persist_exc)
 
 
 def _install_apply_shutdown_handler(application_id: int, user_id: int, mode: str, debug_mode: bool, rq_job_id: str | None):
@@ -789,6 +867,7 @@ def _assist_worker_failure_context(
         "job_id": getattr(job, "id", None),
         "user_id": user_id,
         "queue_job_id": rq_job_id,
+        "queue_name": settings.queue_name,
         "database_host": _database_url_host(),
         "db_diagnostics": _db_diagnostics(None, application_id, None, job is not None),
         "db_lookup": _assist_lookup_status(job, user, profile),
@@ -805,6 +884,7 @@ def _assist_failure_context(job: Job, mode: str, debug_mode: bool, *, user: User
         "job_id": job.id,
         "user_id": getattr(user, "id", None),
         "queue_job_id": rq_job_id or _queued_rq_job_id(job) or _current_rq_job_id(),
+        "queue_name": settings.queue_name,
         "database_host": _database_url_host(),
         "db_diagnostics": _db_diagnostics(None, job.id, None, True),
         "db_lookup": _assist_lookup_status(job, user, profile),

@@ -246,6 +246,15 @@ def test_job_url_resolution_is_persisted_in_progress(db_session, monkeypatch) ->
 
     db_session.refresh(job)
     steps = job.assisted_result["debug_steps"]
+    step_names = [step["step"] for step in steps]
+    assert step_names[:6] == [
+        "worker_started",
+        "worker_handoff_entered",
+        "db_session_create_start",
+        "db_session_create_done",
+        "assist_apply_application_entered",
+        "loading_application",
+    ]
     assert any(step["step"] == "application_loaded" for step in steps)
     assert any(step["step"] == "profile_loaded" for step in steps)
     resolved = next(step for step in steps if step["step"] == "job_url_resolved")
@@ -289,6 +298,28 @@ def test_database_lookup_error_is_persisted(db_session, monkeypatch) -> None:
     assert job.assisted_result["status"] == "failed"
     assert job.assisted_result["final_error"] == "database_lookup_error"
     assert job.assisted_result["exceptions"][0]["type"] == "RuntimeError"
+
+
+def test_exception_after_worker_started_is_persisted_with_traceback(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    original_persist = apply_agent._persist_assist_progress
+
+    def fail_after_worker_started(db, candidate_job, step, payload, started_perf):
+        if step == "worker_handoff_entered":
+            raise RuntimeError("handoff exploded")
+        return original_persist(db, candidate_job, step, payload, started_perf)
+
+    monkeypatch.setattr(apply_agent, "_persist_assist_progress", fail_after_worker_started)
+
+    with pytest.raises(RuntimeError, match="handoff exploded"):
+        apply_agent.assist_apply_application(db_session, job, user, browser_runner=_fake_runner)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "handoff exploded"
+    assert job.assisted_result["running_step"] == "worker_started"
+    assert job.assisted_result["exceptions"][-1]["type"] == "RuntimeError"
+    assert "handoff exploded" in job.assisted_result["exceptions"][-1]["traceback"]
 
 
 def test_exception_during_jobserve_fill_persists_real_error(db_session, monkeypatch) -> None:
@@ -373,6 +404,30 @@ def test_worker_db_session_is_closed_on_success_and_failure(monkeypatch) -> None
     apply_agent.run_assist_apply_background(999999, 1, "review_only", False)
 
     assert all(session.closed for session in created)
+
+
+def test_db_session_creation_timeout_is_persisted(monkeypatch) -> None:
+    with apply_client(jobserve=True) as (_client, ids):
+        calls = {"count": 0}
+
+        def session_factory():
+            calls["count"] += 1
+            if calls["count"] == 1:
+                time.sleep(0.02)
+            return ids["Session"]()
+
+        monkeypatch.setattr(apply_agent, "SessionLocal", session_factory)
+        monkeypatch.setattr(apply_agent, "DB_SESSION_CREATE_TIMEOUT_SECONDS", 0.001)
+
+        with pytest.raises(TimeoutError, match="db_session_create_timeout"):
+            apply_agent._create_db_session_with_timeout(ids["job"], ids["user"], "review_only", False, "assist-123")
+
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+            assert job.assisted_result["status"] == "failed"
+            assert job.assisted_result["final_error"] == "db_session_create_timeout"
+            assert job.assisted_result["running_step"] == "db_session_create_start"
+            assert job.assisted_result["exceptions"][-1]["type"] == "TimeoutError"
 
 
 def test_worker_startup_warns_when_service_type_is_web(monkeypatch, caplog) -> None:
@@ -599,6 +654,29 @@ def test_queued_assist_with_worker_started_is_not_marked_stale(db_session, monke
     assert "queue_failure" not in job.assisted_result["jobserve_flow_diagnostics"]
 
 
+def test_worker_started_handoff_timeout_fails_on_applications_list(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    stale_heartbeat = (apply_agent.utcnow() - timedelta(seconds=31)).isoformat()
+    job.assisted_result = {
+        "status": "running",
+        "warnings": [],
+        "progress": {"current_step": "worker_started", "message": "worker started", "rq_job_id": "assist-123", "last_heartbeat_at": stale_heartbeat},
+        "debug_steps": [{"step": "queued"}, {"step": "worker_started"}],
+        "jobserve_flow_diagnostics": {"rq_job_id": "assist-123"},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow() - timedelta(minutes=3)
+    db_session.commit()
+    monkeypatch.setattr(applications_service, "rq_job_failure", lambda rq_job_id: None)
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "worker_startup_handoff_timeout"
+    assert job.assisted_result["running_step"] == "worker_startup_handoff_timeout"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["queue_diagnostics"]["last_successful_step"] == "worker_started"
+
+
 def test_queued_assist_with_jobserve_debug_steps_is_not_marked_stale(db_session, monkeypatch) -> None:
     user, job = _seed_application(db_session, jobserve=True)
     job.assisted_result = {
@@ -648,7 +726,7 @@ def test_stale_checker_does_not_overwrite_worker_result(db_session, monkeypatch)
     assert "queue_failure" not in job.assisted_result["jobserve_flow_diagnostics"]
 
 
-def test_stale_worker_progress_gets_worker_running_timeout(db_session, monkeypatch) -> None:
+def test_stale_worker_progress_gets_worker_progress_timeout(db_session, monkeypatch) -> None:
     user, job = _seed_application(db_session, jobserve=True)
     stale_heartbeat = (apply_agent.utcnow() - timedelta(minutes=20)).isoformat()
     job.assisted_result = {
@@ -666,7 +744,7 @@ def test_stale_worker_progress_gets_worker_running_timeout(db_session, monkeypat
 
     db_session.refresh(job)
     assert job.assisted_result["status"] == "failed"
-    assert job.assisted_result["final_error"] == "worker_running_timeout"
+    assert job.assisted_result["final_error"] == "worker_progress_timeout"
     assert job.assisted_result["jobserve_flow_diagnostics"]["queue_diagnostics"]["worker_progress_seen"] is True
 
 
