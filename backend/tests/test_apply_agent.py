@@ -378,6 +378,8 @@ def test_worker_db_session_is_closed_on_success_and_failure(monkeypatch) -> None
 def test_worker_startup_warns_when_service_type_is_web(monkeypatch, caplog) -> None:
     from app import worker
 
+    caplog.set_level("INFO")
+
     class FakeConnection:
         def ping(self):
             return True
@@ -391,7 +393,7 @@ def test_worker_startup_warns_when_service_type_is_web(monkeypatch, caplog) -> N
 
     monkeypatch.setattr(worker.settings, "service_type", "web")
     monkeypatch.setattr(worker, "redis_connection", lambda: FakeConnection())
-    monkeypatch.setattr(worker, "browser_status", lambda: {"playwright_installed": True, "chromium_available": True})
+    monkeypatch.setattr(worker, "browser_status", lambda: {"playwright_installed": True, "chromium_available": True, "worker_running": False})
     monkeypatch.setattr(
         worker,
         "chromium_diagnostics",
@@ -409,6 +411,84 @@ def test_worker_startup_warns_when_service_type_is_web(monkeypatch, caplog) -> N
     worker.main()
 
     assert "worker_service_type_misconfigured" in caplog.text
+    assert "worker_work_start" in caplog.text
+
+
+def test_worker_startup_runs_with_service_type_worker_without_port(monkeypatch, caplog) -> None:
+    from app import worker
+
+    caplog.set_level("INFO")
+    monkeypatch.delenv("PORT", raising=False)
+    work_called = {"value": False}
+
+    class FakeConnection:
+        def ping(self):
+            return True
+
+    class FakeWorker:
+        def __init__(self, queues, connection):
+            self.queues = queues
+            self.connection = connection
+
+        def work(self, *args, **kwargs):
+            work_called["value"] = True
+            return False
+
+    monkeypatch.setattr(worker.settings, "service_type", "worker")
+    monkeypatch.setattr(worker, "redis_connection", lambda: FakeConnection())
+    monkeypatch.setattr(worker, "browser_status", lambda: {"playwright_installed": True, "chromium_available": True, "worker_running": False})
+    monkeypatch.setattr(
+        worker,
+        "chromium_diagnostics",
+        lambda: {
+            "playwright_browsers_path": "0",
+            "chromium_executable_path": "/chromium",
+            "chromium_path_source": "playwright_api",
+            "chromium_file_exists": True,
+            "chromium_file_executable": True,
+            "ms_playwright_listing": [],
+        },
+    )
+    monkeypatch.setattr(worker, "Worker", FakeWorker)
+
+    worker.main()
+
+    assert work_called["value"] is True
+    assert "worker_boot service_type=worker" in caplog.text
+    assert "worker_construction_start" in caplog.text
+    assert "worker_work_start" in caplog.text
+    assert "PORT" not in caplog.text
+
+
+def test_worker_invalid_redis_logs_clear_startup_error(monkeypatch, caplog) -> None:
+    from app import worker
+
+    caplog.set_level("INFO")
+
+    class FakeConnection:
+        def ping(self):
+            raise RuntimeError("redis ping failed")
+
+    monkeypatch.setattr(worker.settings, "service_type", "worker")
+    monkeypatch.setattr(worker, "redis_connection", lambda: FakeConnection())
+
+    with pytest.raises(RuntimeError, match="redis ping failed"):
+        worker.main()
+
+    assert "worker_redis_ping_start" in caplog.text
+    assert "worker_startup_failed" in caplog.text
+    assert "redis ping failed" in caplog.text
+
+
+def test_render_worker_service_configuration() -> None:
+    render_yaml = Path(__file__).resolve().parents[2] / "render.yaml"
+    content = render_yaml.read_text(encoding="utf-8")
+
+    assert "name: job-intelligence-backend" in content
+    assert "SERVICE_TYPE\n        value: web" in content
+    assert "name: job-intelligence-worker" in content
+    assert "startCommand: PYTHONPATH=backend python -m app.worker" in content
+    assert "SERVICE_TYPE\n        value: worker" in content
 
 
 def test_worker_missing_user_persists_failure(monkeypatch) -> None:
