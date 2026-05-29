@@ -246,9 +246,49 @@ def test_job_url_resolution_is_persisted_in_progress(db_session, monkeypatch) ->
 
     db_session.refresh(job)
     steps = job.assisted_result["debug_steps"]
+    assert any(step["step"] == "application_loaded" for step in steps)
     assert any(step["step"] == "profile_loaded" for step in steps)
     resolved = next(step for step in steps if step["step"] == "job_url_resolved")
     assert resolved["resolved_job_url"] == "https://www.jobserve.com/gb/en/job/D8DF"
+
+
+def test_application_load_timeout_is_persisted(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    original_persist = apply_agent._persist_assist_progress
+
+    def slow_persist(*args, **kwargs):
+        time.sleep(0.002)
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(apply_agent, "DB_LOOKUP_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(apply_agent, "_persist_assist_progress", slow_persist)
+
+    with pytest.raises(TimeoutError, match="application_load_timeout"):
+        apply_agent.assist_apply_application(db_session, job, user, browser_runner=_fake_runner)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "application_load_timeout"
+    assert job.assisted_result["progress"]["current_step"] == "loading_application"
+
+
+def test_database_lookup_error_is_persisted(db_session, monkeypatch) -> None:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    user, job = _seed_application(db_session, jobserve=True)
+
+    def fail_availability():
+        raise SQLAlchemyError("database unavailable")
+
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: fail_availability())
+
+    with pytest.raises(RuntimeError, match="database_lookup_error"):
+        apply_agent.assist_apply_application(db_session, job, user, browser_runner=_fake_runner)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "database_lookup_error"
+    assert job.assisted_result["exceptions"][0]["type"] == "RuntimeError"
 
 
 def test_worker_early_crash_does_not_leave_application_running(monkeypatch) -> None:
@@ -276,6 +316,40 @@ def test_worker_missing_application_logs_not_found(monkeypatch, caplog) -> None:
 
     assert "application_not_found" in caplog.text
     assert "job_not_found" in caplog.text
+
+
+def test_worker_db_session_is_closed_on_success_and_failure(monkeypatch) -> None:
+    class FakeSession:
+        def __init__(self, fail=False):
+            self.fail = fail
+            self.closed = False
+
+        def get(self, model, ident):
+            if self.fail:
+                raise RuntimeError("db exploded")
+            return None
+
+        def close(self):
+            self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            return False
+
+    created = [FakeSession(), FakeSession(fail=True)]
+    pending = list(created)
+
+    def session_factory():
+        return pending.pop(0)
+
+    monkeypatch.setattr(apply_agent, "SessionLocal", session_factory)
+    apply_agent.run_assist_apply_background(999999, 1, "review_only", False)
+    apply_agent.run_assist_apply_background(999999, 1, "review_only", False)
+
+    assert all(session.closed for session in created)
 
 
 def test_worker_missing_user_persists_failure(monkeypatch) -> None:

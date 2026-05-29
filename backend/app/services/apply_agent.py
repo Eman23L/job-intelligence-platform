@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SQLAlchemyTimeoutError
 
 from app.config import settings
 from app.db.models import Job, JobScore, User
@@ -47,6 +48,7 @@ JOBSERVE_REQUIRED_DROPDOWN_PATTERNS = {
     "travel_distance_miles": [r"travel distance", r"travel"],
     "work_authorization": [r"working status", r"work status", r"status in uk", r"eligible.*uk"],
 }
+DB_LOOKUP_TIMEOUT_SECONDS = 10.0
 
 
 class BrowserAutomationError(RuntimeError):
@@ -74,12 +76,12 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
     profile = None
     progress_callback("worker_started", _assist_job_payload(job, user, mode, debug_mode))
     try:
-        progress_callback("loading_application", _assist_lookup_payload(job, user, profile, mode, debug_mode))
+        _progress_with_db_timing(db, job, "loading_application", _assist_lookup_payload(job, user, profile, mode, debug_mode), progress_started)
         progress_callback("application_loaded", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         progress_callback("loading_job", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         progress_callback("job_loaded", _assist_lookup_payload(job, user, profile, mode, debug_mode))
-        _validate_application(job)
-        availability = check_job_availability(db, job)
+        _timed_db_operation("loading_job", lambda: _validate_application(job), db=db, application_id=job.id)
+        availability = _timed_db_operation("loading_job", lambda: check_job_availability(db, job), db=db, application_id=job.id)
         if availability.availability_status != "active":
             raise ValueError(f"Application assistance blocked because job is {availability.availability_status}. {availability.availability_reason or ''}".strip())
         _validate_application(job)
@@ -94,8 +96,9 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
 
     try:
         progress_callback("loading_profile", _assist_lookup_payload(job, user, profile, mode, debug_mode))
-        profile = get_profile(db, user)
+        profile = _timed_db_operation("loading_profile", lambda: get_profile(db, user), db=db, application_id=job.id)
         progress_callback("profile_loaded", _assist_lookup_payload(job, user, profile, mode, debug_mode))
+        _timed_db_operation("loading_cv", lambda: _profile_cv_present(profile), db=db, application_id=job.id)
         progress_callback("resolving_job_url", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         resolved_url = _resolve_assist_apply_url(job)
         progress_callback("job_url_resolved", {**_assist_lookup_payload(job, user, profile, mode, debug_mode), "resolved_job_url": resolved_url})
@@ -187,16 +190,17 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
         user = None
         try:
             logger.info("assist_apply_worker_loading_application application_id=%s user_id=%s rq_job_id=%s database_host=%s", application_id, user_id, rq_job_id, _database_url_host())
-            job = db.get(Job, application_id)
+            job = _timed_db_operation("loading_application", lambda: db.get(Job, application_id), db=db, application_id=application_id)
             logger.info("assist_apply_worker_application_loaded application_id=%s found=%s rq_job_id=%s", application_id, job is not None, rq_job_id)
             if job is None:
                 logger.error("assist_apply_worker_missing_application error=application_not_found job_error=job_not_found service_type=%s application_id=%s user_id=%s rq_job_id=%s database_host=%s", settings.service_type, application_id, user_id, rq_job_id, _database_url_host())
                 return
             logger.info("assist_apply_worker_loading_user application_id=%s user_id=%s rq_job_id=%s", application_id, user_id, rq_job_id)
-            user = db.get(User, user_id)
+            user = _timed_db_operation("loading_job", lambda: db.get(User, user_id), db=db, application_id=application_id)
         except Exception as exc:  # noqa: BLE001
             if job is not None:
-                _store_assist_failure(db, job, "db_lookup_failed", error="db_lookup_failed", exc=exc, running_step="loading_application", extra=_assist_worker_failure_context(job, user, None, application_id, user_id, mode, debug_mode, rq_job_id))
+                error = _db_lookup_error_code(exc, "application_load")
+                _store_assist_failure(db, job, error, error=error, exc=exc, running_step="loading_application", extra=_assist_worker_failure_context(job, user, None, application_id, user_id, mode, debug_mode, rq_job_id))
             logger.exception("assist_apply_worker_db_lookup_failed service_type=%s application_id=%s user_id=%s rq_job_id=%s", settings.service_type, application_id, user_id, rq_job_id)
             return
         if user is None:
@@ -290,6 +294,89 @@ def _store_assist_failure(
     job.assisted_warnings = result.warnings
     job.last_apply_attempt_at = utcnow()
     db.commit()
+
+
+def _progress_with_db_timing(db: Session, job: Job, step: str, payload: dict[str, Any], started_perf: float) -> None:
+    started = time.perf_counter()
+    logger.info("%s_start application_id=%s database_host=%s pool_status=%s", step, job.id, _database_url_host(), _db_pool_status(db))
+    try:
+        _persist_assist_progress(db, job, step, {**payload, "db_diagnostics": _db_diagnostics(db, job.id, None, True)}, started_perf)
+    except SQLAlchemyTimeoutError as exc:
+        raise TimeoutError(_progress_timeout_code(step)) from exc
+    except SQLAlchemyError as exc:
+        raise RuntimeError("database_lookup_error") from exc
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    logger.info("%s_done application_id=%s duration_ms=%s database_host=%s pool_status=%s", step, job.id, duration_ms, _database_url_host(), _db_pool_status(db))
+    if duration_ms > DB_LOOKUP_TIMEOUT_SECONDS * 1000:
+        raise TimeoutError(_progress_timeout_code(step))
+
+
+def _timed_db_operation(name: str, operation: Callable[[], Any], *, db: Session | None = None, application_id: int | None = None) -> Any:
+    started = time.perf_counter()
+    connection_acquired = False
+    pool_status = _db_pool_status(db)
+    logger.info("%s_start application_id=%s database_host=%s pool_status=%s", name, application_id, _database_url_host(), pool_status)
+    try:
+        if db is not None:
+            connection_acquired = db.connection() is not None
+        result = operation()
+    except SQLAlchemyTimeoutError as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.exception(
+            "%s_timeout application_id=%s query_duration_ms=%s database_host=%s pool_status=%s connection_acquired=%s",
+            name,
+            application_id,
+            duration_ms,
+            _database_url_host(),
+            _db_pool_status(db),
+            connection_acquired,
+        )
+        raise TimeoutError(_db_operation_timeout_code(name)) from exc
+    except SQLAlchemyError as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.exception(
+            "%s_database_error application_id=%s query_duration_ms=%s database_host=%s pool_status=%s connection_acquired=%s",
+            name,
+            application_id,
+            duration_ms,
+            _database_url_host(),
+            _db_pool_status(db),
+            connection_acquired,
+        )
+        raise RuntimeError("database_lookup_error") from exc
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "%s_done application_id=%s duration_ms=%s database_host=%s pool_status=%s connection_acquired=%s",
+        name,
+        application_id,
+        duration_ms,
+        _database_url_host(),
+        _db_pool_status(db),
+        connection_acquired,
+    )
+    if duration_ms > DB_LOOKUP_TIMEOUT_SECONDS * 1000:
+        raise TimeoutError(_db_operation_timeout_code(name))
+    return result
+
+
+def _db_operation_timeout_code(name: str) -> str:
+    if name == "loading_application":
+        return "application_load_timeout"
+    if name == "loading_job":
+        return "job_load_timeout"
+    if name == "loading_profile":
+        return "profile_load_timeout"
+    if name == "loading_cv":
+        return "cv_load_timeout"
+    return f"{name}_timeout"
+
+
+def _progress_timeout_code(step: str) -> str:
+    if step == "loading_application":
+        return "application_load_timeout"
+    if step == "loading_profile":
+        return "profile_load_timeout"
+    return f"{step}_timeout"
 
 
 def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str, Any], started_perf: float) -> None:
@@ -604,6 +691,7 @@ def _assist_worker_failure_context(
         "user_id": user_id,
         "queue_job_id": rq_job_id,
         "database_host": _database_url_host(),
+        "db_diagnostics": _db_diagnostics(None, application_id, None, job is not None),
         "db_lookup": _assist_lookup_status(job, user, profile),
     }
 
@@ -619,6 +707,7 @@ def _assist_failure_context(job: Job, mode: str, debug_mode: bool, *, user: User
         "user_id": getattr(user, "id", None),
         "queue_job_id": rq_job_id or _queued_rq_job_id(job) or _current_rq_job_id(),
         "database_host": _database_url_host(),
+        "db_diagnostics": _db_diagnostics(None, job.id, None, True),
         "db_lookup": _assist_lookup_status(job, user, profile),
         "browser_diagnostics": _browser_startup_diagnostics(),
     }
@@ -646,6 +735,33 @@ def _current_rq_job_id() -> str | None:
 def _database_url_host() -> str:
     parsed = urlparse(settings.database_url)
     return parsed.hostname or "unknown"
+
+
+def _db_pool_status(db: Session | None) -> str | None:
+    try:
+        bind = db.get_bind() if db is not None else SessionLocal.kw["bind"]
+        pool = getattr(bind, "pool", None)
+        status = getattr(pool, "status", None)
+        return status() if callable(status) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _db_diagnostics(db: Session | None, application_id: int | None, query_duration_ms: int | None, connection_acquired: bool | None) -> dict[str, Any]:
+    return {
+        "database_host": _database_url_host(),
+        "pool_status": _db_pool_status(db),
+        "connection_acquired": connection_acquired,
+        "application_id": application_id,
+        "query_duration_ms": query_duration_ms,
+    }
+
+
+def _db_lookup_error_code(exc: BaseException, fallback: str) -> str:
+    message = str(exc)
+    if isinstance(exc, TimeoutError) or message.endswith("_timeout"):
+        return message if message.endswith("_timeout") else f"{fallback}_timeout"
+    return "database_lookup_error"
 
 
 def _browser_startup_diagnostics(*, browser_launch_succeeded: bool | None = None, launch_duration_ms: int | None = None, headless: bool | None = None) -> dict[str, Any]:
