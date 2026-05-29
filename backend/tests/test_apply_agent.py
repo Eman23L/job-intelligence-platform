@@ -784,6 +784,61 @@ def test_assist_apply_endpoint_queues_debug_mode(monkeypatch) -> None:
     assert enqueued[0][1] == (ids["job"], ids["user"], "review_only", True)
 
 
+def test_submit_jobserve_endpoint_queues_submit_with_confirmation(monkeypatch, caplog) -> None:
+    enqueued = []
+    caplog.set_level("INFO")
+    monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)
+    monkeypatch.setattr(applications_api, "redis_url_host", lambda: "redis.internal")
+    monkeypatch.setattr(
+        applications_api,
+        "enqueue_or_background",
+        lambda background_tasks, func, *args, **kwargs: enqueued.append((func, args, kwargs)) or "rq-submit-job",
+    )
+
+    with apply_client(jobserve=True, with_profile=True, with_cv=True) as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "submit_with_confirmation", "debug_mode": True})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert response.json()["progress"]["rq_job_id"] == "rq-submit-job"
+    assert enqueued[0][0] is apply_agent.run_assist_apply_background
+    assert enqueued[0][1] == (ids["job"], ids["user"], "submit_with_confirmation", True)
+    assert enqueued[0][2]["job_timeout"] == apply_agent.settings.apply_timeout_seconds
+    assert "assist_apply_enqueue_start" in caplog.text
+    assert "assist_apply_queued" in caplog.text
+    assert "mode=submit_with_confirmation" in caplog.text
+    assert "queue_enabled=True" in caplog.text
+    assert "queue_name=default" in caplog.text
+    assert "redis_host=redis.internal" in caplog.text
+    assert "rq_job_id=rq-submit-job" in caplog.text
+    assert "enqueue_success=true" in caplog.text
+
+
+def test_assist_apply_enqueue_failure_logs_and_persists(monkeypatch, caplog) -> None:
+    caplog.set_level("INFO")
+    monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)
+    monkeypatch.setattr(applications_api, "redis_url_host", lambda: "redis.internal")
+
+    def fail_enqueue(*args, **kwargs):
+        raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(applications_api, "enqueue_or_background", fail_enqueue)
+
+    with apply_client(jobserve=True, with_profile=True) as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "submit_with_confirmation"})
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "assist_apply_enqueue_failed"
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "assist_apply_enqueue_failed"
+    assert job.assisted_result["jobserve_flow_diagnostics"]["queue_diagnostics"]["enqueue_success"] is False
+    assert "assist_apply_enqueue_failed" in caplog.text
+    assert "enqueue_success=false" in caplog.text
+    assert "redis unavailable" in caplog.text
+
+
 def test_submit_requires_explicit_mode(monkeypatch) -> None:
     seen_modes = []
 

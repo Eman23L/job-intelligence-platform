@@ -75,27 +75,81 @@ def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload
     user = _default_user(db)
     mode = payload.mode if payload else "review_only"
     debug_mode = bool(payload.debug_mode) if payload else False
-    if queue_enabled():
-        mark_queued_assist(db, job, mode=mode, debug_mode=debug_mode)
-        rq_job_id = enqueue_or_background(
-            background_tasks,
-            run_assist_apply_background,
-            application_id,
-            user.id,
-            mode,
-            debug_mode,
-            job_timeout=settings.apply_timeout_seconds,
-            result_ttl=settings.rq_result_ttl_seconds,
-            failure_ttl=settings.rq_failure_ttl_seconds,
-        )
-        result = update_queued_assist_metadata(db, job, rq_job_id=rq_job_id, queue_name=settings.queue_name, redis_host=redis_url_host())
+    queue_is_enabled = queue_enabled()
+    if queue_is_enabled:
         logger.info(
-            "assist_apply_queued service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s queue=%s redis_host=%s rq_job_id=%s",
+            "assist_apply_enqueue_start service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s queue_enabled=%s queue_name=%s redis_host=%s enqueue_success=false",
             settings.service_type,
             application_id,
             user.id,
             mode,
             debug_mode,
+            queue_is_enabled,
+            settings.queue_name,
+            redis_url_host(),
+        )
+        mark_queued_assist(db, job, mode=mode, debug_mode=debug_mode)
+        try:
+            rq_job_id = enqueue_or_background(
+                background_tasks,
+                run_assist_apply_background,
+                application_id,
+                user.id,
+                mode,
+                debug_mode,
+                job_timeout=settings.apply_timeout_seconds,
+                result_ttl=settings.rq_result_ttl_seconds,
+                failure_ttl=settings.rq_failure_ttl_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "assist_apply_enqueue_failed service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s queue_enabled=%s queue_name=%s redis_host=%s enqueue_success=false",
+                settings.service_type,
+                application_id,
+                user.id,
+                mode,
+                debug_mode,
+                queue_is_enabled,
+                settings.queue_name,
+                redis_url_host(),
+            )
+            result = job.assisted_result or {}
+            warnings = [*result.get("warnings", []), f"assist_apply_enqueue_failed: {exc}"]
+            job.assisted_result = {
+                **result,
+                "status": "failed",
+                "final_error": "assist_apply_enqueue_failed",
+                "warnings": warnings,
+                "progress": {
+                    **(result.get("progress") if isinstance(result.get("progress"), dict) else {}),
+                    "current_step": "assist_apply_enqueue_failed",
+                    "message": str(exc),
+                },
+                "jobserve_flow_diagnostics": {
+                    **(result.get("jobserve_flow_diagnostics") if isinstance(result.get("jobserve_flow_diagnostics"), dict) else {}),
+                    "queue_diagnostics": {
+                        "application_id": application_id,
+                        "mode": mode,
+                        "queue_enabled": queue_is_enabled,
+                        "queue_name": settings.queue_name,
+                        "redis_host": redis_url_host(),
+                        "enqueue_success": False,
+                        "error": str(exc),
+                    },
+                },
+            }
+            job.assisted_warnings = warnings
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"error": "assist_apply_enqueue_failed", "message": str(exc)}) from exc
+        result = update_queued_assist_metadata(db, job, rq_job_id=rq_job_id, queue_name=settings.queue_name, redis_host=redis_url_host())
+        logger.info(
+            "assist_apply_queued service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s queue_enabled=%s queue_name=%s redis_host=%s rq_job_id=%s enqueue_success=true",
+            settings.service_type,
+            application_id,
+            user.id,
+            mode,
+            debug_mode,
+            queue_is_enabled,
             settings.queue_name,
             redis_url_host(),
             rq_job_id,
