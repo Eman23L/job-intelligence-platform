@@ -291,6 +291,29 @@ def test_database_lookup_error_is_persisted(db_session, monkeypatch) -> None:
     assert job.assisted_result["exceptions"][0]["type"] == "RuntimeError"
 
 
+def test_exception_during_jobserve_fill_persists_real_error(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True, url="https://www.jobserve.com/gb/en/job/D8DF")
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+
+    def fail_during_fill(*args, **kwargs):
+        progress_callback = kwargs["progress_callback"]
+        progress_callback("before_filling", {"form_fields_detected": 15, "cv_upload_input_detected": True})
+        progress_callback("email_filled", {"succeeded": False})
+        raise RuntimeError("email fill exploded")
+
+    monkeypatch.setattr(apply_agent, "run_playwright_assist", fail_during_fill)
+
+    with pytest.raises(ValueError, match="email fill exploded"):
+        apply_agent.assist_apply_application(db_session, job, user, debug_mode=True)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "failed"
+    assert job.assisted_result["final_error"] == "email fill exploded"
+    assert job.assisted_result["exceptions"][-1]["message"] == "email fill exploded"
+    assert any(step["step"] == "before_filling" for step in job.assisted_result["debug_steps"])
+    assert any(step["step"] == "email_filled" for step in job.assisted_result["debug_steps"])
+
+
 def test_worker_early_crash_does_not_leave_application_running(monkeypatch) -> None:
     with apply_client(jobserve=True) as (_client, ids):
         monkeypatch.setattr(apply_agent, "SessionLocal", ids["Session"])
@@ -350,6 +373,42 @@ def test_worker_db_session_is_closed_on_success_and_failure(monkeypatch) -> None
     apply_agent.run_assist_apply_background(999999, 1, "review_only", False)
 
     assert all(session.closed for session in created)
+
+
+def test_worker_startup_warns_when_service_type_is_web(monkeypatch, caplog) -> None:
+    from app import worker
+
+    class FakeConnection:
+        def ping(self):
+            return True
+
+    class FakeWorker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def work(self, *args, **kwargs):
+            return False
+
+    monkeypatch.setattr(worker.settings, "service_type", "web")
+    monkeypatch.setattr(worker, "redis_connection", lambda: FakeConnection())
+    monkeypatch.setattr(worker, "browser_status", lambda: {"playwright_installed": True, "chromium_available": True})
+    monkeypatch.setattr(
+        worker,
+        "chromium_diagnostics",
+        lambda: {
+            "playwright_browsers_path": None,
+            "chromium_executable_path": None,
+            "chromium_path_source": None,
+            "chromium_file_exists": False,
+            "chromium_file_executable": False,
+            "ms_playwright_listing": [],
+        },
+    )
+    monkeypatch.setattr(worker, "Worker", FakeWorker)
+
+    worker.main()
+
+    assert "worker_service_type_misconfigured" in caplog.text
 
 
 def test_worker_missing_user_persists_failure(monkeypatch) -> None:
@@ -529,6 +588,54 @@ def test_stale_worker_progress_gets_worker_running_timeout(db_session, monkeypat
     assert job.assisted_result["status"] == "failed"
     assert job.assisted_result["final_error"] == "worker_running_timeout"
     assert job.assisted_result["jobserve_flow_diagnostics"]["queue_diagnostics"]["worker_progress_seen"] is True
+
+
+def test_jobserve_fill_steps_prevent_stale_queue_timeout(db_session, monkeypatch) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    job.assisted_result = {
+        "status": "queued",
+        "warnings": [],
+        "progress": {"current_step": "queued", "message": "queued", "rq_job_id": "assist-123", "last_heartbeat_at": apply_agent.utcnow().isoformat()},
+        "debug_steps": [{"step": "email_filled"}, {"step": "cv_uploaded"}, {"step": "final_apply_clicked"}],
+        "jobserve_flow_diagnostics": {"rq_job_id": "assist-123"},
+    }
+    job.last_apply_attempt_at = apply_agent.utcnow() - timedelta(minutes=3)
+    db_session.commit()
+    monkeypatch.setattr(applications_service, "rq_job_failure", lambda rq_job_id: None)
+
+    applications_service.list_applications(db_session, user)
+
+    db_session.refresh(job)
+    assert job.assisted_result["status"] == "queued"
+    assert job.assisted_result.get("final_error") is None
+    assert "queue_failure" not in job.assisted_result["jobserve_flow_diagnostics"]
+
+
+def test_worker_shutdown_after_before_filling_persists_failure(monkeypatch) -> None:
+    with apply_client(jobserve=True) as (_client, ids):
+        monkeypatch.setattr(apply_agent, "SessionLocal", ids["Session"])
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+            job.assisted_result = {
+                "status": "running",
+                "warnings": [],
+                "progress": {"current_step": "before_filling", "message": "filling modal", "rq_job_id": "assist-123"},
+                "debug_steps": [{"step": "apply_button_clicked"}, {"step": "modal_wait_complete"}, {"step": "before_filling"}],
+                "jobserve_flow_diagnostics": {"rq_job_id": "assist-123", "job_application_modal_found": True},
+            }
+            db.commit()
+
+        apply_agent._persist_worker_shutdown_during_apply(
+            ids["job"],
+            {"user_id": ids["user"], "mode": "submit_with_confirmation", "debug_mode": True, "rq_job_id": "assist-123"},
+        )
+
+        with ids["Session"]() as db:
+            job = db.get(Job, ids["job"])
+            assert job.assisted_result["status"] == "failed"
+            assert job.assisted_result["final_error"] == "worker_shutdown_during_apply"
+            assert job.assisted_result["progress"]["current_step"] == "before_filling"
+            assert job.assisted_result["debug_steps"][-1]["step"] == "before_filling"
 
 
 def test_failed_rq_assist_job_is_persisted_on_applications_list(db_session, monkeypatch) -> None:
@@ -1666,6 +1773,7 @@ def test_jobserve_modal_fill_uploads_filcv_and_review_only_does_not_submit(tmp_p
         unfilled: list[str] = []
         required: list[str] = []
         debug = apply_agent._ApplyDebugRecorder(page, _browser, enabled=False)
+        steps: list[str] = []
 
         result = apply_agent._fill_jobserve_application_form(
             page,
@@ -1686,6 +1794,7 @@ def test_jobserve_modal_fill_uploads_filcv_and_review_only_does_not_submit(tmp_p
             profile_diagnostics={"mapped_fields": {}},
             exceptions=[],
             debug=debug,
+            step_callback=lambda step, payload: steps.append(step),
         )
 
         assert result["uploaded_cv"] is True
@@ -1693,6 +1802,11 @@ def test_jobserve_modal_fill_uploads_filcv_and_review_only_does_not_submit(tmp_p
         assert page.get_by_label("Send confirmation of my application to this Email Address").is_checked() is True
         assert page.evaluate("window.submitted") is None
         assert "CV upload" in filled
+        assert "email_filled" in steps
+        assert "confirmation_checked" in steps
+        assert "working_status_selected" in steps
+        assert "cv_upload_started" in steps
+        assert "cv_uploaded" in steps
 
 
 def test_confirmation_detection_and_account_toggle_off() -> None:

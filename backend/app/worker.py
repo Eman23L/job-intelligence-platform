@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    if settings.service_type == "web":
+        logger.warning("worker_service_type_misconfigured expected_service_type=worker actual_service_type=web")
     connection = redis_connection()
     redis_connected = bool(connection.ping())
     status = browser_status()

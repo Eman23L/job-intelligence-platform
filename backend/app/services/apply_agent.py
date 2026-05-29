@@ -6,6 +6,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import signal
 import time
 import traceback
 from typing import Any, Callable
@@ -49,6 +50,11 @@ JOBSERVE_REQUIRED_DROPDOWN_PATTERNS = {
     "work_authorization": [r"working status", r"work status", r"status in uk", r"eligible.*uk"],
 }
 DB_LOOKUP_TIMEOUT_SECONDS = 10.0
+_ACTIVE_ASSIST_JOB: dict[str, Any] | None = None
+
+
+class WorkerShutdownError(RuntimeError):
+    pass
 
 
 class BrowserAutomationError(RuntimeError):
@@ -175,6 +181,7 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
 
 def run_assist_apply_background(application_id: int, user_id: int, mode: str = "review_only", debug_mode: bool = False) -> None:
     rq_job_id = _current_rq_job_id()
+    shutdown_handler = _install_apply_shutdown_handler(application_id, user_id, mode, debug_mode, rq_job_id)
     logger.info(
         "assist_apply_worker_start service_type=%s application_id=%s user_id=%s mode=%s debug_mode=%s rq_job_id=%s database_host=%s",
         settings.service_type,
@@ -185,64 +192,71 @@ def run_assist_apply_background(application_id: int, user_id: int, mode: str = "
         rq_job_id,
         _database_url_host(),
     )
-    with SessionLocal() as db:
-        job = None
-        user = None
-        try:
-            logger.info("assist_apply_worker_loading_application application_id=%s user_id=%s rq_job_id=%s database_host=%s", application_id, user_id, rq_job_id, _database_url_host())
-            job = _timed_db_operation("loading_application", lambda: db.get(Job, application_id), db=db, application_id=application_id)
-            logger.info("assist_apply_worker_application_loaded application_id=%s found=%s rq_job_id=%s", application_id, job is not None, rq_job_id)
-            if job is None:
-                logger.error("assist_apply_worker_missing_application error=application_not_found job_error=job_not_found service_type=%s application_id=%s user_id=%s rq_job_id=%s database_host=%s", settings.service_type, application_id, user_id, rq_job_id, _database_url_host())
+    try:
+        with SessionLocal() as db:
+            job = None
+            user = None
+            try:
+                logger.info("assist_apply_worker_loading_application application_id=%s user_id=%s rq_job_id=%s database_host=%s", application_id, user_id, rq_job_id, _database_url_host())
+                job = _timed_db_operation("loading_application", lambda: db.get(Job, application_id), db=db, application_id=application_id)
+                logger.info("assist_apply_worker_application_loaded application_id=%s found=%s rq_job_id=%s", application_id, job is not None, rq_job_id)
+                if job is None:
+                    logger.error("assist_apply_worker_missing_application error=application_not_found job_error=job_not_found service_type=%s application_id=%s user_id=%s rq_job_id=%s database_host=%s", settings.service_type, application_id, user_id, rq_job_id, _database_url_host())
+                    return
+                logger.info("assist_apply_worker_loading_user application_id=%s user_id=%s rq_job_id=%s", application_id, user_id, rq_job_id)
+                user = _timed_db_operation("loading_job", lambda: db.get(User, user_id), db=db, application_id=application_id)
+            except Exception as exc:  # noqa: BLE001
+                if job is not None:
+                    error = _db_lookup_error_code(exc, "application_load")
+                    _store_assist_failure(db, job, error, error=error, exc=exc, running_step="loading_application", extra=_assist_worker_failure_context(job, user, None, application_id, user_id, mode, debug_mode, rq_job_id))
+                logger.exception("assist_apply_worker_db_lookup_failed service_type=%s application_id=%s user_id=%s rq_job_id=%s", settings.service_type, application_id, user_id, rq_job_id)
                 return
-            logger.info("assist_apply_worker_loading_user application_id=%s user_id=%s rq_job_id=%s", application_id, user_id, rq_job_id)
-            user = _timed_db_operation("loading_job", lambda: db.get(User, user_id), db=db, application_id=application_id)
-        except Exception as exc:  # noqa: BLE001
-            if job is not None:
-                error = _db_lookup_error_code(exc, "application_load")
-                _store_assist_failure(db, job, error, error=error, exc=exc, running_step="loading_application", extra=_assist_worker_failure_context(job, user, None, application_id, user_id, mode, debug_mode, rq_job_id))
-            logger.exception("assist_apply_worker_db_lookup_failed service_type=%s application_id=%s user_id=%s rq_job_id=%s", settings.service_type, application_id, user_id, rq_job_id)
-            return
-        if user is None:
-            _store_assist_failure(db, job, "user_not_found", error="user_not_found", running_step="loading_application", extra=_assist_worker_failure_context(job, user, None, application_id, user_id, mode, debug_mode, rq_job_id))
-            logger.error("assist_apply_worker_missing_user service_type=%s application_id=%s user_id=%s rq_job_id=%s", settings.service_type, application_id, user_id, rq_job_id)
-            return
-        url_resolution = _resolve_assist_apply_url_diagnostics(job)
-        logger.info(
-            "assist_apply_worker_context service_type=%s application_id=%s user_id=%s title=%s company=%s canonical_url=%s apply_url=%s source_job_id=%s original_external_id=%s apply_strategy=%s mode=%s debug_mode=%s rq_job_id=%s database_host=%s",
-            settings.service_type,
-            application_id,
-            user_id,
-            job.title,
-            job.company_name,
-            job.canonical_url,
-            url_resolution["raw_apply_url"],
-            job.source_job_id,
-            job.original_external_id,
-            job.apply_strategy,
-            mode,
-            debug_mode,
-            rq_job_id,
-            _database_url_host(),
-        )
-        try:
-            assist_apply_application(db, job, user, mode=mode, debug_mode=debug_mode)
-        except BrowserAutomationError as exc:
-            if not _assist_already_failed(job):
-                _store_assist_failure(db, job, exc.message, error=exc.error, exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=None, rq_job_id=rq_job_id))
-            logger.exception(
-                "assist_apply_worker_browser_error service_type=%s application_id=%s error_code=%s error=%s",
+            if user is None:
+                _store_assist_failure(db, job, "user_not_found", error="user_not_found", running_step="loading_application", extra=_assist_worker_failure_context(job, user, None, application_id, user_id, mode, debug_mode, rq_job_id))
+                logger.error("assist_apply_worker_missing_user service_type=%s application_id=%s user_id=%s rq_job_id=%s", settings.service_type, application_id, user_id, rq_job_id)
+                return
+            url_resolution = _resolve_assist_apply_url_diagnostics(job)
+            logger.info(
+                "assist_apply_worker_context service_type=%s application_id=%s user_id=%s title=%s company=%s canonical_url=%s apply_url=%s source_job_id=%s original_external_id=%s apply_strategy=%s mode=%s debug_mode=%s rq_job_id=%s database_host=%s",
                 settings.service_type,
                 application_id,
-                exc.error,
-                exc.message,
+                user_id,
+                job.title,
+                job.company_name,
+                job.canonical_url,
+                url_resolution["raw_apply_url"],
+                job.source_job_id,
+                job.original_external_id,
+                job.apply_strategy,
+                mode,
+                debug_mode,
+                rq_job_id,
+                _database_url_host(),
             )
-        except Exception as exc:  # noqa: BLE001
-            if not _assist_already_failed(job):
-                _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=None, rq_job_id=rq_job_id))
-            logger.exception("assist_apply_worker_failed service_type=%s application_id=%s error=%s", settings.service_type, application_id, exc)
-        else:
-            logger.info("assist_apply_worker_completed service_type=%s application_id=%s", settings.service_type, application_id)
+            try:
+                assist_apply_application(db, job, user, mode=mode, debug_mode=debug_mode)
+            except WorkerShutdownError as exc:
+                if not _assist_already_failed(job):
+                    _store_assist_failure(db, job, "worker_shutdown_during_apply", error="worker_shutdown_during_apply", exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=None, rq_job_id=rq_job_id))
+                logger.exception("assist_apply_worker_shutdown service_type=%s application_id=%s error=%s", settings.service_type, application_id, exc)
+            except BrowserAutomationError as exc:
+                if not _assist_already_failed(job):
+                    _store_assist_failure(db, job, exc.message, error=exc.error, exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=None, rq_job_id=rq_job_id))
+                logger.exception(
+                    "assist_apply_worker_browser_error service_type=%s application_id=%s error_code=%s error=%s",
+                    settings.service_type,
+                    application_id,
+                    exc.error,
+                    exc.message,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if not _assist_already_failed(job):
+                    _store_assist_failure(db, job, str(exc), exc=exc, running_step=_current_assist_step(job), extra=_assist_failure_context(job, mode, debug_mode, user=user, profile=None, rq_job_id=rq_job_id))
+                logger.exception("assist_apply_worker_failed service_type=%s application_id=%s error=%s", settings.service_type, application_id, exc)
+            else:
+                logger.info("assist_apply_worker_completed service_type=%s application_id=%s", settings.service_type, application_id)
+    finally:
+        _restore_apply_shutdown_handler(shutdown_handler)
 
 
 def queued_assist_apply_result() -> AssistApplyResult:
@@ -269,8 +283,11 @@ def _store_assist_failure(
     running_step: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
+    existing = job.assisted_result if isinstance(job.assisted_result, dict) else {}
     exception_payload = _exception_payload(running_step or "assist_apply", exc) if exc is not None else None
+    existing_diagnostics = existing.get("jobserve_flow_diagnostics") if isinstance(existing.get("jobserve_flow_diagnostics"), dict) else {}
     diagnostics = {
+        **existing_diagnostics,
         **(extra or {}),
         "browser_diagnostics": _browser_startup_diagnostics(),
         "running_step": running_step,
@@ -288,12 +305,94 @@ def _store_assist_failure(
         progress={"current_step": running_step or "failed", "last_heartbeat_at": utcnow().isoformat(), "message": message},
         timing_diagnostics={"total_runtime_ms": 0},
         jobserve_flow_diagnostics=diagnostics,
-        exceptions=[exception_payload] if exception_payload else [],
+        exceptions=[*(existing.get("exceptions") or []), *([exception_payload] if exception_payload else [])],
+        debug_steps=list(existing.get("debug_steps") or []),
+        screenshot_paths=list(existing.get("screenshot_paths") or []),
+        screenshot_urls=list(existing.get("screenshot_urls") or []),
+        html_snapshot_paths=list(existing.get("html_snapshot_paths") or []),
+        html_snapshot_urls=list(existing.get("html_snapshot_urls") or []),
+        detected_buttons=list(existing.get("detected_buttons") or []),
+        detected_fields=list(existing.get("detected_fields") or []),
+        detected_selects=list(existing.get("detected_selects") or []),
+        detected_iframes=list(existing.get("detected_iframes") or []),
+        final_url=existing.get("final_url"),
+        debug_mode=bool(existing.get("debug_mode", False)),
+        upload_diagnostics=existing.get("upload_diagnostics") if isinstance(existing.get("upload_diagnostics"), dict) else {},
+        select_diagnostics=existing.get("select_diagnostics") if isinstance(existing.get("select_diagnostics"), list) else [],
     )
     job.assisted_result = result.model_dump()
     job.assisted_warnings = result.warnings
     job.last_apply_attempt_at = utcnow()
     db.commit()
+
+
+def _install_apply_shutdown_handler(application_id: int, user_id: int, mode: str, debug_mode: bool, rq_job_id: str | None):
+    global _ACTIVE_ASSIST_JOB
+    _ACTIVE_ASSIST_JOB = {
+        "application_id": application_id,
+        "user_id": user_id,
+        "mode": mode,
+        "debug_mode": debug_mode,
+        "rq_job_id": rq_job_id,
+    }
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+        _ACTIVE_ASSIST_JOB["previous_sigterm_handler"] = previous
+        signal.signal(signal.SIGTERM, _assist_apply_sigterm_handler)
+        return previous
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("assist_apply_shutdown_handler_install_failed application_id=%s error=%s", application_id, exc)
+        return None
+
+
+def _restore_apply_shutdown_handler(previous_handler) -> None:
+    global _ACTIVE_ASSIST_JOB
+    _ACTIVE_ASSIST_JOB = None
+    if previous_handler is None:
+        return
+    try:
+        signal.signal(signal.SIGTERM, previous_handler)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("assist_apply_shutdown_handler_restore_failed error=%s", exc)
+
+
+def _assist_apply_sigterm_handler(signum, frame) -> None:
+    context = dict(_ACTIVE_ASSIST_JOB or {})
+    application_id = context.get("application_id")
+    if application_id is not None:
+        _persist_worker_shutdown_during_apply(int(application_id), context)
+    previous = context.get("previous_sigterm_handler")
+    if callable(previous) and previous is not _assist_apply_sigterm_handler:
+        previous(signum, frame)
+    raise WorkerShutdownError("worker_shutdown_during_apply")
+
+
+def _persist_worker_shutdown_during_apply(application_id: int, context: dict[str, Any]) -> None:
+    try:
+        with SessionLocal() as db:
+            job = db.get(Job, application_id)
+            if job is None or _assist_already_failed(job):
+                return
+            _store_assist_failure(
+                db,
+                job,
+                "worker_shutdown_during_apply",
+                error="worker_shutdown_during_apply",
+                exc=WorkerShutdownError("worker_shutdown_during_apply"),
+                running_step=_current_assist_step(job),
+                extra=_assist_worker_failure_context(
+                    job,
+                    None,
+                    None,
+                    application_id,
+                    int(context.get("user_id") or 0),
+                    str(context.get("mode") or "review_only"),
+                    bool(context.get("debug_mode")),
+                    context.get("rq_job_id"),
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("assist_apply_worker_shutdown_persist_failed application_id=%s error=%s", application_id, exc)
 
 
 def _progress_with_db_timing(db: Session, job: Job, step: str, payload: dict[str, Any], started_perf: float) -> None:
@@ -1656,6 +1755,7 @@ def _run_jobserve_search_to_apply(
         _click_locator_resilient(page, apply_button)
         flow["final_apply_clicked"] = True
         flow["first_apply_clicked"] = True
+        _report_jobserve_step(progress_callback, "final_apply_clicked", succeeded=True)
         debug.step("jobserve_final_apply_clicked", jobserve_flow_diagnostics=flow)
         debug.step("jobserve_first_apply_clicked", jobserve_flow_diagnostics=flow)
         try:
@@ -1666,6 +1766,7 @@ def _run_jobserve_search_to_apply(
             flow["submitted_identity"] = _jobserve_modal_identity(page)
             submitted = True
             status = "submitted"
+            _report_jobserve_step(progress_callback, "submitted_message_seen", succeeded=True, confirmation_text=confirmation_text)
             debug.step("jobserve_submitted_message_seen", jobserve_flow_diagnostics=flow)
             debug.screenshot("submission_confirmation_seen")
         except Exception as exc:  # noqa: BLE001
@@ -1675,9 +1776,11 @@ def _run_jobserve_search_to_apply(
             raise RuntimeError(debug.final_error) from exc
         flow["account_toggles_turned_off"] = _disable_jobserve_account_options(page, warnings)
         flow["registration_toggle_disabled"] = any("register a Job Seeker account" in item for item in flow["account_toggles_turned_off"])
+        _report_jobserve_step(progress_callback, "account_toggle_disabled", succeeded=flow["registration_toggle_disabled"], disabled=flow["account_toggles_turned_off"])
         debug.step("jobserve_registration_toggle_disabled", jobserve_flow_diagnostics=flow)
         debug.screenshot("registration_toggles_disabled")
         flow["modal_closed"] = _close_modal(page)
+        _report_jobserve_step(progress_callback, "modal_closed", succeeded=flow["modal_closed"])
         debug.step("jobserve_modal_closed", jobserve_flow_diagnostics=flow)
     else:
         warnings.append("Review-only mode: JobServe search-to-apply flow stopped before final Apply.")
@@ -2776,15 +2879,18 @@ def _fill_jobserve_application_form(
         flow["email_value"] = email.value if email else None
         profile_diagnostics["mapped_fields"]["email"] = {"mapped": True, "label": email_label}
         _report_jobserve_step(step_callback, "jobserve_apply_email_filled", succeeded=True, label=email_label, email_value=email.value if email else None)
+        _report_jobserve_step(step_callback, "email_filled", succeeded=True, label=email_label, email_value=email.value if email else None)
         debug.screenshot("application_email_filled")
     else:
         unfilled_required.append("Email Address")
         profile_diagnostics["mapped_fields"]["email"] = {"mapped": False, "reason": "email field missing or profile email missing"}
         _report_jobserve_step(step_callback, "jobserve_apply_email_filled", succeeded=False)
+        _report_jobserve_step(step_callback, "email_filled", succeeded=False)
         debug.html("email_field_missing", context)
 
     _ensure_confirmation_email_checked(context, flow)
     _report_jobserve_step(step_callback, "jobserve_apply_confirmation_email_checked", succeeded=flow.get("confirmation_email_checked"))
+    _report_jobserve_step(step_callback, "confirmation_checked", succeeded=flow.get("confirmation_email_checked"))
     debug.screenshot("application_confirmation_checkbox_checked")
 
     working_status = candidates.get("work_authorization")
@@ -2795,12 +2901,14 @@ def _fill_jobserve_application_form(
         flow["uk_status_value"] = working_status_value
         profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": True, "label": "Working status in UK", "value": working_status_value}
         _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=True, value=working_status_value)
+        _report_jobserve_step(step_callback, "working_status_selected", succeeded=True, value=working_status_value)
         debug.screenshot("application_working_status_selected")
     else:
         unfilled_required.append("Working status in UK")
         profile_diagnostics["mapped_fields"]["work_authorization"] = {"mapped": False, "reason": "working status dropdown missing or configured value missing"}
         exceptions.append({"stage": "working_status", "type": "SelectOptionError", "message": "Working status dropdown missing or could not be selected", "traceback": None})
         _report_jobserve_step(step_callback, "jobserve_apply_working_status_selected", succeeded=False, value=working_status_value)
+        _report_jobserve_step(step_callback, "working_status_selected", succeeded=False, value=working_status_value)
         debug.html("working_status_dropdown_missing", context)
 
     _handle_optional_dropdown_if_present(
@@ -2847,6 +2955,7 @@ def _fill_jobserve_application_form(
     upload_diagnostics["file_input_detected"] = bool(_jobserve_cv_file_input(context).count())
     cv_path = _cv_upload_path(profile, upload_diagnostics)
     debug.step("before_cv_upload", upload_diagnostics=upload_diagnostics)
+    _report_jobserve_step(step_callback, "cv_upload_started", path=cv_path, file_input_detected=upload_diagnostics["file_input_detected"])
     uploaded_cv = False
     upload_started = time.perf_counter()
     if cv_path and upload_diagnostics.get("path_exists") and upload_diagnostics["file_input_detected"]:
@@ -2859,6 +2968,7 @@ def _fill_jobserve_application_form(
             upload_diagnostics["displayed_file_name"] = _uploaded_cv_display_name(context, Path(cv_path).name)
             flow["cv_upload_succeeded"] = True
             _report_jobserve_step(step_callback, "jobserve_apply_cv_uploaded", succeeded=True, path=cv_path, file_name=Path(cv_path).name, displayed_file_name=upload_diagnostics["displayed_file_name"])
+            _report_jobserve_step(step_callback, "cv_uploaded", succeeded=True, path=cv_path, file_name=Path(cv_path).name, displayed_file_name=upload_diagnostics["displayed_file_name"])
         except Exception as exc:  # noqa: BLE001
             payload = _exception_payload("cv_upload", exc, upload_diagnostics=dict(upload_diagnostics))
             exceptions.append(payload)
@@ -2867,12 +2977,14 @@ def _fill_jobserve_application_form(
             unfilled_required.append("CV upload")
             warnings.append(f"Could not upload CV: {exc}")
             _report_jobserve_step(step_callback, "jobserve_apply_cv_uploaded", succeeded=False, path=cv_path, error=str(exc))
+            _report_jobserve_step(step_callback, "cv_uploaded", succeeded=False, path=cv_path, error=str(exc))
             debug.html("cv_upload_failed", context)
     else:
         upload_diagnostics["failure_reason"] = "CV file input missing or worker-accessible CV path unavailable."
         exceptions.append({"stage": "cv_upload_preflight", "type": "FileNotFoundError", "message": upload_diagnostics["failure_reason"], "traceback": None, "upload_diagnostics": dict(upload_diagnostics)})
         unfilled_required.append("CV upload")
         _report_jobserve_step(step_callback, "jobserve_apply_cv_uploaded", succeeded=False, path=cv_path, error=upload_diagnostics["failure_reason"])
+        _report_jobserve_step(step_callback, "cv_uploaded", succeeded=False, path=cv_path, error=upload_diagnostics["failure_reason"])
         debug.html("cv_upload_failed", context)
     debug.screenshot("after_cv_upload_attempt")
     timing_diagnostics = {"cv_upload_ms": int((time.perf_counter() - upload_started) * 1000)}
@@ -3124,17 +3236,26 @@ def _run_jobserve_modal(
         if label:
             filled.append(label)
             profile_diagnostics.setdefault("mapped_fields", {})[key] = {"mapped": True, "label": label}
+            if key == "email":
+                _report_jobserve_step(progress_callback, "email_filled", succeeded=True, label=label)
         elif key in required:
             unfilled_required.append(key.replace("_", " "))
             profile_diagnostics.setdefault("mapped_fields", {})[key] = {"mapped": False, "reason": "field not found or candidate missing"}
+            _report_jobserve_step(progress_callback, "email_filled", succeeded=False)
 
+    _ensure_confirmation_email_checked(context, flow)
+    _report_jobserve_step(progress_callback, "confirmation_checked", succeeded=flow.get("confirmation_email_checked"))
     if candidates.get("work_authorization"):
         if _select_work_status(context, candidates["work_authorization"].value, select_diagnostics):
             filled.append("Working status in UK")
+            flow["uk_status_selected"] = True
+            flow["uk_status_value"] = candidates["work_authorization"].value
             profile_diagnostics.setdefault("mapped_fields", {})["work_authorization"] = {"mapped": True, "label": "Working status in UK"}
+            _report_jobserve_step(progress_callback, "working_status_selected", succeeded=True, value=candidates["work_authorization"].value)
         else:
             unfilled.append("Working status in UK")
             profile_diagnostics.setdefault("mapped_fields", {})["work_authorization"] = {"mapped": False, "reason": "select/fill failed"}
+            _report_jobserve_step(progress_callback, "working_status_selected", succeeded=False, value=candidates["work_authorization"].value)
             exceptions.append(
                 {
                     "stage": "select",
@@ -3200,6 +3321,7 @@ def _run_jobserve_modal(
     upload_diagnostics["file_input_detected"] = bool(context.locator("input[type=file]").count())
     cv_path = _cv_upload_path(profile, upload_diagnostics)
     debug.step("before_cv_upload", upload_diagnostics=upload_diagnostics)
+    _report_jobserve_step(progress_callback, "cv_upload_started", path=cv_path, file_input_detected=upload_diagnostics["file_input_detected"])
     if not upload_diagnostics["file_input_detected"]:
         debug.final_error = debug.final_error or "CV upload input not found in JobServe apply form."
         debug.html("cv_upload_input_not_found", context)
@@ -3210,6 +3332,8 @@ def _run_jobserve_modal(
             upload_diagnostics["set_input_files_succeeded"] = True
             uploaded_cv = True
             filled.append("CV upload")
+            flow["cv_upload_succeeded"] = True
+            _report_jobserve_step(progress_callback, "cv_uploaded", succeeded=True, path=cv_path, file_name=Path(cv_path).name)
             logger.info(
                 "jobserve_apply_cv_upload_succeeded path=%s exists=%s size=%s mime=%s",
                 upload_diagnostics.get("resolved_absolute_path"),
@@ -3225,6 +3349,7 @@ def _run_jobserve_modal(
             warnings.append(f"Could not upload CV: {exc}")
             unfilled_required.append("CV upload")
             debug.final_error = debug.final_error or "CV upload input not found or could not be populated."
+            _report_jobserve_step(progress_callback, "cv_uploaded", succeeded=False, path=cv_path, error=str(exc))
             logger.exception(
                 "jobserve_apply_cv_upload_failed path=%s exists=%s size=%s mime=%s",
                 upload_diagnostics.get("resolved_absolute_path"),
@@ -3245,6 +3370,7 @@ def _run_jobserve_modal(
             }
         )
         unfilled_required.append("CV upload")
+        _report_jobserve_step(progress_callback, "cv_uploaded", succeeded=False, path=cv_path, error=upload_diagnostics["failure_reason"])
     debug.screenshot("after_cv_upload_attempt")
 
     debug.step(
@@ -3266,11 +3392,18 @@ def _run_jobserve_modal(
             debug.html("submit_button_not_found", context)
             raise RuntimeError(debug.final_error)
         apply_button.click(timeout=8000)
+        flow["final_apply_clicked"] = True
+        _report_jobserve_step(progress_callback, "final_apply_clicked", succeeded=True)
         success = target_page.get_by_text("Your application has been submitted.").first
         success.wait_for(timeout=12000)
         submitted = True
         status = "submitted"
-        _close_modal(target_page)
+        _report_jobserve_step(progress_callback, "submitted_message_seen", succeeded=True, confirmation_text="Your application has been submitted.")
+        flow["account_toggles_turned_off"] = _disable_jobserve_account_options(context, warnings)
+        flow["registration_toggle_disabled"] = any("register a Job Seeker account" in item for item in flow["account_toggles_turned_off"])
+        _report_jobserve_step(progress_callback, "account_toggle_disabled", succeeded=flow["registration_toggle_disabled"], disabled=flow["account_toggles_turned_off"])
+        flow["modal_closed"] = _close_modal(target_page)
+        _report_jobserve_step(progress_callback, "modal_closed", succeeded=flow["modal_closed"])
     else:
         warnings.append("Review-only mode: JobServe Apply button was intentionally not clicked.")
         if debug_mode:
