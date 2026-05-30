@@ -289,6 +289,9 @@ export interface AutonomousRealSubmitRunResult {
   exact_error: string | null;
   recommended_fix: string;
   diagnostic_run_id: string | null;
+  codex_handoff_status?: string | null;
+  github_issue_url?: string | null;
+  codex_handoff_error?: string | null;
   orchestration_steps: Array<Record<string, unknown>>;
   created_at: string;
 }

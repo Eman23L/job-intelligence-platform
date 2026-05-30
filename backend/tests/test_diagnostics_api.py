@@ -141,13 +141,53 @@ def test_private_redis_failure_in_github_does_not_block_remote_diagnostics() -> 
     assert "remote_diagnostic_endpoint_unavailable" in workflow
 
 
+def test_post_deploy_autonomous_verify_workflow_uses_remote_backend_and_handoff() -> None:
+    workflow = open(".github/workflows/post-deploy-autonomous-verify.yml", encoding="utf-8").read()
+
+    assert "workflow_run" in workflow
+    assert "CI Deploy Render" in workflow
+    assert "BACKEND_API_BASE_URL" in workflow
+    assert "$backend_base/applications/autonomous-real-submit" in workflow
+    assert "$backend_base/diagnostics/handoff/codex" in workflow
+    assert "DIAGNOSTIC_ADMIN_TOKEN" in workflow
+    assert "post_deploy_autonomous_verify" in workflow
+
+
 def test_diagnostic_endpoint_route_exists() -> None:
     routes = {getattr(route, "path", "") for route in app.routes}
 
     assert "/diagnostics/assist-apply/{application_id}" in routes
     assert "/diagnostics/assist-apply/runs/{run_id}" in routes
+    assert "/diagnostics/handoff/codex" in routes
     assert "/applications/{application_id}/assist-apply/diagnostics" in routes
     assert "/applications/{application_id}/assist-apply/diagnostics/{run_id}" in routes
+
+
+def test_codex_handoff_endpoint_rejects_missing_or_invalid_token(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    missing = client.post("/diagnostics/handoff/codex", json={"report": {"failed_phase": "x"}})
+    invalid = client.post("/diagnostics/handoff/codex", headers={"Authorization": "Bearer wrong"}, json={"report": {"failed_phase": "x"}})
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 403
+
+
+def test_codex_handoff_endpoint_creates_or_updates_issue(tmp_path, monkeypatch) -> None:
+    import app.api.diagnostics as diagnostics_api
+
+    monkeypatch.setattr(diagnostics_api, "create_or_update_codex_handoff", lambda report: {"status": "created", "issue_url": "https://github.com/owner/repo/issues/10"})
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/diagnostics/handoff/codex",
+        headers={"Authorization": "Bearer secret-token"},
+        json={"report": {"application_id": 645, "failed_phase": "jobserve_navigation", "exact_error": "modal missing", "recommended_fix": "Fix selector."}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "created"
+    assert response.json()["issue_url"].endswith("/10")
 
 
 def test_application_submit_failure_diagnostic_forces_safe_mode(tmp_path, monkeypatch, db_session) -> None:

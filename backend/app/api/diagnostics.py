@@ -3,10 +3,13 @@ from __future__ import annotations
 import secrets
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, status
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.diagnostics.assist_apply_runs import new_run_id, read_run_status, run_assist_apply_probe_background, write_run_status
+from app.services.codex_handoff import create_or_update_codex_handoff
 from app.services.queue import enqueue_or_background
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
@@ -16,6 +19,10 @@ class AssistApplyDiagnosticRequest(BaseModel):
     user_id: int = 1
     safe_mode: bool = True
     submit_allowed: bool = False
+
+
+class CodexHandoffRequest(BaseModel):
+    report: dict[str, Any] = Field(default_factory=dict)
 
 
 def _require_diagnostic_token(authorization: str | None) -> None:
@@ -118,3 +125,9 @@ def get_assist_apply_diagnostic_run(run_id: str, authorization: str | None = Hea
         "markdown_summary": state.get("markdown_summary"),
         "artifact_links": state.get("artifact_links") or [],
     }
+
+
+@router.post("/handoff/codex")
+def create_codex_handoff(payload: CodexHandoffRequest, authorization: str | None = Header(default=None)):
+    _require_diagnostic_token(authorization)
+    return create_or_update_codex_handoff(payload.report)

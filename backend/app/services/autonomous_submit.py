@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import traceback
 from typing import Any
 
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from app.db.models import Job, User
 from app.diagnostics.assist_apply_runs import new_run_id, run_assist_apply_probe_background
 from app.schemas.database import AssistApplyResult
 from app.services.apply_agent import assist_apply_application
+from app.services.codex_handoff import create_or_update_codex_handoff, environment_summary
 
 AUTONOMOUS_ARTIFACT_ROOT = Path("backend/runtime/autonomous_real_submit")
 SAFE_DIAGNOSTIC_MAX_AGE_SECONDS = 24 * 60 * 60
@@ -118,6 +120,7 @@ def run_autonomous_real_submit_canary(db: Session, user: User) -> dict[str, Any]
             continue
         if step.get("codex_handoff_created"):
             result = _run_result("failed", step.get("failed_phase") or step.get("blocked_reason"), step.get("exact_error"), step.get("recommended_fix") or "Inspect orchestration handoff.", job.id, step.get("diagnostic_run_id"))
+            _attach_handoff_result(result, step.get("codex_handoff_result"))
             result["orchestration_steps"] = steps
             _persist_result(db, job, result)
             return result
@@ -135,6 +138,25 @@ def run_autonomous_real_submit_canary(db: Session, user: User) -> dict[str, Any]
             step["blocked_reason"] = "feature_disabled"
             step["exact_error"] = "AUTONOMOUS_REAL_SUBMIT_ENABLED is false."
             step["recommended_fix"] = "Enable the flag only when ready for a controlled canary."
+            assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+            if assisted.get("final_error") or assisted.get("status") == "failed":
+                handoff_result = _create_codex_handoff(
+                    job,
+                    {
+                        "failed_phase": "submit_failure_after_safe_diagnostic",
+                        "exact_error": assisted.get("final_error") or "Submit JobServe application failed after safe diagnostic completed.",
+                        "recommended_fix": "Safe diagnostic passed. The failure is likely in the final form-fill/final-submit stage.",
+                        "orchestration_steps": steps,
+                    },
+                )
+                _attach_handoff_result(step, handoff_result)
+                step["codex_handoff_created"] = handoff_result.get("status") in {"created", "updated", "loop_guard_stopped", "failed"}
+                step["codex_handoff_result"] = handoff_result
+                result = _run_result("failed", "submit_failure_after_safe_diagnostic", step["exact_error"], step["recommended_fix"], job.id)
+                _attach_handoff_result(result, handoff_result)
+                result["orchestration_steps"] = steps
+                _persist_result(db, job, result)
+                return result
             continue
         result = _attempt_one(db, job, user, report)
         result["orchestration_steps"] = steps
@@ -196,6 +218,10 @@ def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str,
                 step["final_outcome"] = "eligible_after_recovery"
             else:
                 step.update({"final_outcome": "blocked_after_recovery", "blocked_reason": retry_report.get("failed_phase"), "exact_error": retry_report.get("exact_error"), "recommended_fix": retry_report.get("recommended_fix")})
+                handoff_result = _create_codex_handoff(job, {**retry_report, "orchestration_steps": [step]})
+                _attach_handoff_result(step, handoff_result)
+                step["codex_handoff_created"] = True
+                step["codex_handoff_result"] = handoff_result
         else:
             handoff = _codex_handoff(job, latest_safe)
             step.update(handoff)
@@ -222,6 +248,15 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
         diagnostic_run_id = new_run_id()
         run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
         payload = _run_result("failed", "autonomous_submit_exception", str(exc), "Inspect safe diagnostic artifacts and final-submit verification report.", job.id, diagnostic_run_id)
+        handoff_result = _create_codex_handoff(
+            job,
+            {
+                **payload,
+                "traceback": traceback.format_exc(),
+                "orchestration_steps": (job.assisted_result or {}).get("autonomous_orchestration_steps") or [],
+            },
+        )
+        _attach_handoff_result(payload, handoff_result)
         _persist_result(db, job, payload)
         return payload
 
@@ -229,6 +264,18 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
         diagnostic_run_id = new_run_id()
         run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
         payload = _run_result("failed", "success_text_missing", "JobServe submission success text was not confirmed.", "Do not mark applied unless JobServe success text is visible.", job.id, diagnostic_run_id)
+        handoff_result = _create_codex_handoff(
+            job,
+            {
+                **payload,
+                "failed_phase": "success_text_missing",
+                "exact_error": "JobServe submission success text was not confirmed.",
+                "recommended_fix": "Failure is likely in the final form-fill/final-submit stage. Inspect before/after submit artifacts.",
+                "orchestration_steps": (job.assisted_result or {}).get("autonomous_orchestration_steps") or [],
+                "artifact_links": [*result.screenshot_urls, *result.html_snapshot_urls, *result.screenshot_paths, *result.html_snapshot_paths],
+            },
+        )
+        _attach_handoff_result(payload, handoff_result)
         _persist_result(db, job, payload)
         return payload
     payload = _run_result("submitted", None, None, "Autonomous real-submit canary submitted exactly one application.", job.id)
@@ -296,26 +343,54 @@ def _codex_handoff(job: Job, diagnostic: dict[str, Any]) -> dict[str, Any]:
     exact_error = diagnostic.get("exact_error") or "Safe diagnostic did not pass."
     recommended_fix = diagnostic.get("recommended_fix") or "Inspect safe diagnostic report and artifacts."
     artifacts = diagnostic.get("artifact_links") or []
+    report = _handoff_report(
+        job,
+        {
+            "failed_phase": failed_phase,
+            "exact_error": exact_error,
+            "recommended_fix": recommended_fix,
+            "artifact_links": artifacts,
+            "diagnostic": diagnostic,
+        },
+    )
+    handoff_result = create_or_update_codex_handoff(report)
     return {
         "failed_phase": failed_phase,
         "exact_error": exact_error,
         "recommended_fix": recommended_fix,
         "artifact_links": artifacts,
+        "codex_handoff_status": handoff_result.get("status"),
+        "github_issue_url": handoff_result.get("issue_url"),
+        "codex_handoff_error": handoff_result.get("error"),
+        "codex_handoff_result": handoff_result,
         "codex_handoff": {
-            "title": f"Autonomous submit blocked for application {job.id}",
-            "body": "\n".join(
-                [
-                    "@codex fix this failure",
-                    "",
-                    f"failed_phase: {failed_phase}",
-                    f"exact_error: {exact_error}",
-                    f"recommended_fix: {recommended_fix}",
-                    f"artifact paths: {', '.join(artifacts) if artifacts else 'none'}",
-                ]
-            ),
-            "labels": ["assist-apply-diagnostics", "codex"],
+            "title": f"Autonomous canary failure for application {job.id}: {failed_phase}",
+            "labels": ["codex", "autonomous-canary", "assist-apply"],
         },
     }
+
+
+def _create_codex_handoff(job: Job, report: dict[str, Any]) -> dict[str, Any]:
+    return create_or_update_codex_handoff(_handoff_report(job, report))
+
+
+def _handoff_report(job: Job, report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **report,
+        "application_id": job.id,
+        "job_title": job.title,
+        "job_company": job.company_name,
+        "environment_summary": environment_summary(),
+        "latest_commit_sha": _code_revision(),
+    }
+
+
+def _attach_handoff_result(payload: dict[str, Any], handoff_result: dict[str, Any] | None) -> None:
+    if not handoff_result:
+        return
+    payload["codex_handoff_status"] = handoff_result.get("status")
+    payload["github_issue_url"] = handoff_result.get("issue_url")
+    payload["codex_handoff_error"] = handoff_result.get("error")
 
 
 def _write_verification_report(application_id: int, report: dict[str, Any]) -> str:
@@ -335,6 +410,9 @@ def _run_result(status: str, failed_phase: str | None, exact_error: str | None, 
         "exact_error": exact_error,
         "recommended_fix": recommended_fix,
         "diagnostic_run_id": diagnostic_run_id,
+        "codex_handoff_status": None,
+        "github_issue_url": None,
+        "codex_handoff_error": None,
         "code_revision": _code_revision(),
         "created_at": _now(),
     }

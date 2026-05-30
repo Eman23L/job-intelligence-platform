@@ -1,0 +1,83 @@
+name: Post Deploy Autonomous Verify
+
+on:
+  workflow_run:
+    workflows:
+      - CI Deploy Render
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  verify:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare report directory
+        run: mkdir -p backend/runtime/post_deploy_autonomous_verify
+
+      - name: Run autonomous verification
+        env:
+          BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
+          DIAGNOSTIC_ADMIN_TOKEN: ${{ secrets.DIAGNOSTIC_ADMIN_TOKEN }}
+        run: |
+          root=backend/runtime/post_deploy_autonomous_verify
+          write_report() {
+            python -c 'import json, os, sys; report={"status":"failed","failed_phase":os.environ["FAILED_PHASE"],"exact_error":os.environ["EXACT_ERROR"],"recommended_fix":os.environ["RECOMMENDED_FIX"]}; open(sys.argv[1],"w",encoding="utf-8").write(json.dumps(report, indent=2, sort_keys=True))' "$root/result.json"
+          }
+          if [ -z "$BACKEND_API_BASE_URL" ]; then
+            FAILED_PHASE=backend_api_base_url_missing EXACT_ERROR="BACKEND_API_BASE_URL secret is not configured." RECOMMENDED_FIX="Set BACKEND_API_BASE_URL to the FastAPI backend base URL." write_report
+            exit 1
+          fi
+          if [ -z "$DIAGNOSTIC_ADMIN_TOKEN" ]; then
+            FAILED_PHASE=diagnostic_admin_token_missing EXACT_ERROR="DIAGNOSTIC_ADMIN_TOKEN secret is not configured." RECOMMENDED_FIX="Set DIAGNOSTIC_ADMIN_TOKEN in GitHub repository secrets." write_report
+            exit 1
+          fi
+          backend_base="${BACKEND_API_BASE_URL%/}"
+          health_code=$(curl -sS -o "$root/health.json" -w "%{http_code}" "$backend_base/health")
+          if [ "$health_code" -lt 200 ] || [ "$health_code" -ge 300 ]; then
+            tail_body=$(tail -c 1000 "$root/health.json")
+            FAILED_PHASE=backend_api_unreachable EXACT_ERROR="backend health check failed with HTTP $health_code. Body tail: $tail_body" RECOMMENDED_FIX="Verify BACKEND_API_BASE_URL points to the FastAPI backend and the Render web service is healthy." write_report
+            exit 1
+          fi
+          echo "post_deploy_autonomous_verify_start"
+          run_code=$(curl -sS -o "$root/result.json" -w "%{http_code}" -X POST "$backend_base/applications/autonomous-real-submit")
+          if [ "$run_code" -lt 200 ] || [ "$run_code" -ge 300 ]; then
+            tail_body=$(tail -c 1000 "$root/result.json")
+            FAILED_PHASE=autonomous_verify_endpoint_failed EXACT_ERROR="autonomous verify endpoint failed with HTTP $run_code. Body tail: $tail_body" RECOMMENDED_FIX="Inspect the backend applications autonomous-real-submit route." write_report
+            exit 1
+          fi
+          python -c 'import json, sys; report=json.load(open("backend/runtime/post_deploy_autonomous_verify/result.json", encoding="utf-8")); print("post_deploy_autonomous_verify_done"); sys.exit(1 if report.get("failed_phase") or report.get("status") == "failed" else 0)'
+
+      - name: Build handoff payload
+        if: always()
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          root=backend/runtime/post_deploy_autonomous_verify
+          if [ ! -f "$root/result.json" ]; then
+            python -c 'import json; report={"status":"failed","failed_phase":"post_deploy_verify_no_report","exact_error":"Verification exited before writing result.json.","recommended_fix":"Inspect workflow logs and backend availability."}; open("backend/runtime/post_deploy_autonomous_verify/result.json","w",encoding="utf-8").write(json.dumps(report, indent=2, sort_keys=True))'
+          fi
+          python -c 'import json, os; root="backend/runtime/post_deploy_autonomous_verify"; report=json.load(open(f"{root}/result.json", encoding="utf-8")); report.setdefault("latest_commit_sha", os.environ.get("GITHUB_SHA")); open(f"{root}/result.json", "w", encoding="utf-8").write(json.dumps(report, indent=2, sort_keys=True)); open(f"{root}/handoff_payload.json", "w", encoding="utf-8").write(json.dumps({"report": report}, indent=2, sort_keys=True))'
+
+      - name: Ensure Codex handoff is recorded
+        if: always()
+        env:
+          BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
+          DIAGNOSTIC_ADMIN_TOKEN: ${{ secrets.DIAGNOSTIC_ADMIN_TOKEN }}
+        run: |
+          root=backend/runtime/post_deploy_autonomous_verify
+          if [ -n "$BACKEND_API_BASE_URL" ] && [ -n "$DIAGNOSTIC_ADMIN_TOKEN" ]; then
+            backend_base="${BACKEND_API_BASE_URL%/}"
+            curl -sS -o "$root/handoff_response.json" -X POST "$backend_base/diagnostics/handoff/codex" \
+              -H "Authorization: Bearer $DIAGNOSTIC_ADMIN_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-binary @"$root/handoff_payload.json" || true
+          fi
+
+      - name: Upload autonomous verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-autonomous-verify
+          path: backend/runtime/post_deploy_autonomous_verify/**

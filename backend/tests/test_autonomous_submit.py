@@ -168,6 +168,11 @@ def test_canary_no_eligible_failed_app_triggers_diagnostics(db_session, monkeypa
 
 def test_diagnostic_fail_creates_codex_handoff(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    monkeypatch.setattr(
+        autonomous_submit,
+        "create_or_update_codex_handoff",
+        lambda report: {"status": "created", "issue_url": "https://github.com/owner/repo/issues/10"},
+    )
     user = User(email="user@example.com")
     job = _job(application_status="failed", assisted_result={"final_error": "stale_queue_timeout"})
     db_session.add_all([user, job])
@@ -196,6 +201,8 @@ def test_diagnostic_fail_creates_codex_handoff(db_session, monkeypatch) -> None:
 
     assert result["status"] == "failed"
     assert result["failed_phase"] == "jobserve_navigation"
+    assert result["codex_handoff_status"] == "created"
+    assert result["github_issue_url"].endswith("/10")
     assert result["orchestration_steps"][0]["codex_handoff_created"] is True
 
 
@@ -226,9 +233,57 @@ def test_no_infinite_loop_when_reset_still_not_eligible(db_session, monkeypatch)
         db_session.commit()
 
     monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", mismatch_diagnostic)
+    monkeypatch.setattr(
+        autonomous_submit,
+        "create_or_update_codex_handoff",
+        lambda report: {"status": "created", "issue_url": "https://github.com/owner/repo/issues/11"},
+    )
 
     result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
 
     assert len(result["orchestration_steps"]) == 1
     assert result["orchestration_steps"][0]["retried"] is True
     assert result["orchestration_steps"][0]["final_outcome"] == "blocked_after_recovery"
+    assert result["codex_handoff_status"] == "created"
+
+
+def test_canary_failure_creates_codex_handoff_issue(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job()
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("submit failed")))
+    monkeypatch.setattr(
+        autonomous_submit,
+        "create_or_update_codex_handoff",
+        lambda report: {"status": "created", "issue_url": "https://github.com/owner/repo/issues/12"},
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["status"] == "failed"
+    assert result["failed_phase"] == "autonomous_submit_exception"
+    assert result["codex_handoff_status"] == "created"
+    assert result["github_issue_url"].endswith("/12")
+
+
+def test_submit_failure_after_safe_diagnostic_creates_handoff_when_canary_disabled(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", False)
+    user = User(email="user@example.com")
+    job = _job(assisted_result={"latest_safe_diagnostic": _safe_diag(), "status": "failed", "final_error": "modal closed before final apply"})
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(
+        autonomous_submit,
+        "create_or_update_codex_handoff",
+        lambda report: {"status": "created", "issue_url": "https://github.com/owner/repo/issues/13"},
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["status"] == "failed"
+    assert result["failed_phase"] == "submit_failure_after_safe_diagnostic"
+    assert result["codex_handoff_status"] == "created"
+    assert result["github_issue_url"].endswith("/13")

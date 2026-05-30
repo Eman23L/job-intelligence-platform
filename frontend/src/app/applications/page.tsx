@@ -596,7 +596,14 @@ function AutonomousOrchestrationSummary({ result }: { result: AutonomousRealSubm
         <Metric label="Failed phase" value={result.failed_phase ?? "None"} />
         <Metric label="Exact error" value={result.exact_error ?? "None"} />
         <Metric label="Recommended fix" value={result.recommended_fix} />
+        <Metric label="Codex handoff" value={result.codex_handoff_status ?? "Not created"} />
+        <Metric label="GitHub issue URL" value={result.github_issue_url ?? "None"} />
       </div>
+      {result.github_issue_url ? (
+        <a className="artifact-link" href={result.github_issue_url} target="_blank" rel="noreferrer">
+          <span>Open Codex handoff issue</span>
+        </a>
+      ) : null}
       <DebugJsonList title="Orchestration steps" items={result.orchestration_steps ?? []} empty="No orchestration steps returned" />
     </section>
   );

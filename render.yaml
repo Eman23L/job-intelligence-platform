@@ -22,6 +22,14 @@ services:
         value: "false"
       - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN
         value: "1"
+      - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE
+        value: "5"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPOSITORY
+        sync: false
+      - key: CODEX_MENTION
+        value: "@codex"
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGINS
@@ -80,6 +88,14 @@ services:
         value: "false"
       - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN
         value: "1"
+      - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE
+        value: "5"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPOSITORY
+        sync: false
+      - key: CODEX_MENTION
+        value: "@codex"
       - key: DATABASE_URL
         sync: false
       - key: AI_PROVIDER

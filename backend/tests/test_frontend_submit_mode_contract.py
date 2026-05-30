@@ -61,3 +61,6 @@ def test_ui_shows_orchestration_summary() -> None:
     assert "Autonomous orchestration summary" in page
     assert "Orchestration steps" in page
     assert "Final outcome" in page
+    assert "Codex handoff" in page
+    assert "GitHub issue URL" in page
+    assert "Open Codex handoff issue" in page
