@@ -1,0 +1,93 @@
+name: Assist Apply Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_id:
+        description: "Application ID to probe"
+        required: true
+      safe_mode:
+        description: "Run without submitting"
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+      - name: Run assist apply probe
+        id: assist_probe
+        continue-on-error: true
+        env:
+          PYTHONPATH: backend
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          PLAYWRIGHT_ENABLED: "true"
+          PLAYWRIGHT_BROWSERS_PATH: "0"
+        run: |
+          python -m app.diagnostics.assist_apply_probe --application-id "${{ inputs.application_id }}" --user-id 1 --safe-mode "${{ inputs.safe_mode }}"
+      - name: Upload diagnostic artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: assist-apply-diagnostics-${{ inputs.application_id }}
+          path: backend/runtime/assist_apply_diagnostics/**
+          if-no-files-found: warn
+      - name: Create or update diagnostic issue
+        if: steps.assist_probe.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+            const root = "backend/runtime/assist_apply_diagnostics";
+            const files = fs.existsSync(root) ? fs.readdirSync(root) : [];
+            const jsonName = files.filter((name) => name.endsWith(".json")).sort().pop();
+            const report = jsonName ? JSON.parse(fs.readFileSync(path.join(root, jsonName), "utf8")) : {};
+            const handoff = report.github_handoff || {};
+            const title = handoff.title || `Assist apply diagnostics failed for application ${{ inputs.application_id }}`;
+            const body = handoff.body || [
+              "@codex fix this failure",
+              "",
+              `failed_phase: ${report.failed_phase || "unknown"}`,
+              `exact_error: ${report.exact_error || "unknown"}`,
+              `traceback: ${report.traceback || "not captured"}`,
+              `recommended_fix: ${report.recommended_fix || "Inspect diagnostic artifacts."}`,
+              `artifact paths: ${(report.artifact_paths || []).join(", ") || "backend/runtime/assist_apply_diagnostics"}`
+            ].join("\n");
+            const {owner, repo} = context.repo;
+            for (const label of ["assist-apply-diagnostics", "codex"]) {
+              try {
+                await github.rest.issues.getLabel({owner, repo, name: label});
+              } catch (error) {
+                if (error.status === 404) {
+                  await github.rest.issues.createLabel({owner, repo, name: label, color: label === "codex" ? "5319e7" : "d93f0b"});
+                } else {
+                  throw error;
+                }
+              }
+            }
+            const existing = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: "open",
+              per_page: 100
+            });
+            const match = existing.data.find((issue) => issue.title === title);
+            if (match) {
+              await github.rest.issues.createComment({owner, repo, issue_number: match.number, body});
+            } else {
+              await github.rest.issues.create({owner, repo, title, body, labels: ["assist-apply-diagnostics", "codex"]});
+            }
+      - name: Fail workflow if probe failed
+        if: steps.assist_probe.outcome == 'failure'
+        run: exit 1

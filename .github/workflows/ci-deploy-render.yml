@@ -1,0 +1,71 @@
+name: CI Deploy Render
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+      - name: Run backend tests
+        env:
+          PYTHONPATH: backend
+        run: python -m pytest backend/tests
+
+  frontend-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+      - name: Frontend typecheck
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs:
+      - backend-tests
+      - frontend-checks
+    steps:
+      - name: Trigger Render deploy hooks
+        env:
+          RENDER_WEB_DEPLOY_HOOK_URL: ${{ secrets.RENDER_WEB_DEPLOY_HOOK_URL }}
+          RENDER_WORKER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_WORKER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_WEB_DEPLOY_HOOK_URL" ]; then
+            echo "missing_secret_RENDER_WEB_DEPLOY_HOOK_URL"
+            exit 1
+          fi
+          if [ -z "$RENDER_WORKER_DEPLOY_HOOK_URL" ]; then
+            echo "missing_secret_RENDER_WORKER_DEPLOY_HOOK_URL"
+            exit 1
+          fi
+          echo "deploying_web"
+          curl -fsS -X POST "$RENDER_WEB_DEPLOY_HOOK_URL" >/dev/null
+          echo "deploying_worker"
+          curl -fsS -X POST "$RENDER_WORKER_DEPLOY_HOOK_URL" >/dev/null
+          echo "deploy_hooks_triggered"
