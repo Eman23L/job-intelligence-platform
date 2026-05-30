@@ -9,7 +9,7 @@ import { RecommendationActionBadge } from "@/components/RecommendationActionBadg
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { ApiError, api, apiConfig } from "@/lib/api";
-import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyResult, AutonomousRealSubmitStatus, JobScorecard } from "@/types/api";
+import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyResult, AutonomousRealSubmitRunResult, AutonomousRealSubmitStatus, JobScorecard } from "@/types/api";
 
 const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
 
@@ -26,6 +26,7 @@ export default function ApplicationsPage() {
   const [assistResult, setAssistResult] = useState<{ jobTitle: string; result: AssistApplyResult; diagnostic?: AssistApplyDiagnosticRun | null } | null>(null);
   const [assistDebugMode, setAssistDebugMode] = useState(true);
   const [autonomousStatus, setAutonomousStatus] = useState<AutonomousRealSubmitStatus | null>(null);
+  const [autonomousResult, setAutonomousResult] = useState<AutonomousRealSubmitRunResult | null>(null);
   const [threshold, setThreshold] = useState(80);
 
   const refresh = useCallback(async () => {
@@ -170,6 +171,7 @@ export default function ApplicationsPage() {
     setError(null);
     try {
       const result = await api.runAutonomousRealSubmit();
+      setAutonomousResult(result);
       await refresh();
       setNotice({
         type: result.submitted ? "success" : "warning",
@@ -245,6 +247,8 @@ export default function ApplicationsPage() {
       setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(failedResult), diagnostic: started });
       const completed = await pollAssistDiagnostic(item, started);
       setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(failedResult), diagnostic: completed });
+      const orchestration = await api.runAutonomousRealSubmit();
+      setAutonomousResult(orchestration);
       return completed;
     } catch (err) {
       const diagnostic: AssistApplyDiagnosticRun = {
@@ -362,6 +366,7 @@ export default function ApplicationsPage() {
         ) : null}
       </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
+      {autonomousResult ? <AutonomousOrchestrationSummary result={autonomousResult} /> : null}
       <div className="notice-banner info">Current apply threshold: {threshold}+.</div>
       {prepareRunId && prepareRun ? (
         <div className="notice-banner info">
@@ -577,6 +582,23 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
         </section>
       </div>
     </div>
+  );
+}
+
+function AutonomousOrchestrationSummary({ result }: { result: AutonomousRealSubmitRunResult }) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <h2>Autonomous orchestration summary</h2>
+      </div>
+      <div className="metric-list">
+        <Metric label="Final outcome" value={result.status} />
+        <Metric label="Failed phase" value={result.failed_phase ?? "None"} />
+        <Metric label="Exact error" value={result.exact_error ?? "None"} />
+        <Metric label="Recommended fix" value={result.recommended_fix} />
+      </div>
+      <DebugJsonList title="Orchestration steps" items={result.orchestration_steps ?? []} empty="No orchestration steps returned" />
+    </section>
   );
 }
 

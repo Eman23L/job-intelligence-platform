@@ -27,6 +27,7 @@ def test_submit_failure_triggers_safe_diagnostics() -> None:
 
     assert "triggerSubmitFailureDiagnostic" in page
     assert 'mode === "submit_with_confirmation" && submitFailed(displayedResult)' in page
+    assert "api.runAutonomousRealSubmit()" in page
     assert "startAssistApplyDiagnostic" in api
     assert "`/applications/${id}/assist-apply/diagnostics`" in api
     assert "submit_allowed" not in page
@@ -52,3 +53,11 @@ def test_autonomous_real_submit_status_is_visible() -> None:
     assert "Last result" in page
     assert "runAutonomousRealSubmit" in page
     assert "autonomousRealSubmitStatus" in api
+
+
+def test_ui_shows_orchestration_summary() -> None:
+    page = (REPO_ROOT / "frontend" / "src" / "app" / "applications" / "page.tsx").read_text()
+
+    assert "Autonomous orchestration summary" in page
+    assert "Orchestration steps" in page
+    assert "Final outcome" in page

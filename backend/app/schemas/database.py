@@ -779,6 +779,7 @@ class AutonomousRealSubmitRunResult(BaseModel):
     exact_error: str | None = None
     recommended_fix: str
     diagnostic_run_id: str | None = None
+    orchestration_steps: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str
 
 

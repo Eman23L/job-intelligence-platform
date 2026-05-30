@@ -4,6 +4,7 @@ from app.config import settings
 from app.db.models import Job, User
 from app.schemas.database import AssistApplyResult
 from app.services import autonomous_submit
+from sqlalchemy.orm.attributes import flag_modified
 
 
 def _safe_diag(reference: str = "ABC123", *, cv_found: bool = True) -> dict:
@@ -132,3 +133,102 @@ def test_validation_errors_block_submit(monkeypatch) -> None:
     report = autonomous_submit.autonomous_real_submit_verification(job)
 
     assert report["failed_phase"] == "application_status_allowed"
+
+
+def test_canary_no_eligible_failed_app_triggers_diagnostics(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job(application_status="failed", assisted_result={"final_error": "worker_progress_timeout"})
+    db_session.add_all([user, job])
+    db_session.commit()
+
+    diagnostics = []
+
+    def pass_diagnostic(run_id, application_id, user_id, safe_mode=True, submit_allowed=False):
+        diagnostics.append((run_id, application_id, safe_mode, submit_allowed))
+        job.assisted_result = {
+            **(job.assisted_result or {}),
+            "latest_safe_diagnostic": _safe_diag(),
+        }
+        flag_modified(job, "assisted_result")
+        db_session.commit()
+
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", pass_diagnostic)
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: AssistApplyResult(status="submitted", submitted=True, confirmation_text="Your application has been submitted."))
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert diagnostics
+    assert diagnostics[0][2] is True
+    assert diagnostics[0][3] is False
+    assert result["submitted"] is True
+    assert result["orchestration_steps"][0]["reset_performed"] is True
+    assert result["orchestration_steps"][0]["retried"] is True
+
+
+def test_diagnostic_fail_creates_codex_handoff(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job(application_status="failed", assisted_result={"final_error": "stale_queue_timeout"})
+    db_session.add_all([user, job])
+    db_session.commit()
+
+    def fail_diagnostic(*args, **kwargs):
+        job.assisted_result = {
+            **(job.assisted_result or {}),
+            "latest_safe_diagnostic": {
+                "status": "failed",
+                "overall_status": "failed",
+                "safe_mode": True,
+                "submit_allowed": False,
+                "failed_phase": "jobserve_navigation",
+                "exact_error": "modal missing",
+                "recommended_fix": "Fix selector.",
+                "artifact_links": ["report.json"],
+            },
+        }
+        flag_modified(job, "assisted_result")
+        db_session.commit()
+
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", fail_diagnostic)
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["status"] == "failed"
+    assert result["failed_phase"] == "jobserve_navigation"
+    assert result["orchestration_steps"][0]["codex_handoff_created"] is True
+
+
+def test_safe_diagnostic_missing_triggers_diagnostic_automatically(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", False)
+    user = User(email="user@example.com")
+    job = _job(assisted_result={})
+    db_session.add_all([user, job])
+    db_session.commit()
+    called = []
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: called.append(args))
+
+    autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert called
+
+
+def test_no_infinite_loop_when_reset_still_not_eligible(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job(application_status="failed", assisted_result={"final_error": "timeout"})
+    db_session.add_all([user, job])
+    db_session.commit()
+
+    def mismatch_diagnostic(*args, **kwargs):
+        job.assisted_result = {**(job.assisted_result or {}), "latest_safe_diagnostic": _safe_diag("WRONG")}
+        flag_modified(job, "assisted_result")
+        db_session.commit()
+
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", mismatch_diagnostic)
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert len(result["orchestration_steps"]) == 1
+    assert result["orchestration_steps"][0]["retried"] is True
+    assert result["orchestration_steps"][0]["final_outcome"] == "blocked_after_recovery"
