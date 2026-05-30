@@ -11,16 +11,6 @@ import time
 import traceback
 from typing import Any, Callable
 
-from sqlalchemy import select
-
-from app.config import settings
-from app.db.models import Job, JobScore, User
-from app.db.session import SessionLocal
-from app.services import apply_agent
-from app.services.browser_automation import browser_status, chromium_executable_path
-from app.services.profile import get_profile
-from app.services.queue import redis_connection, redis_url_host
-
 REPORT_DIR = Path("backend/runtime/assist_apply_diagnostics")
 LATEST_JSON = "latest_assist_apply_probe.json"
 LATEST_MD = "latest_assist_apply_probe.md"
@@ -66,7 +56,24 @@ def env_summary() -> dict[str, Any]:
     return redact_value({key: os.environ.get(key) for key in keys})
 
 
+def bootstrap_summary(command_args: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "command_args": command_args if command_args is not None else list(os.sys.argv[1:]),
+        "cwd": str(Path.cwd()),
+        "python_version": os.sys.version,
+        "pythonpath": os.environ.get("PYTHONPATH"),
+        "backend_app_exists": Path("backend/app").exists(),
+        "probe_module_imported": True,
+    }
+
+
 def recommended_fix_for_phase(phase: str, error: str | None) -> str:
+    if phase == "probe_argument_error":
+        return "Pass a valid --application-id and rerun the diagnostics workflow."
+    if phase == "probe_import_failed":
+        return "Fix the probe startup import/config error. Ensure required environment variables are present before importing app DB modules."
+    if phase == "probe_missing_configuration":
+        return "Set DATABASE_URL and REDIS_URL repository secrets for the diagnostics workflow, then rerun it."
     if phase == "redis_queue":
         return "Verify REDIS_URL, QUEUE_NAME, and that the Render web and worker services point at the same Redis instance."
     if phase == "db_lookup":
@@ -98,7 +105,14 @@ def github_handoff_payload(report: dict[str, Any], artifact_paths: list[str]) ->
     return {"title": title, "body": body, "labels": ["assist-apply-diagnostics", "codex"]}
 
 
-def base_report(application_id: int | None, user_id: int | None, *, safe_mode: bool, submit_allowed: bool) -> dict[str, Any]:
+def base_report(
+    application_id: int | None,
+    user_id: int | None,
+    *,
+    safe_mode: bool,
+    submit_allowed: bool,
+    command_args: list[str] | None = None,
+) -> dict[str, Any]:
     return {
         "overall_status": "ok",
         "application_id": application_id,
@@ -111,6 +125,7 @@ def base_report(application_id: int | None, user_id: int | None, *, safe_mode: b
         "traceback": None,
         "recommended_fix": None,
         "env_summary": env_summary(),
+        "bootstrap": bootstrap_summary(command_args),
         "phases": {},
         "timings": {},
         "artifact_paths": [],
@@ -126,8 +141,9 @@ def failure_report(
     failed_phase: str = "probe_startup",
     exact_error: str,
     traceback_text: str,
+    command_args: list[str] | None = None,
 ) -> dict[str, Any]:
-    report = base_report(application_id, user_id, safe_mode=safe_mode, submit_allowed=submit_allowed)
+    report = base_report(application_id, user_id, safe_mode=safe_mode, submit_allowed=submit_allowed, command_args=command_args)
     report.update(
         {
             "overall_status": "failed",
@@ -184,6 +200,40 @@ def _phase(report: dict[str, Any], name: str, action: Callable[[], dict[str, Any
         report["timings"][name] = int((time.perf_counter() - started) * 1000)
 
 
+def import_runtime_dependencies() -> dict[str, Any]:
+    from sqlalchemy import select
+
+    from app.config import settings
+    from app.db.models import Job, JobScore, User
+    from app.db.session import SessionLocal
+    from app.services import apply_agent
+    from app.services.browser_automation import browser_status, chromium_executable_path
+    from app.services.profile import get_profile
+    from app.services.queue import redis_connection, redis_url_host
+
+    return {
+        "select": select,
+        "settings": settings,
+        "Job": Job,
+        "JobScore": JobScore,
+        "User": User,
+        "SessionLocal": SessionLocal,
+        "apply_agent": apply_agent,
+        "browser_status": browser_status,
+        "chromium_executable_path": chromium_executable_path,
+        "get_profile": get_profile,
+        "redis_connection": redis_connection,
+        "redis_url_host": redis_url_host,
+    }
+
+
+def validate_required_configuration() -> dict[str, Any]:
+    missing = [key for key in ("DATABASE_URL", "REDIS_URL") if not os.environ.get(key)]
+    if missing:
+        raise RuntimeError(f"missing required configuration: {', '.join(missing)}")
+    return {"database_url_present": True, "redis_url_present": True}
+
+
 def build_report(
     application_id: int,
     user_id: int,
@@ -198,6 +248,34 @@ def build_report(
     report: dict[str, Any] = base_report(application_id, user_id, safe_mode=safe_mode, submit_allowed=submit_allowed)
 
     context: dict[str, Any] = {"job": None, "user": None, "profile": None, "resolved_url": None}
+
+    _phase(report, "probe_missing_configuration", validate_required_configuration)
+    if report["overall_status"] != "ok":
+        return write_report_files(report, output_dir)
+
+    deps: dict[str, Any] = {}
+
+    def import_dependencies() -> dict[str, Any]:
+        deps.update(import_runtime_dependencies())
+        return {"imported": sorted(deps.keys())}
+
+    _phase(report, "probe_import_failed", import_dependencies)
+
+    if not deps:
+        return write_report_files(report, output_dir)
+
+    settings = deps["settings"]
+    select = deps["select"]
+    Job = deps["Job"]
+    JobScore = deps["JobScore"]
+    User = deps["User"]
+    SessionLocal = deps["SessionLocal"]
+    apply_agent = deps["apply_agent"]
+    browser_status = deps["browser_status"]
+    chromium_executable_path = deps["chromium_executable_path"]
+    get_profile = deps["get_profile"]
+    redis_connection = deps["redis_connection"]
+    redis_url_host = deps["redis_url_host"]
 
     _phase(report, "redis_queue", lambda: {"redis_host": redis_url_host(), "ping": bool(redis_connection().ping()), "queue_name": settings.queue_name})
 
@@ -322,13 +400,34 @@ def parse_bool(value: str | bool) -> bool:
     return str(value).lower() in {"1", "true", "yes", "y"}
 
 
+class ReportingArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError(message)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = ReportingArgumentParser()
     parser.add_argument("--application-id", type=int, required=True)
     parser.add_argument("--user-id", type=int, default=1)
     parser.add_argument("--safe-mode", default="true")
     parser.add_argument("--submit-allowed", default="false")
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+    except Exception as exc:  # noqa: BLE001
+        report = write_report_files(
+            failure_report(
+                None,
+                None,
+                safe_mode=True,
+                submit_allowed=False,
+                failed_phase="probe_argument_error",
+                exact_error=str(exc),
+                traceback_text=traceback.format_exc(),
+                command_args=list(os.sys.argv[1:]),
+            )
+        )
+        print(json.dumps({"overall_status": report["overall_status"], "failed_phase": report["failed_phase"], "artifact_paths": report["artifact_paths"]}, sort_keys=True))
+        raise SystemExit(2)
     safe_mode = parse_bool(args.safe_mode)
     submit_allowed = parse_bool(args.submit_allowed)
     try:
@@ -343,6 +442,7 @@ def main() -> None:
                 failed_phase="probe_unhandled_exception",
                 exact_error=str(exc),
                 traceback_text=traceback.format_exc(),
+                command_args=list(os.sys.argv[1:]),
             )
         )
     print(json.dumps({"overall_status": report["overall_status"], "failed_phase": report["failed_phase"], "artifact_paths": report["artifact_paths"]}, sort_keys=True))

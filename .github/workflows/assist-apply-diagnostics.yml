@@ -37,16 +37,21 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH: "0"
         run: |
           set +e
-          python -m app.diagnostics.assist_apply_probe --application-id "${{ inputs.application_id }}" --user-id 1 --safe-mode "${{ inputs.safe_mode }}"
+          python -m app.diagnostics.assist_apply_probe --application-id "${{ inputs.application_id }}" --user-id 1 --safe-mode "${{ inputs.safe_mode }}" \
+            > backend/runtime/assist_apply_diagnostics/probe_stdout.log \
+            2> backend/runtime/assist_apply_diagnostics/probe_stderr.log
           exit_code=$?
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Ensure diagnostic report exists
         if: always()
+        env:
+          APPLICATION_ID: ${{ inputs.application_id }}
+          SAFE_MODE: ${{ inputs.safe_mode }}
         run: |
           mkdir -p backend/runtime/assist_apply_diagnostics
           if [ ! -f backend/runtime/assist_apply_diagnostics/latest_assist_apply_probe.json ]; then
-            python -c 'import json; from datetime import datetime, timezone; from pathlib import Path; root=Path("backend/runtime/assist_apply_diagnostics"); root.mkdir(parents=True, exist_ok=True); report={"overall_status":"failed","failed_phase":"probe_no_report","exact_error":"assist_apply_probe exited before writing a report","traceback":"not captured","recommended_fix":"Inspect the workflow logs and fix probe startup/import errors.","application_id":"${{ inputs.application_id }}","safe_mode":"${{ inputs.safe_mode }}","timestamp":datetime.now(timezone.utc).isoformat(),"artifact_paths":["backend/runtime/assist_apply_diagnostics/latest_assist_apply_probe.json","backend/runtime/assist_apply_diagnostics/latest_assist_apply_probe.md"],"github_handoff":{"title":"Assist apply diagnostics failed for application ${{ inputs.application_id }}","body":"@codex fix this failure\n\nfailed_phase: probe_no_report\nexact_error: assist_apply_probe exited before writing a report\ntraceback: not captured\nrecommended_fix: Inspect the workflow logs and fix probe startup/import errors.\nartifact paths: backend/runtime/assist_apply_diagnostics/latest_assist_apply_probe.json, backend/runtime/assist_apply_diagnostics/latest_assist_apply_probe.md","labels":["assist-apply-diagnostics","codex"]}}; (root/"latest_assist_apply_probe.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"); (root/"latest_assist_apply_probe.md").write_text("# Assist Apply Probe\n\n- overall_status: failed\n- failed_phase: probe_no_report\n- exact_error: assist_apply_probe exited before writing a report\n- recommended_fix: Inspect the workflow logs and fix probe startup/import errors.\n", encoding="utf-8")'
+            python backend/app/diagnostics/write_assist_apply_probe_fallback.py
           fi
       - name: Upload diagnostic artifacts
         if: always()
