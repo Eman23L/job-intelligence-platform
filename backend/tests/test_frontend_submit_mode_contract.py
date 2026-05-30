@@ -19,3 +19,25 @@ def test_frontend_api_posts_assist_apply_mode() -> None:
 
     assert 'mode: "review_only" | "submit_with_confirmation" = "review_only"' in api
     assert "JSON.stringify({ mode, debug_mode: debugMode })" in api
+
+
+def test_submit_failure_triggers_safe_diagnostics() -> None:
+    page = (REPO_ROOT / "frontend" / "src" / "app" / "applications" / "page.tsx").read_text()
+    api = (REPO_ROOT / "frontend" / "src" / "lib" / "api.ts").read_text()
+
+    assert "triggerSubmitFailureDiagnostic" in page
+    assert 'mode === "submit_with_confirmation" && submitFailed(displayedResult)' in page
+    assert "startAssistApplyDiagnostic" in api
+    assert "`/applications/${id}/assist-apply/diagnostics`" in api
+    assert "submit_allowed" not in page
+
+
+def test_diagnostic_summary_rendered_in_assist_modal() -> None:
+    page = (REPO_ROOT / "frontend" / "src" / "app" / "applications" / "page.tsx").read_text()
+
+    assert "Safe diagnostic passed. The failure is likely in the final form-fill/submit stage, not job lookup/browser/worker startup." in page
+    assert "Diagnostic status" in page
+    assert "Failed phase" in page
+    assert "Exact error" in page
+    assert "Recommended fix" in page
+    assert "Diagnostic artifacts" in page

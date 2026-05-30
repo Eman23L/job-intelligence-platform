@@ -9,7 +9,7 @@ import { RecommendationActionBadge } from "@/components/RecommendationActionBadg
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { ApiError, api, apiConfig } from "@/lib/api";
-import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyResult, JobScorecard } from "@/types/api";
+import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyResult, JobScorecard } from "@/types/api";
 
 const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
 
@@ -23,7 +23,7 @@ export default function ApplicationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ type: "info" | "success" | "warning" | "error"; message: string } | null>(null);
   const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
-  const [assistResult, setAssistResult] = useState<{ jobTitle: string; result: AssistApplyResult } | null>(null);
+  const [assistResult, setAssistResult] = useState<{ jobTitle: string; result: AssistApplyResult; diagnostic?: AssistApplyDiagnosticRun | null } | null>(null);
   const [assistDebugMode, setAssistDebugMode] = useState(true);
   const [threshold, setThreshold] = useState(80);
 
@@ -206,6 +206,45 @@ export default function ApplicationsPage() {
     };
   };
 
+  const pollAssistDiagnostic = async (item: ApplicationItem, started: AssistApplyDiagnosticRun) => {
+    let latestRun = started;
+    setAssistResult((current) => (current ? { ...current, diagnostic: latestRun } : current));
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      if (latestRun.status === "passed" || latestRun.status === "failed") {
+        return latestRun;
+      }
+      await sleep(3000);
+      latestRun = await api.assistApplyDiagnosticRun(item.job_id, latestRun.run_id);
+      setAssistResult((current) => (current ? { ...current, diagnostic: latestRun } : current));
+    }
+    return latestRun;
+  };
+
+  const triggerSubmitFailureDiagnostic = async (item: ApplicationItem, failedResult: AssistApplyResult) => {
+    try {
+      const started = await api.startAssistApplyDiagnostic(item.job_id);
+      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(failedResult), diagnostic: started });
+      const completed = await pollAssistDiagnostic(item, started);
+      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(failedResult), diagnostic: completed });
+      return completed;
+    } catch (err) {
+      const diagnostic: AssistApplyDiagnosticRun = {
+        run_id: "unavailable",
+        status: "failed",
+        latest_progress: { phase: "diagnostic_trigger_failed" },
+        final_report: {
+          failed_phase: "diagnostic_trigger_failed",
+          exact_error: err instanceof Error ? err.message : "Unable to start safe diagnostic",
+          recommended_fix: "Check backend diagnostic endpoint and worker queue health."
+        },
+        markdown_summary: null,
+        artifact_links: []
+      };
+      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(failedResult), diagnostic });
+      return diagnostic;
+    }
+  };
+
   const assistApply = async (item: ApplicationItem, mode: "review_only" | "submit_with_confirmation") => {
     if (mode === "submit_with_confirmation") {
       const confirmed = window.confirm("This will submit the application on JobServe using your saved CV. Continue?");
@@ -221,17 +260,23 @@ export default function ApplicationsPage() {
       console.info("Assist apply request", { jobId: item.job_id, mode, debug_mode: effectiveDebugMode, apply_strategy: item.apply_strategy });
       const result = await api.assistApply(item.job_id, mode, effectiveDebugMode);
       let displayedResult = result;
-      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(result) });
+      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(result), diagnostic: null });
       if (result.status === "queued") {
         displayedResult = await pollAssistResult(item, result, effectiveDebugMode);
       } else {
         await refresh();
       }
-      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(displayedResult) });
+      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(displayedResult), diagnostic: null });
+      let diagnostic: AssistApplyDiagnosticRun | null = null;
+      if (mode === "submit_with_confirmation" && submitFailed(displayedResult)) {
+        diagnostic = await triggerSubmitFailureDiagnostic(item, displayedResult);
+      }
       setNotice({
-        type: displayedResult.submitted ? "success" : "warning",
+        type: displayedResult.submitted ? "success" : diagnostic ? "error" : "warning",
         message: displayedResult.submitted
           ? "JobServe application submitted."
+          : diagnostic?.status === "passed"
+            ? "Safe diagnostic passed. The failure is likely in the final form-fill/submit stage, not job lookup/browser/worker startup."
           : displayedResult.status === "queued"
             ? "Assisted apply queued. Waiting for worker diagnostics."
             : displayedResult.final_error === "stale_queue_timeout"
@@ -239,10 +284,23 @@ export default function ApplicationsPage() {
             : "Assisted apply diagnostics loaded. Review the debug details before taking the next action."
       });
     } catch (err) {
-      if (err instanceof ApiError && err.code === "worker_unavailable") {
-        setNotice({ type: "error", message: "Browser automation worker is offline" });
+      const message = err instanceof Error ? err.message : "Unable to assist apply";
+      if (mode === "submit_with_confirmation") {
+        const failedResult = buildFailedAssistResult(message);
+        const diagnostic = await triggerSubmitFailureDiagnostic(item, failedResult);
+        setNotice({
+          type: "error",
+          message:
+            diagnostic.status === "passed"
+              ? "Safe diagnostic passed. The failure is likely in the final form-fill/submit stage, not job lookup/browser/worker startup."
+              : "Submit failed. Safe diagnostic started."
+        });
       } else {
-        setError(err instanceof Error ? err.message : "Unable to assist apply");
+        if (err instanceof ApiError && err.code === "worker_unavailable") {
+          setNotice({ type: "error", message: "Browser automation worker is offline" });
+        } else {
+          setError(message);
+        }
       }
     } finally {
       setActionLoading(null);
@@ -395,8 +453,10 @@ export default function ApplicationsPage() {
   );
 }
 
-function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result: AssistApplyResult }; onClose: () => void }) {
+function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result: AssistApplyResult; diagnostic?: AssistApplyDiagnosticRun | null }; onClose: () => void }) {
   const result = normaliseAssistResult(data.result);
+  const diagnostic = data.diagnostic ?? null;
+  const diagnosticReport = diagnostic?.final_report ?? null;
   const lastStep = result.debug_steps.at(-1) ?? {};
   const iframeCount = typeof lastStep.iframe_count === "number" ? lastStep.iframe_count : result.detected_iframes.length;
   const popupCount = typeof lastStep.popup_window_count === "number" ? lastStep.popup_window_count : null;
@@ -446,6 +506,23 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
           <h3>Warnings</h3>
           <FieldList items={result.warnings} empty="No warnings" />
         </section>
+        {diagnostic ? (
+          <section className="scorecard-section">
+            <h3>Safe diagnostic</h3>
+            {diagnostic.status === "passed" ? (
+              <div className="notice-banner info">Safe diagnostic passed. The failure is likely in the final form-fill/submit stage, not job lookup/browser/worker startup.</div>
+            ) : null}
+            <div className="metric-list">
+              <Metric label="Diagnostic status" value={diagnostic.status} />
+              <Metric label="Latest progress" value={String(diagnostic.latest_progress?.phase ?? diagnostic.latest_progress?.current_step ?? "Not reported")} />
+              <Metric label="Failed phase" value={String(diagnosticReport?.failed_phase ?? "None")} />
+              <Metric label="Exact error" value={String(diagnosticReport?.exact_error ?? "None")} />
+              <Metric label="Recommended fix" value={String(diagnosticReport?.recommended_fix ?? "None")} />
+            </div>
+            <DiagnosticArtifacts links={diagnostic.artifact_links} />
+            <DebugJsonList title="Diagnostic report" items={diagnosticReport ? [diagnosticReport] : []} empty="No final diagnostic report yet" />
+          </section>
+        ) : null}
         <section className="scorecard-section">
           <h3>Debug diagnostics</h3>
           <div className="metric-list">
@@ -470,6 +547,37 @@ function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result:
           <DebugJsonList title="Detected selects/dropdowns" items={result.detected_selects} empty="No selects returned" />
           <DebugJsonList title="Detected iframes" items={result.detected_iframes} empty="No iframe details returned" />
         </section>
+      </div>
+    </div>
+  );
+}
+
+function DiagnosticArtifacts({ links }: { links: string[] }) {
+  if (links.length === 0) {
+    return (
+      <div className="debug-block">
+        <h4>Diagnostic artifacts</h4>
+        <p className="muted-text">None returned</p>
+      </div>
+    );
+  }
+  return (
+    <div className="debug-block">
+      <h4>Diagnostic artifacts</h4>
+      <div className="artifact-grid">
+        {links.map((item, index) => {
+          const isLink = item.startsWith("http") || item.startsWith("/");
+          const href = item.startsWith("/") ? `${apiConfig.baseUrl}${item}` : item;
+          return isLink ? (
+            <a key={`${item}-${index}`} href={href} target="_blank" rel="noreferrer" className="artifact-link">
+              <span>{item}</span>
+            </a>
+          ) : (
+            <div key={`${item}-${index}`} className="artifact-link">
+              <span>{item}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -638,6 +746,42 @@ function normaliseAssistResult(result: AssistApplyResult): AssistApplyResult {
     select_diagnostics: result.select_diagnostics ?? [],
     exceptions: result.exceptions ?? []
   };
+}
+
+function buildFailedAssistResult(message: string): AssistApplyResult {
+  return normaliseAssistResult({
+    status: "failed",
+    filled_fields: [],
+    unfilled_fields: [],
+    unfilled_required_fields: [],
+    uploaded_cv: false,
+    submitted: false,
+    warnings: [message],
+    screenshot_path: null,
+    screenshot_paths: [],
+    screenshot_urls: [],
+    html_snapshot_paths: [],
+    html_snapshot_urls: [],
+    detected_buttons: [],
+    detected_fields: [],
+    detected_selects: [],
+    detected_iframes: [],
+    debug_steps: [],
+    final_url: null,
+    final_error: message,
+    debug_mode: false,
+    progress: { current_step: "submit_request_failed", message }
+  });
+}
+
+function submitFailed(result: AssistApplyResult): boolean {
+  if (result.submitted) {
+    return false;
+  }
+  if (result.status === "queued" || result.status === "running") {
+    return false;
+  }
+  return result.status === "failed" || Boolean(result.final_error) || result.progress?.current_step === "stale_queue_timeout";
 }
 
 function workerProgressSeen(result: AssistApplyResult): boolean {

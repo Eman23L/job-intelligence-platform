@@ -146,3 +146,61 @@ def test_diagnostic_endpoint_route_exists() -> None:
 
     assert "/diagnostics/assist-apply/{application_id}" in routes
     assert "/diagnostics/assist-apply/runs/{run_id}" in routes
+    assert "/applications/{application_id}/assist-apply/diagnostics" in routes
+    assert "/applications/{application_id}/assist-apply/diagnostics/{run_id}" in routes
+
+
+def test_application_submit_failure_diagnostic_forces_safe_mode(tmp_path, monkeypatch, db_session) -> None:
+    from fastapi import BackgroundTasks
+
+    import app.api.applications as applications_api
+    from app.db.models import Job, User
+
+    user = User(email="user@example.com")
+    job = Job(source_id=1, source_job_id="job-1", canonical_url="https://www.jobserve.com/job", title="AI Engineer", application_status="ready_to_apply")
+    db_session.add_all([user, job])
+    db_session.commit()
+    db_session.refresh(job)
+
+    captured = []
+
+    def fake_enqueue(background_tasks, func, *args, **kwargs):
+        captured.append((func, args, kwargs))
+        return "rq-safe-diagnostic"
+
+    monkeypatch.setattr(assist_apply_runs, "RUN_ROOT", tmp_path)
+    monkeypatch.setattr(applications_api, "enqueue_or_background", fake_enqueue)
+    response = applications_api.start_failed_submit_diagnostic(job.id, BackgroundTasks(), db_session)
+
+    assert response.status == "queued"
+    assert captured
+    args = captured[0][1]
+    assert args[1] == job.id
+    assert args[3] is True
+    assert args[4] is False
+
+
+def test_application_diagnostic_poll_returns_status(tmp_path, monkeypatch, db_session) -> None:
+    import app.api.applications as applications_api
+    from app.db.models import Job
+
+    job = Job(source_id=1, source_job_id="job-1", canonical_url="https://www.jobserve.com/job", title="AI Engineer", application_status="ready_to_apply")
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+    monkeypatch.setattr(assist_apply_runs, "RUN_ROOT", tmp_path)
+    run_id = assist_apply_runs.new_run_id()
+    assist_apply_runs.write_run_status(
+        run_id,
+        status="failed",
+        application_id=job.id,
+        user_id=1,
+        safe_mode=True,
+        submit_allowed=False,
+        final_report={"failed_phase": "jobserve_navigation", "exact_error": "modal missing", "recommended_fix": "Inspect artifacts."},
+    )
+
+    response = applications_api.get_failed_submit_diagnostic(job.id, run_id, db_session)
+
+    assert response.status == "failed"
+    assert response.final_report["failed_phase"] == "jobserve_navigation"

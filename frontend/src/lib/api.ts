@@ -4,6 +4,7 @@ import type {
   ApplicationPrepareRunStart,
   ApplicationPrepareRunStatus,
   ApplicationsList,
+  AssistApplyDiagnosticRun,
   AssistApplyResult,
   AnalyticsOverview,
   JobDetail,
@@ -145,6 +146,13 @@ export const api = {
       logAssistApplyPayload("POST response", payload);
       return payload;
     }),
+  startAssistApplyDiagnostic: (id: number) =>
+    request<AssistApplyDiagnosticRun>(`/applications/${id}/assist-apply/diagnostics`, {
+      method: "POST",
+      timeoutMs: 30000
+    }),
+  assistApplyDiagnosticRun: (id: number, runId: string) =>
+    request<AssistApplyDiagnosticRun>(`/applications/${id}/assist-apply/diagnostics/${runId}`, { timeoutMs: 30000 }),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`, { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
   rescoreJobs: () => request<JobRescoreRunStart>("/jobs/rescore", { method: "POST" }),

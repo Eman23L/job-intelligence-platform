@@ -755,6 +755,15 @@ class AssistApplyRequest(BaseModel):
     debug_mode: bool = False
 
 
+class AssistApplyDiagnosticRun(BaseModel):
+    run_id: str
+    status: str
+    latest_progress: dict[str, Any] = Field(default_factory=dict)
+    final_report: dict[str, Any] | None = None
+    markdown_summary: str | None = None
+    artifact_links: list[str] = Field(default_factory=list)
+
+
 class BrowserStatus(BaseModel):
     service_type: str = "web"
     queue_enabled: bool

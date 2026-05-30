@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Job, User
 from app.db.session import get_db
-from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyRequest, AssistApplyResult
+from app.diagnostics.assist_apply_runs import new_run_id, read_run_status, run_assist_apply_probe_background, write_run_status
+from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyRequest, AssistApplyResult
 from app.services.apply_agent import BrowserAutomationError, assist_apply_application, mark_queued_assist, update_queued_assist_metadata, run_assist_apply_background
 from app.services.applications import (
     get_prepare_applications_run_status,
@@ -163,3 +164,65 @@ def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"error": exc.error, "message": exc.message}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/{application_id}/assist-apply/diagnostics", response_model=AssistApplyDiagnosticRun)
+def start_failed_submit_diagnostic(application_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    job = db.get(Job, application_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    user = _default_user(db)
+    run_id = new_run_id()
+    write_run_status(
+        run_id,
+        status="queued",
+        application_id=application_id,
+        user_id=user.id,
+        safe_mode=True,
+        submit_allowed=False,
+        latest_progress={"phase": "queued", "trigger": "submit_failure"},
+    )
+    rq_job_id = enqueue_or_background(
+        background_tasks,
+        run_assist_apply_probe_background,
+        run_id,
+        application_id,
+        user.id,
+        True,
+        False,
+        job_id=f"assist-diagnostic-{run_id}",
+        job_timeout=settings.apply_timeout_seconds,
+        result_ttl=settings.rq_result_ttl_seconds,
+        failure_ttl=settings.rq_failure_ttl_seconds,
+    )
+    state = write_run_status(
+        run_id,
+        status="queued",
+        application_id=application_id,
+        user_id=user.id,
+        safe_mode=True,
+        submit_allowed=False,
+        latest_progress={"phase": "queued", "trigger": "submit_failure", "rq_job_id": rq_job_id},
+    )
+    return _diagnostic_response(run_id, state)
+
+
+@router.get("/{application_id}/assist-apply/diagnostics/{run_id}", response_model=AssistApplyDiagnosticRun)
+def get_failed_submit_diagnostic(application_id: int, run_id: str, db: Session = Depends(get_db)):
+    if db.get(Job, application_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+    state = read_run_status(run_id)
+    if state is None or state.get("application_id") != application_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Diagnostic run not found")
+    return _diagnostic_response(run_id, state)
+
+
+def _diagnostic_response(run_id: str, state: dict) -> AssistApplyDiagnosticRun:
+    return AssistApplyDiagnosticRun(
+        run_id=run_id,
+        status=str(state.get("status") or "queued"),
+        latest_progress=state.get("latest_progress") or {},
+        final_report=state.get("final_report"),
+        markdown_summary=state.get("markdown_summary"),
+        artifact_links=state.get("artifact_links") or [],
+    )

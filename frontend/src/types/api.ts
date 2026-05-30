@@ -265,6 +265,15 @@ export interface AssistApplyResult {
   modal_closed?: boolean;
 }
 
+export interface AssistApplyDiagnosticRun {
+  run_id: string;
+  status: "queued" | "running" | "passed" | "failed" | string;
+  latest_progress: Record<string, unknown>;
+  final_report: Record<string, unknown> | null;
+  markdown_summary: string | null;
+  artifact_links: string[];
+}
+
 export interface ApplicationsPrepareResult {
   queued: number;
   job_ids: number[];
