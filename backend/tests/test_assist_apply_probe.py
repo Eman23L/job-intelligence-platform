@@ -68,6 +68,7 @@ def test_assist_apply_probe_generates_report(tmp_path, monkeypatch) -> None:
     assert report["recommended_fix"]
     assert report["bootstrap"]["probe_module_imported"] is True
     assert report["phases"]["db_lookup"]["data"]["application_found"] is True
+    assert "github_handoff" not in report
     assert any(path.endswith(".json") for path in report["artifact_paths"])
     assert any(path.endswith(".md") for path in report["artifact_paths"])
     assert (tmp_path / "latest_assist_apply_probe.json").is_file()
@@ -88,6 +89,7 @@ def test_assist_apply_probe_failed_phase_and_recommended_fix(tmp_path, monkeypat
     assert report["traceback"]
     latest = json.loads((tmp_path / "latest_assist_apply_probe.json").read_text(encoding="utf-8"))
     assert latest["failed_phase"] == "db_lookup"
+    assert latest["github_handoff"]["title"] == "Assist apply diagnostics failed for application 999"
 
 
 def test_assist_apply_probe_redacts_secrets() -> None:
@@ -138,6 +140,18 @@ def test_assist_apply_probe_github_handoff_payload_valid() -> None:
     assert "recommended_fix: Fix DB lookup." in payload["body"]
     assert "report.json" in payload["body"]
     assert "assist-apply-diagnostics" in payload["labels"]
+
+
+def test_successful_report_omits_github_handoff(tmp_path) -> None:
+    report = assist_apply_probe.base_report(123, 1, safe_mode=True, submit_allowed=False)
+    report["recommended_fix"] = "No fix required."
+
+    written = assist_apply_probe.write_report_files(report, tmp_path, timestamped=False)
+
+    assert written["overall_status"] == "ok"
+    assert "github_handoff" not in written
+    latest = json.loads((tmp_path / "latest_assist_apply_probe.json").read_text(encoding="utf-8"))
+    assert "github_handoff" not in latest
 
 
 def test_assist_apply_probe_main_writes_report_on_exception(tmp_path, monkeypatch) -> None:

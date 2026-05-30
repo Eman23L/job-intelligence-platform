@@ -173,7 +173,10 @@ def write_report_files(report: dict[str, Any], output_dir: Path = REPORT_DIR, *,
         )
     existing_artifacts = [path for path in report.get("artifact_paths", []) if path not in artifact_paths]
     report["artifact_paths"] = [*existing_artifacts, *artifact_paths]
-    report["github_handoff"] = github_handoff_payload(report, report["artifact_paths"])
+    if report.get("overall_status") == "ok":
+        report.pop("github_handoff", None)
+    else:
+        report["github_handoff"] = github_handoff_payload(report, report["artifact_paths"])
     sanitized = redact_value(report)
     latest_json.write_text(json.dumps(sanitized, indent=2, sort_keys=True), encoding="utf-8")
     latest_md.write_text(markdown_report(sanitized), encoding="utf-8")
