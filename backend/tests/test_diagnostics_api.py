@@ -1,0 +1,123 @@
+from fastapi.testclient import TestClient
+
+from app.api import diagnostics as diagnostics_api
+from app.config import settings
+from app.diagnostics import assist_apply_runs
+from app.main import app
+
+
+def _client(tmp_path, monkeypatch) -> TestClient:
+    monkeypatch.setattr(settings, "diagnostic_admin_token", "secret-token")
+    monkeypatch.setattr(assist_apply_runs, "RUN_ROOT", tmp_path)
+    return TestClient(app)
+
+
+def test_diagnostic_endpoint_rejects_missing_or_invalid_token(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    missing = client.post("/diagnostics/assist-apply/645", json={"user_id": 1, "safe_mode": True, "submit_allowed": False})
+    invalid = client.post(
+        "/diagnostics/assist-apply/645",
+        headers={"Authorization": "Bearer wrong"},
+        json={"user_id": 1, "safe_mode": True, "submit_allowed": False},
+    )
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 403
+
+
+def test_diagnostic_endpoint_creates_run(tmp_path, monkeypatch) -> None:
+    enqueued = []
+
+    def fake_enqueue(background_tasks, func, *args, **kwargs):
+        enqueued.append((func, args, kwargs))
+        return "rq-diagnostic"
+
+    monkeypatch.setattr(diagnostics_api, "enqueue_or_background", fake_enqueue)
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/diagnostics/assist-apply/645",
+        headers={"Authorization": "Bearer secret-token"},
+        json={"user_id": 1, "safe_mode": True, "submit_allowed": False},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"]
+    assert body["status"] == "queued"
+    assert body["latest_progress"]["rq_job_id"] == "rq-diagnostic"
+    assert enqueued
+    assert enqueued[0][1][1] == 645
+
+
+def test_diagnostic_polling_returns_queued_running_and_final_states(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    run_id = assist_apply_runs.new_run_id()
+    headers = {"Authorization": "Bearer secret-token"}
+    assist_apply_runs.write_run_status(run_id, status="queued", application_id=645, user_id=1, safe_mode=True, submit_allowed=False, latest_progress={"phase": "queued"})
+
+    queued = client.get(f"/diagnostics/assist-apply/runs/{run_id}", headers=headers)
+    assist_apply_runs.write_run_status(run_id, status="running", application_id=645, user_id=1, safe_mode=True, submit_allowed=False, latest_progress={"phase": "db_lookup"})
+    running = client.get(f"/diagnostics/assist-apply/runs/{run_id}", headers=headers)
+    assist_apply_runs.write_run_status(
+        run_id,
+        status="failed",
+        application_id=645,
+        user_id=1,
+        safe_mode=True,
+        submit_allowed=False,
+        latest_progress={"phase": "redis_queue"},
+        final_report={"overall_status": "failed", "failed_phase": "redis_queue", "exact_error": "temporary DNS failure", "recommended_fix": "Run remotely in Render."},
+        markdown_summary="# Assist Apply Probe\n",
+        artifact_links=["backend/runtime/assist_apply_diagnostics/runs/example/latest_assist_apply_probe.json"],
+    )
+    final = client.get(f"/diagnostics/assist-apply/runs/{run_id}", headers=headers)
+
+    assert queued.json()["status"] == "queued"
+    assert running.json()["status"] == "running"
+    assert final.json()["status"] == "failed"
+    assert final.json()["final_report"]["failed_phase"] == "redis_queue"
+    assert final.json()["final_report"]["exact_error"]
+    assert final.json()["final_report"]["recommended_fix"]
+
+
+def test_remote_failed_report_includes_required_fields(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    run_id = assist_apply_runs.new_run_id()
+    assist_apply_runs.write_run_status(
+        run_id,
+        status="failed",
+        application_id=645,
+        user_id=1,
+        safe_mode=True,
+        submit_allowed=False,
+        final_report={"overall_status": "failed", "failed_phase": "jobserve_navigation", "exact_error": "chromium missing", "recommended_fix": "Install Chromium in Render."},
+    )
+
+    response = client.get(f"/diagnostics/assist-apply/runs/{run_id}", headers={"Authorization": "Bearer secret-token"})
+
+    report = response.json()["final_report"]
+    assert report["failed_phase"]
+    assert report["exact_error"]
+    assert report["recommended_fix"]
+
+
+def test_github_workflow_remote_diagnostic_payload_is_valid() -> None:
+    workflow = open(".github/workflows/assist-apply-diagnostics.yml", encoding="utf-8").read()
+
+    assert "APP_BASE_URL" in workflow
+    assert "DIAGNOSTIC_ADMIN_TOKEN" in workflow
+    assert "POST \"$APP_BASE_URL/diagnostics/assist-apply/$APPLICATION_ID\"" in workflow
+    assert "GET" not in workflow or "/diagnostics/assist-apply/runs/$run_id" in workflow
+    assert '\\"user_id\\":1' in workflow
+    assert '\\"submit_allowed\\":false' in workflow
+
+
+def test_private_redis_failure_in_github_does_not_block_remote_diagnostics() -> None:
+    workflow = open(".github/workflows/assist-apply-diagnostics.yml", encoding="utf-8").read()
+
+    assert "python -m app.diagnostics.assist_apply_probe" not in workflow
+    assert "DATABASE_URL" not in workflow
+    assert "REDIS_URL" not in workflow
+    assert "remote_diagnostic_endpoint_unavailable" in workflow

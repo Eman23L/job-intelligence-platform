@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     page_navigation_timeout_ms: int = Field(default=60000, alias="PAGE_NAVIGATION_TIMEOUT_MS")
     playwright_enabled: bool = Field(default=False, alias="PLAYWRIGHT_ENABLED")
     service_type: str = Field(default="web", alias="SERVICE_TYPE")
+    diagnostic_admin_token: str = Field(default="", alias="DIAGNOSTIC_ADMIN_TOKEN")
 
     @field_validator("database_url", mode="before")
     @classmethod

@@ -73,7 +73,7 @@ def recommended_fix_for_phase(phase: str, error: str | None) -> str:
     if phase == "probe_import_failed":
         return "Fix the probe startup import/config error. Ensure required environment variables are present before importing app DB modules."
     if phase == "probe_missing_configuration":
-        return "Set DATABASE_URL and REDIS_URL repository secrets for the diagnostics workflow, then rerun it."
+        return "Set DATABASE_URL and REDIS_URL in the environment running the diagnostic probe, then rerun it."
     if phase == "redis_queue":
         return "Verify REDIS_URL, QUEUE_NAME, and that the Render web and worker services point at the same Redis instance."
     if phase == "db_lookup":

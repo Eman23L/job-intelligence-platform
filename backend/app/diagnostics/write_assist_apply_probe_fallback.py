@@ -22,7 +22,15 @@ def _tail(path: Path, limit: int = 8000) -> str:
     return _redact(path.read_text(encoding="utf-8", errors="replace")[-limit:])
 
 
-def build_fallback_report(application_id: str, safe_mode: str, root: Path = REPORT_DIR) -> dict[str, object]:
+def build_fallback_report(
+    application_id: str,
+    safe_mode: str,
+    root: Path = REPORT_DIR,
+    *,
+    failed_phase: str = "probe_no_report",
+    exact_error: str = "assist_apply_probe exited before writing a report",
+    recommended_fix: str = "Inspect probe_stdout.log and probe_stderr.log, then fix probe startup/import errors.",
+) -> dict[str, object]:
     root.mkdir(parents=True, exist_ok=True)
     stdout_tail = _tail(root / "probe_stdout.log")
     stderr_tail = _tail(root / "probe_stderr.log")
@@ -36,10 +44,10 @@ def build_fallback_report(application_id: str, safe_mode: str, root: Path = REPO
         [
             "@codex fix this failure",
             "",
-            "failed_phase: probe_no_report",
-            "exact_error: assist_apply_probe exited before writing a report",
+            f"failed_phase: {failed_phase}",
+            f"exact_error: {exact_error}",
             "traceback: not captured",
-            "recommended_fix: Inspect probe_stdout.log and probe_stderr.log, then fix probe startup/import errors.",
+            f"recommended_fix: {recommended_fix}",
             "stdout_tail:",
             stdout_tail[-2000:] or "(empty)",
             "stderr_tail:",
@@ -49,10 +57,10 @@ def build_fallback_report(application_id: str, safe_mode: str, root: Path = REPO
     )
     return {
         "overall_status": "failed",
-        "failed_phase": "probe_no_report",
-        "exact_error": "assist_apply_probe exited before writing a report",
+        "failed_phase": failed_phase,
+        "exact_error": exact_error,
         "traceback": "not captured",
-        "recommended_fix": "Inspect probe_stdout.log and probe_stderr.log, then fix probe startup/import errors.",
+        "recommended_fix": recommended_fix,
         "application_id": application_id,
         "safe_mode": safe_mode,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -67,8 +75,16 @@ def build_fallback_report(application_id: str, safe_mode: str, root: Path = REPO
     }
 
 
-def write_fallback_report(application_id: str, safe_mode: str, root: Path = REPORT_DIR) -> dict[str, object]:
-    report = build_fallback_report(application_id, safe_mode, root)
+def write_fallback_report(
+    application_id: str,
+    safe_mode: str,
+    root: Path = REPORT_DIR,
+    *,
+    failed_phase: str = "probe_no_report",
+    exact_error: str = "assist_apply_probe exited before writing a report",
+    recommended_fix: str = "Inspect probe_stdout.log and probe_stderr.log, then fix probe startup/import errors.",
+) -> dict[str, object]:
+    report = build_fallback_report(application_id, safe_mode, root, failed_phase=failed_phase, exact_error=exact_error, recommended_fix=recommended_fix)
     root.mkdir(parents=True, exist_ok=True)
     (root / LATEST_JSON).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     (root / LATEST_MD).write_text(
@@ -77,9 +93,9 @@ def write_fallback_report(application_id: str, safe_mode: str, root: Path = REPO
                 "# Assist Apply Probe",
                 "",
                 "- overall_status: failed",
-                "- failed_phase: probe_no_report",
-                "- exact_error: assist_apply_probe exited before writing a report",
-                "- recommended_fix: Inspect probe_stdout.log and probe_stderr.log, then fix probe startup/import errors.",
+                f"- failed_phase: {failed_phase}",
+                f"- exact_error: {exact_error}",
+                f"- recommended_fix: {recommended_fix}",
                 "",
                 "## probe_stdout.log tail",
                 "```",
@@ -99,7 +115,13 @@ def write_fallback_report(application_id: str, safe_mode: str, root: Path = REPO
 
 
 def main() -> None:
-    write_fallback_report(os.environ.get("APPLICATION_ID", "unknown"), os.environ.get("SAFE_MODE", "true"))
+    write_fallback_report(
+        os.environ.get("APPLICATION_ID", "unknown"),
+        os.environ.get("SAFE_MODE", "true"),
+        failed_phase=os.environ.get("FAILED_PHASE", "probe_no_report"),
+        exact_error=os.environ.get("EXACT_ERROR", "assist_apply_probe exited before writing a report"),
+        recommended_fix=os.environ.get("RECOMMENDED_FIX", "Inspect probe_stdout.log and probe_stderr.log, then fix probe startup/import errors."),
+    )
 
 
 if __name__ == "__main__":

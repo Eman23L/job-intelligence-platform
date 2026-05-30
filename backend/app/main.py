@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.api.ai import router as ai_router
 from app.api.analytics import router as analytics_router
 from app.api.applications import router as applications_router
+from app.api.diagnostics import router as diagnostics_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.profile import router as profile_router
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(ai_router)
     app.include_router(profile_router)
     app.include_router(runs_router)
+    app.include_router(diagnostics_router)
     return app
 
 
