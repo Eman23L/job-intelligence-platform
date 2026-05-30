@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+import json
+from pathlib import Path
+import sys
 
 from app.diagnostics import assist_apply_probe
 
@@ -49,6 +52,8 @@ def test_assist_apply_probe_generates_report(tmp_path, monkeypatch) -> None:
     assert report["phases"]["db_lookup"]["data"]["application_found"] is True
     assert any(path.endswith(".json") for path in report["artifact_paths"])
     assert any(path.endswith(".md") for path in report["artifact_paths"])
+    assert (tmp_path / "latest_assist_apply_probe.json").is_file()
+    assert (tmp_path / "latest_assist_apply_probe.md").is_file()
 
 
 def test_assist_apply_probe_failed_phase_and_recommended_fix(tmp_path, monkeypatch) -> None:
@@ -65,6 +70,8 @@ def test_assist_apply_probe_failed_phase_and_recommended_fix(tmp_path, monkeypat
     assert report["exact_error"] == "application_not_found"
     assert report["recommended_fix"]
     assert report["traceback"]
+    latest = json.loads((tmp_path / "latest_assist_apply_probe.json").read_text(encoding="utf-8"))
+    assert latest["failed_phase"] == "db_lookup"
 
 
 def test_assist_apply_probe_redacts_secrets() -> None:
@@ -120,3 +127,57 @@ def test_assist_apply_probe_github_handoff_payload_valid() -> None:
     assert "recommended_fix: Fix DB lookup." in payload["body"]
     assert "report.json" in payload["body"]
     assert "assist-apply-diagnostics" in payload["labels"]
+
+
+def test_assist_apply_probe_main_writes_report_on_exception(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["assist_apply_probe", "--application-id", "123", "--user-id", "1", "--safe-mode", "true"])
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("probe exploded before phases")
+
+    monkeypatch.setattr(assist_apply_probe, "build_report", crash)
+
+    try:
+        assist_apply_probe.main()
+    except SystemExit as exc:
+        assert exc.code == 1
+
+    latest = tmp_path / "backend/runtime/assist_apply_diagnostics/latest_assist_apply_probe.json"
+    markdown = tmp_path / "backend/runtime/assist_apply_diagnostics/latest_assist_apply_probe.md"
+    assert latest.is_file()
+    assert markdown.is_file()
+    report = json.loads(latest.read_text(encoding="utf-8"))
+    assert report["overall_status"] == "failed"
+    assert report["failed_phase"] == "probe_unhandled_exception"
+    assert report["exact_error"] == "probe exploded before phases"
+    assert report["recommended_fix"]
+    assert report["application_id"] == 123
+    assert report["safe_mode"] is True
+    assert report["timestamp"]
+
+
+def test_assist_apply_workflow_artifact_path_matches_probe_output() -> None:
+    workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/assist-apply-diagnostics.yml").read_text(encoding="utf-8")
+
+    assert "backend/runtime/assist_apply_diagnostics/**" in workflow
+    assert "latest_assist_apply_probe.json" in workflow
+    assert "latest_assist_apply_probe.md" in workflow
+
+
+def test_fallback_report_generation_when_probe_writes_no_files(tmp_path) -> None:
+    report = assist_apply_probe.failure_report(
+        123,
+        1,
+        safe_mode=True,
+        failed_phase="probe_no_report",
+        exact_error="assist_apply_probe exited before writing a report",
+        traceback_text="not captured",
+    )
+
+    written = assist_apply_probe.write_report_files(report, tmp_path, timestamped=False)
+
+    assert written["overall_status"] == "failed"
+    assert written["failed_phase"] == "probe_no_report"
+    assert (tmp_path / "latest_assist_apply_probe.json").is_file()
+    assert (tmp_path / "latest_assist_apply_probe.md").is_file()

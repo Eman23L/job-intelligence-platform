@@ -22,6 +22,8 @@ from app.services.profile import get_profile
 from app.services.queue import redis_connection, redis_url_host
 
 REPORT_DIR = Path("backend/runtime/assist_apply_diagnostics")
+LATEST_JSON = "latest_assist_apply_probe.json"
+LATEST_MD = "latest_assist_apply_probe.md"
 SECRET_KEY_PATTERN = re.compile(r"(SECRET|TOKEN|KEY|PASSWORD|HOOK|DATABASE_URL|REDIS_URL)", re.I)
 
 
@@ -96,6 +98,75 @@ def github_handoff_payload(report: dict[str, Any], artifact_paths: list[str]) ->
     return {"title": title, "body": body, "labels": ["assist-apply-diagnostics", "codex"]}
 
 
+def base_report(application_id: int | None, user_id: int | None, *, safe_mode: bool, submit_allowed: bool) -> dict[str, Any]:
+    return {
+        "overall_status": "ok",
+        "application_id": application_id,
+        "user_id": user_id,
+        "safe_mode": safe_mode,
+        "submit_allowed": submit_allowed,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "failed_phase": None,
+        "exact_error": None,
+        "traceback": None,
+        "recommended_fix": None,
+        "env_summary": env_summary(),
+        "phases": {},
+        "timings": {},
+        "artifact_paths": [],
+    }
+
+
+def failure_report(
+    application_id: int | None,
+    user_id: int | None,
+    *,
+    safe_mode: bool,
+    submit_allowed: bool = False,
+    failed_phase: str = "probe_startup",
+    exact_error: str,
+    traceback_text: str,
+) -> dict[str, Any]:
+    report = base_report(application_id, user_id, safe_mode=safe_mode, submit_allowed=submit_allowed)
+    report.update(
+        {
+            "overall_status": "failed",
+            "failed_phase": failed_phase,
+            "exact_error": exact_error,
+            "traceback": traceback_text,
+            "recommended_fix": recommended_fix_for_phase(failed_phase, exact_error),
+        }
+    )
+    report["phases"][failed_phase] = {"status": "failed", "error": exact_error, "traceback": traceback_text}
+    return report
+
+
+def write_report_files(report: dict[str, Any], output_dir: Path = REPORT_DIR, *, timestamped: bool = True) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    application_id = report.get("application_id") or "unknown"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    latest_json = output_dir / LATEST_JSON
+    latest_md = output_dir / LATEST_MD
+    artifact_paths = [str(latest_json), str(latest_md)]
+    if timestamped:
+        artifact_paths.extend(
+            [
+                str(output_dir / f"assist_apply_probe_{application_id}_{timestamp}.json"),
+                str(output_dir / f"assist_apply_probe_{application_id}_{timestamp}.md"),
+            ]
+        )
+    existing_artifacts = [path for path in report.get("artifact_paths", []) if path not in artifact_paths]
+    report["artifact_paths"] = [*existing_artifacts, *artifact_paths]
+    report["github_handoff"] = github_handoff_payload(report, report["artifact_paths"])
+    sanitized = redact_value(report)
+    latest_json.write_text(json.dumps(sanitized, indent=2, sort_keys=True), encoding="utf-8")
+    latest_md.write_text(markdown_report(sanitized), encoding="utf-8")
+    if timestamped:
+        Path(artifact_paths[2]).write_text(json.dumps(sanitized, indent=2, sort_keys=True), encoding="utf-8")
+        Path(artifact_paths[3]).write_text(markdown_report(sanitized), encoding="utf-8")
+    return sanitized
+
+
 def _phase(report: dict[str, Any], name: str, action: Callable[[], dict[str, Any] | None]) -> None:
     started = time.perf_counter()
     try:
@@ -124,21 +195,7 @@ def build_report(
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    report: dict[str, Any] = {
-        "overall_status": "ok",
-        "application_id": application_id,
-        "user_id": user_id,
-        "safe_mode": safe_mode,
-        "submit_allowed": submit_allowed,
-        "failed_phase": None,
-        "exact_error": None,
-        "traceback": None,
-        "recommended_fix": None,
-        "env_summary": env_summary(),
-        "phases": {},
-        "timings": {},
-        "artifact_paths": [],
-    }
+    report: dict[str, Any] = base_report(application_id, user_id, safe_mode=safe_mode, submit_allowed=submit_allowed)
 
     context: dict[str, Any] = {"job": None, "user": None, "profile": None, "resolved_url": None}
 
@@ -235,14 +292,7 @@ def build_report(
     if report["overall_status"] == "ok":
         report["recommended_fix"] = recommended_fix_for_phase("", None)
 
-    json_path = output_dir / f"assist_apply_probe_{application_id}_{timestamp}.json"
-    md_path = output_dir / f"assist_apply_probe_{application_id}_{timestamp}.md"
-    report["artifact_paths"].extend([str(json_path), str(md_path)])
-    report["github_handoff"] = github_handoff_payload(report, report["artifact_paths"])
-    sanitized = redact_value(report)
-    json_path.write_text(json.dumps(sanitized, indent=2, sort_keys=True), encoding="utf-8")
-    md_path.write_text(markdown_report(sanitized), encoding="utf-8")
-    return sanitized
+    return write_report_files(report, output_dir)
 
 
 def markdown_report(report: dict[str, Any]) -> str:
@@ -279,7 +329,22 @@ def main() -> None:
     parser.add_argument("--safe-mode", default="true")
     parser.add_argument("--submit-allowed", default="false")
     args = parser.parse_args()
-    report = build_report(args.application_id, args.user_id, safe_mode=parse_bool(args.safe_mode), submit_allowed=parse_bool(args.submit_allowed))
+    safe_mode = parse_bool(args.safe_mode)
+    submit_allowed = parse_bool(args.submit_allowed)
+    try:
+        report = build_report(args.application_id, args.user_id, safe_mode=safe_mode, submit_allowed=submit_allowed)
+    except Exception as exc:  # noqa: BLE001
+        report = write_report_files(
+            failure_report(
+                args.application_id,
+                args.user_id,
+                safe_mode=safe_mode,
+                submit_allowed=submit_allowed,
+                failed_phase="probe_unhandled_exception",
+                exact_error=str(exc),
+                traceback_text=traceback.format_exc(),
+            )
+        )
     print(json.dumps({"overall_status": report["overall_status"], "failed_phase": report["failed_phase"], "artifact_paths": report["artifact_paths"]}, sort_keys=True))
     if report["overall_status"] != "ok":
         raise SystemExit(1)
