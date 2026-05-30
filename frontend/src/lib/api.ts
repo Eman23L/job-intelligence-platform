@@ -7,6 +7,8 @@ import type {
   AssistApplyDiagnosticRun,
   AssistApplyResult,
   AnalyticsOverview,
+  AutonomousRealSubmitRunResult,
+  AutonomousRealSubmitStatus,
   JobDetail,
   JobAvailabilityResult,
   JobAvailabilityRunStart,
@@ -153,6 +155,9 @@ export const api = {
     }),
   assistApplyDiagnosticRun: (id: number, runId: string) =>
     request<AssistApplyDiagnosticRun>(`/applications/${id}/assist-apply/diagnostics/${runId}`, { timeoutMs: 30000 }),
+  autonomousRealSubmitStatus: () => request<AutonomousRealSubmitStatus>("/applications/autonomous-real-submit"),
+  runAutonomousRealSubmit: () =>
+    request<AutonomousRealSubmitRunResult>("/applications/autonomous-real-submit", { method: "POST", timeoutMs: 30000 }),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`, { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
   rescoreJobs: () => request<JobRescoreRunStart>("/jobs/rescore", { method: "POST" }),

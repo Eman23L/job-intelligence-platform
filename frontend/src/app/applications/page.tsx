@@ -9,7 +9,7 @@ import { RecommendationActionBadge } from "@/components/RecommendationActionBadg
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { ApiError, api, apiConfig } from "@/lib/api";
-import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyResult, JobScorecard } from "@/types/api";
+import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyResult, AutonomousRealSubmitStatus, JobScorecard } from "@/types/api";
 
 const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
 
@@ -25,12 +25,14 @@ export default function ApplicationsPage() {
   const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
   const [assistResult, setAssistResult] = useState<{ jobTitle: string; result: AssistApplyResult; diagnostic?: AssistApplyDiagnosticRun | null } | null>(null);
   const [assistDebugMode, setAssistDebugMode] = useState(true);
+  const [autonomousStatus, setAutonomousStatus] = useState<AutonomousRealSubmitStatus | null>(null);
   const [threshold, setThreshold] = useState(80);
 
   const refresh = useCallback(async () => {
     const result = await api.applications();
     setData(result);
     setThreshold(result.minimum_apply_score);
+    api.autonomousRealSubmitStatus().then(setAutonomousStatus).catch(() => setAutonomousStatus(null));
   }, []);
 
   useEffect(() => {
@@ -158,6 +160,23 @@ export default function ApplicationsPage() {
       setScorecard(await api.jobScorecard(jobId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load scorecard");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const runAutonomousRealSubmit = async () => {
+    setActionLoading("prepare");
+    setError(null);
+    try {
+      const result = await api.runAutonomousRealSubmit();
+      await refresh();
+      setNotice({
+        type: result.submitted ? "success" : "warning",
+        message: result.submitted ? "Autonomous real-submit canary submitted one application." : result.exact_error ?? result.recommended_fix
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to run autonomous real-submit canary");
     } finally {
       setActionLoading(null);
     }
@@ -332,6 +351,15 @@ export default function ApplicationsPage() {
           <input type="checkbox" checked={assistDebugMode} onChange={(event) => setAssistDebugMode(event.target.checked)} />
           Enable debug mode
         </label>
+      </div>
+      <div className={`notice-banner ${autonomousStatus?.enabled ? "warning" : "info"}`}>
+        Autonomous real-submit mode: {autonomousStatus?.enabled ? "enabled" : "disabled"}. Max submits per run: {autonomousStatus?.max_submits_per_run ?? 1}.
+        {autonomousStatus?.last_result ? ` Last result: ${String(autonomousStatus.last_result.status ?? "unknown")}` : " Last result: none."}
+        {autonomousStatus?.enabled ? (
+          <button type="button" className="secondary-button compact-button" disabled={actionLoading !== null} onClick={() => void runAutonomousRealSubmit()}>
+            Run canary
+          </button>
+        ) : null}
       </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
       <div className="notice-banner info">Current apply threshold: {threshold}+.</div>

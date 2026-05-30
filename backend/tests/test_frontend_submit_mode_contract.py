@@ -41,3 +41,14 @@ def test_diagnostic_summary_rendered_in_assist_modal() -> None:
     assert "Exact error" in page
     assert "Recommended fix" in page
     assert "Diagnostic artifacts" in page
+
+
+def test_autonomous_real_submit_status_is_visible() -> None:
+    page = (REPO_ROOT / "frontend" / "src" / "app" / "applications" / "page.tsx").read_text()
+    api = (REPO_ROOT / "frontend" / "src" / "lib" / "api.ts").read_text()
+
+    assert "Autonomous real-submit mode" in page
+    assert "Max submits per run" in page
+    assert "Last result" in page
+    assert "runAutonomousRealSubmit" in page
+    assert "autonomousRealSubmitStatus" in api

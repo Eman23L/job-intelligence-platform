@@ -764,6 +764,24 @@ class AssistApplyDiagnosticRun(BaseModel):
     artifact_links: list[str] = Field(default_factory=list)
 
 
+class AutonomousRealSubmitStatus(BaseModel):
+    enabled: bool
+    max_submits_per_run: int
+    eligible_application_ids: list[int] = Field(default_factory=list)
+    last_result: dict[str, Any] | None = None
+
+
+class AutonomousRealSubmitRunResult(BaseModel):
+    status: str
+    application_id: int | None = None
+    submitted: bool = False
+    failed_phase: str | None = None
+    exact_error: str | None = None
+    recommended_fix: str
+    diagnostic_run_id: str | None = None
+    created_at: str
+
+
 class BrowserStatus(BaseModel):
     service_type: str = "web"
     queue_enabled: bool

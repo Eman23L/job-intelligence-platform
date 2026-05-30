@@ -18,6 +18,10 @@ services:
         value: web
       - key: DIAGNOSTIC_ADMIN_TOKEN
         sync: false
+      - key: AUTONOMOUS_REAL_SUBMIT_ENABLED
+        value: "false"
+      - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN
+        value: "1"
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGINS
@@ -72,6 +76,10 @@ services:
         value: worker
       - key: DIAGNOSTIC_ADMIN_TOKEN
         sync: false
+      - key: AUTONOMOUS_REAL_SUBMIT_ENABLED
+        value: "false"
+      - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN
+        value: "1"
       - key: DATABASE_URL
         sync: false
       - key: AI_PROVIDER

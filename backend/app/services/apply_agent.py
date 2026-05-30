@@ -1832,6 +1832,8 @@ def _run_jobserve_search_to_apply(
                 "modal_title": modal_identity.get("title") or "",
             },
         )
+        debug.screenshot("before_final_submit")
+        debug.html("before_final_submit", context)
         _click_locator_resilient(page, apply_button)
         flow["final_apply_clicked"] = True
         flow["first_apply_clicked"] = True
@@ -1848,7 +1850,8 @@ def _run_jobserve_search_to_apply(
             status = "submitted"
             _report_jobserve_step(progress_callback, "submitted_message_seen", succeeded=True, confirmation_text=confirmation_text)
             debug.step("jobserve_submitted_message_seen", jobserve_flow_diagnostics=flow)
-            debug.screenshot("submission_confirmation_seen")
+            debug.screenshot("after_final_submit")
+            debug.html("after_final_submit", page)
         except Exception as exc:  # noqa: BLE001
             debug.final_error = "JobServe submission confirmation not detected."
             exceptions.append(_exception_payload("confirmation_detection", exc, jobserve_flow_diagnostics=dict(flow)))
@@ -3463,7 +3466,8 @@ def _run_jobserve_modal(
     debug.screenshot("after_filling")
     _disable_jobserve_account_options(context, warnings)
     if mode == "submit_with_confirmation":
-        debug.screenshot("before_submit")
+        debug.screenshot("before_final_submit")
+        debug.html("before_final_submit", context)
         if unfilled_required:
             raise RuntimeError(f"Required fields missing: {', '.join(_dedupe(unfilled_required))}")
         apply_button = _jobserve_apply_button(context)
@@ -3476,6 +3480,8 @@ def _run_jobserve_modal(
         _report_jobserve_step(progress_callback, "final_apply_clicked", succeeded=True)
         success = target_page.get_by_text("Your application has been submitted.").first
         success.wait_for(timeout=12000)
+        debug.screenshot("after_final_submit")
+        debug.html("after_final_submit", target_page)
         submitted = True
         status = "submitted"
         _report_jobserve_step(progress_callback, "submitted_message_seen", succeeded=True, confirmation_text="Your application has been submitted.")

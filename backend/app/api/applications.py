@@ -10,7 +10,7 @@ from app.config import settings
 from app.db.models import Job, User
 from app.db.session import get_db
 from app.diagnostics.assist_apply_runs import new_run_id, read_run_status, run_assist_apply_probe_background, write_run_status
-from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyRequest, AssistApplyResult
+from app.schemas.database import ApplicationPrepareRunStart, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyRequest, AssistApplyResult, AutonomousRealSubmitRunResult, AutonomousRealSubmitStatus
 from app.services.apply_agent import BrowserAutomationError, assist_apply_application, mark_queued_assist, update_queued_assist_metadata, run_assist_apply_background
 from app.services.applications import (
     get_prepare_applications_run_status,
@@ -19,6 +19,7 @@ from app.services.applications import (
     run_prepare_applications_background,
     start_prepare_applications_run,
 )
+from app.services.autonomous_submit import autonomous_submit_status, run_autonomous_real_submit_canary
 from app.services.queue import enqueue_or_background, queue_enabled, redis_url_host
 
 router = APIRouter(prefix="/applications", tags=["applications"])
@@ -226,3 +227,15 @@ def _diagnostic_response(run_id: str, state: dict) -> AssistApplyDiagnosticRun:
         markdown_summary=state.get("markdown_summary"),
         artifact_links=state.get("artifact_links") or [],
     )
+
+
+@router.get("/autonomous-real-submit", response_model=AutonomousRealSubmitStatus)
+def get_autonomous_real_submit_status(db: Session = Depends(get_db)):
+    user = _default_user(db)
+    return AutonomousRealSubmitStatus(**autonomous_submit_status(db, user))
+
+
+@router.post("/autonomous-real-submit", response_model=AutonomousRealSubmitRunResult)
+def run_autonomous_real_submit(db: Session = Depends(get_db)):
+    user = _default_user(db)
+    return AutonomousRealSubmitRunResult(**run_autonomous_real_submit_canary(db, user))

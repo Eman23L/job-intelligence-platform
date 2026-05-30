@@ -164,3 +164,60 @@ def run_assist_apply_probe_background(
         markdown_summary=markdown,
         artifact_links=[str(path) for path in report.get("artifact_paths") or []],
     )
+    _persist_latest_safe_diagnostic(
+        run_id,
+        application_id,
+        status=final_status,
+        safe_mode=safe_mode,
+        submit_allowed=submit_allowed,
+        report=report,
+        artifact_links=[str(path) for path in report.get("artifact_paths") or []],
+    )
+
+
+def _persist_latest_safe_diagnostic(
+    run_id: str,
+    application_id: int,
+    *,
+    status: str,
+    safe_mode: bool,
+    submit_allowed: bool,
+    report: dict[str, Any],
+    artifact_links: list[str],
+) -> None:
+    if not safe_mode or submit_allowed:
+        return
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.db.models import Job
+        from app.db.session import SessionLocal
+
+        with SessionLocal() as db:
+            job = db.get(Job, application_id)
+            if job is None:
+                return
+            assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+            job.assisted_result = {
+                **assisted,
+                "latest_safe_diagnostic": {
+                    "run_id": run_id,
+                    "status": status,
+                    "safe_mode": safe_mode,
+                    "submit_allowed": submit_allowed,
+                    "overall_status": report.get("overall_status"),
+                    "failed_phase": report.get("failed_phase"),
+                    "exact_error": report.get("exact_error"),
+                    "recommended_fix": report.get("recommended_fix"),
+                    "source_job_id": (((report.get("phases") or {}).get("jobserve_url_resolution") or {}).get("data") or {}).get("diagnostics", {}).get("source_job_id"),
+                    "job_title": (((report.get("phases") or {}).get("db_lookup") or {}).get("data") or {}).get("job_title"),
+                    "job_company": (((report.get("phases") or {}).get("db_lookup") or {}).get("data") or {}).get("job_company"),
+                    "cv_found": (((report.get("phases") or {}).get("db_lookup") or {}).get("data") or {}).get("cv_found"),
+                    "artifact_links": artifact_links,
+                    "completed_at": _now(),
+                },
+            }
+            flag_modified(job, "assisted_result")
+            db.commit()
+    except Exception:  # noqa: BLE001
+        return

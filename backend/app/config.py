@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     playwright_enabled: bool = Field(default=False, alias="PLAYWRIGHT_ENABLED")
     service_type: str = Field(default="web", alias="SERVICE_TYPE")
     diagnostic_admin_token: str = Field(default="", alias="DIAGNOSTIC_ADMIN_TOKEN")
+    autonomous_real_submit_enabled: bool = Field(default=False, alias="AUTONOMOUS_REAL_SUBMIT_ENABLED")
+    max_autonomous_real_submits_per_run: int = Field(default=1, alias="MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN")
 
     @field_validator("database_url", mode="before")
     @classmethod

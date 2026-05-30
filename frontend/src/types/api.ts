@@ -274,6 +274,24 @@ export interface AssistApplyDiagnosticRun {
   artifact_links: string[];
 }
 
+export interface AutonomousRealSubmitStatus {
+  enabled: boolean;
+  max_submits_per_run: number;
+  eligible_application_ids: number[];
+  last_result: Record<string, unknown> | null;
+}
+
+export interface AutonomousRealSubmitRunResult {
+  status: string;
+  application_id: number | null;
+  submitted: boolean;
+  failed_phase: string | null;
+  exact_error: string | null;
+  recommended_fix: string;
+  diagnostic_run_id: string | null;
+  created_at: string;
+}
+
 export interface ApplicationsPrepareResult {
   queued: number;
   job_ids: number[];
