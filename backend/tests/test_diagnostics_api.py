@@ -106,12 +106,30 @@ def test_remote_failed_report_includes_required_fields(tmp_path, monkeypatch) ->
 def test_github_workflow_remote_diagnostic_payload_is_valid() -> None:
     workflow = open(".github/workflows/assist-apply-diagnostics.yml", encoding="utf-8").read()
 
-    assert "APP_BASE_URL" in workflow
+    assert "BACKEND_API_BASE_URL" in workflow
+    assert "APP_BASE_URL" not in workflow
     assert "DIAGNOSTIC_ADMIN_TOKEN" in workflow
-    assert "POST \"$APP_BASE_URL/diagnostics/assist-apply/$APPLICATION_ID\"" in workflow
-    assert "GET" not in workflow or "/diagnostics/assist-apply/runs/$run_id" in workflow
+    assert 'POST "$backend_base/diagnostics/assist-apply/$APPLICATION_ID"' in workflow
+    assert '"$backend_base/diagnostics/assist-apply/runs/$run_id"' in workflow
     assert '\\"user_id\\":1' in workflow
     assert '\\"submit_allowed\\":false' in workflow
+    assert '"$backend_base/health"' in workflow
+
+
+def test_workflow_classifies_frontend_404_wrong_base_url() -> None:
+    workflow = open(".github/workflows/assist-apply-diagnostics.yml", encoding="utf-8").read()
+
+    assert "wrong_base_url_frontend_404" in workflow
+    assert "Next.js 404" in workflow
+    assert "frontend app" in workflow
+
+
+def test_backend_health_check_failure_produces_useful_report() -> None:
+    workflow = open(".github/workflows/assist-apply-diagnostics.yml", encoding="utf-8").read()
+
+    assert "backend_api_unreachable" in workflow
+    assert "Backend health check failed with HTTP" in workflow
+    assert "backend_health_response.txt" in workflow
 
 
 def test_private_redis_failure_in_github_does_not_block_remote_diagnostics() -> None:
@@ -121,3 +139,10 @@ def test_private_redis_failure_in_github_does_not_block_remote_diagnostics() -> 
     assert "DATABASE_URL" not in workflow
     assert "REDIS_URL" not in workflow
     assert "remote_diagnostic_endpoint_unavailable" in workflow
+
+
+def test_diagnostic_endpoint_route_exists() -> None:
+    routes = {getattr(route, "path", "") for route in app.routes}
+
+    assert "/diagnostics/assist-apply/{application_id}" in routes
+    assert "/diagnostics/assist-apply/runs/{run_id}" in routes

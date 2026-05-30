@@ -28,7 +28,7 @@ jobs:
       - name: Run remote assist apply probe
         id: assist_probe
         env:
-          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
           DIAGNOSTIC_ADMIN_TOKEN: ${{ secrets.DIAGNOSTIC_ADMIN_TOKEN }}
           APPLICATION_ID: ${{ inputs.application_id }}
           SAFE_MODE: ${{ inputs.safe_mode }}
@@ -37,59 +37,91 @@ jobs:
           root=backend/runtime/assist_apply_diagnostics
           stdout_log="$root/probe_stdout.log"
           stderr_log="$root/probe_stderr.log"
+          health_response="$root/backend_health_response.txt"
           post_response="$root/remote_start_response.json"
           poll_response="$root/remote_poll_response.json"
           latest_json="$root/latest_assist_apply_probe.json"
           latest_md="$root/latest_assist_apply_probe.md"
           exit_code=0
-          if [ -z "$APP_BASE_URL" ] || [ -z "$DIAGNOSTIC_ADMIN_TOKEN" ]; then
-            echo "APP_BASE_URL or DIAGNOSTIC_ADMIN_TOKEN is not configured" > "$stderr_log"
+          failed_phase=remote_diagnostic_endpoint_unavailable
+          exact_error="Remote diagnostic endpoint was unavailable or did not return a final report. See probe_stdout.log and probe_stderr.log."
+          recommended_fix="Verify BACKEND_API_BASE_URL, DIAGNOSTIC_ADMIN_TOKEN, deployed web routing, and Render worker health."
+          if [ -z "$BACKEND_API_BASE_URL" ] || [ -z "$DIAGNOSTIC_ADMIN_TOKEN" ]; then
+            exact_error="BACKEND_API_BASE_URL or DIAGNOSTIC_ADMIN_TOKEN is not configured"
+            echo "$exact_error" > "$stderr_log"
             exit_code=1
           else
             safe_mode_value=$(printf "%s" "$SAFE_MODE" | tr "[:upper:]" "[:lower:]")
             if [ "$safe_mode_value" != "true" ] && [ "$safe_mode_value" != "false" ]; then
               safe_mode_value=true
             fi
-            payload="{\"user_id\":1,\"safe_mode\":${safe_mode_value},\"submit_allowed\":false}"
-            http_code=$(curl -sS -o "$post_response" -w "%{http_code}" -X POST "$APP_BASE_URL/diagnostics/assist-apply/$APPLICATION_ID" \
-              -H "Authorization: Bearer $DIAGNOSTIC_ADMIN_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "$payload" 2> "$stderr_log")
-            echo "remote_start_http_code=$http_code" > "$stdout_log"
-            if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-              echo "remote diagnostic start failed with HTTP $http_code" >> "$stderr_log"
+            backend_base="${BACKEND_API_BASE_URL%/}"
+            health_code=$(curl -sS -o "$health_response" -w "%{http_code}" "$backend_base/health" 2> "$stderr_log")
+            health_tail=$(tail -c 1200 "$health_response" 2>/dev/null | tr '\n\r' '  ')
+            echo "backend_health_http_code=$health_code" > "$stdout_log"
+            if ! [[ "$health_code" =~ ^[0-9]+$ ]] || [ "$health_code" -lt 200 ] || [ "$health_code" -ge 300 ]; then
+              failed_phase=backend_api_unreachable
+              exact_error="Backend health check failed with HTTP $health_code. Body tail: $health_tail"
+              recommended_fix="Set BACKEND_API_BASE_URL to the FastAPI backend base URL, for example the Render backend service URL used by NEXT_PUBLIC_API_BASE_URL."
+              if [ "$health_code" = "404" ] && grep -Eiq 'next|__next|This page could not be found' "$health_response"; then
+                failed_phase=wrong_base_url_frontend_404
+                exact_error="BACKEND_API_BASE_URL appears to point at the frontend app, which returned a Next.js 404 for /health. Body tail: $health_tail"
+                recommended_fix="Set BACKEND_API_BASE_URL to the FastAPI backend URL, not the frontend domain."
+              fi
+              echo "$exact_error" >> "$stderr_log"
               exit_code=1
             else
-              run_id=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("run_id",""))' "$post_response" 2>> "$stderr_log")
-              if [ -z "$run_id" ]; then
-                echo "remote diagnostic start response did not include run_id" >> "$stderr_log"
+              payload="{\"user_id\":1,\"safe_mode\":${safe_mode_value},\"submit_allowed\":false}"
+              http_code=$(curl -sS -o "$post_response" -w "%{http_code}" -X POST "$backend_base/diagnostics/assist-apply/$APPLICATION_ID" \
+                -H "Authorization: Bearer $DIAGNOSTIC_ADMIN_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$payload" 2> "$stderr_log")
+              response_tail=$(tail -c 1200 "$post_response" 2>/dev/null | tr '\n\r' '  ')
+              echo "remote_start_http_code=$http_code" >> "$stdout_log"
+              if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+                exact_error="Remote diagnostic start failed with HTTP $http_code. Body tail: $response_tail"
+                if [ "$http_code" = "404" ] && grep -Eiq 'next|__next|This page could not be found' "$post_response"; then
+                  failed_phase=wrong_base_url_frontend_404
+                  exact_error="BACKEND_API_BASE_URL appears to point at the frontend app, which returned a Next.js 404 for /diagnostics. Body tail: $response_tail"
+                  recommended_fix="Set BACKEND_API_BASE_URL to the FastAPI backend URL, not the frontend domain."
+                fi
+                echo "$exact_error" >> "$stderr_log"
                 exit_code=1
               else
-                echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-                for attempt in $(seq 1 60); do
-                  poll_code=$(curl -sS -o "$poll_response" -w "%{http_code}" "$APP_BASE_URL/diagnostics/assist-apply/runs/$run_id" \
-                    -H "Authorization: Bearer $DIAGNOSTIC_ADMIN_TOKEN" 2>> "$stderr_log")
-                  echo "remote_poll_attempt=$attempt http_code=$poll_code" >> "$stdout_log"
-                  if ! [[ "$poll_code" =~ ^[0-9]+$ ]] || [ "$poll_code" -lt 200 ] || [ "$poll_code" -ge 300 ]; then
-                    echo "remote diagnostic poll failed with HTTP $poll_code" >> "$stderr_log"
-                    exit_code=1
-                    break
-                  fi
-                  remote_status=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("status",""))' "$poll_response" 2>> "$stderr_log")
-                  if [ "$remote_status" = "passed" ] || [ "$remote_status" = "failed" ]; then
-                    python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); report=data.get("final_report") or {}; open(sys.argv[2],"w",encoding="utf-8").write(json.dumps(report, indent=2, sort_keys=True)); open(sys.argv[3],"w",encoding="utf-8").write(data.get("markdown_summary") or "# Assist Apply Probe\n\nNo markdown summary returned.\n")' "$poll_response" "$latest_json" "$latest_md" 2>> "$stderr_log"
-                    [ "$remote_status" = "failed" ] && exit_code=1
-                    break
-                  fi
-                  sleep 10
-                done
-                if [ ! -f "$latest_json" ]; then
-                  echo "remote diagnostic timed out before final status" >> "$stderr_log"
+                run_id=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("run_id",""))' "$post_response" 2>> "$stderr_log")
+                if [ -z "$run_id" ]; then
+                  echo "remote diagnostic start response did not include run_id" >> "$stderr_log"
                   exit_code=1
+                else
+                  echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+                  for attempt in $(seq 1 60); do
+                    poll_code=$(curl -sS -o "$poll_response" -w "%{http_code}" "$backend_base/diagnostics/assist-apply/runs/$run_id" \
+                      -H "Authorization: Bearer $DIAGNOSTIC_ADMIN_TOKEN" 2>> "$stderr_log")
+                    echo "remote_poll_attempt=$attempt http_code=$poll_code" >> "$stdout_log"
+                    if ! [[ "$poll_code" =~ ^[0-9]+$ ]] || [ "$poll_code" -lt 200 ] || [ "$poll_code" -ge 300 ]; then
+                      echo "remote diagnostic poll failed with HTTP $poll_code" >> "$stderr_log"
+                      exit_code=1
+                      break
+                    fi
+                    remote_status=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("status",""))' "$poll_response" 2>> "$stderr_log")
+                    if [ "$remote_status" = "passed" ] || [ "$remote_status" = "failed" ]; then
+                      python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); report=data.get("final_report") or {}; open(sys.argv[2],"w",encoding="utf-8").write(json.dumps(report, indent=2, sort_keys=True)); open(sys.argv[3],"w",encoding="utf-8").write(data.get("markdown_summary") or "# Assist Apply Probe\n\nNo markdown summary returned.\n")' "$poll_response" "$latest_json" "$latest_md" 2>> "$stderr_log"
+                      [ "$remote_status" = "failed" ] && exit_code=1
+                      break
+                    fi
+                    sleep 10
+                  done
+                  if [ ! -f "$latest_json" ]; then
+                    echo "remote diagnostic timed out before final status" >> "$stderr_log"
+                    exit_code=1
+                  fi
                 fi
               fi
             fi
           fi
+          echo "failed_phase=$failed_phase" >> "$GITHUB_OUTPUT"
+          echo "exact_error=$exact_error" >> "$GITHUB_OUTPUT"
+          echo "recommended_fix=$recommended_fix" >> "$GITHUB_OUTPUT"
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Ensure diagnostic report exists
@@ -97,9 +129,9 @@ jobs:
         env:
           APPLICATION_ID: ${{ inputs.application_id }}
           SAFE_MODE: ${{ inputs.safe_mode }}
-          FAILED_PHASE: remote_diagnostic_endpoint_unavailable
-          EXACT_ERROR: Remote diagnostic endpoint was unavailable or did not return a final report. See probe_stdout.log and probe_stderr.log.
-          RECOMMENDED_FIX: Verify APP_BASE_URL, DIAGNOSTIC_ADMIN_TOKEN, deployed web routing, and Render worker health.
+          FAILED_PHASE: ${{ steps.assist_probe.outputs.failed_phase }}
+          EXACT_ERROR: ${{ steps.assist_probe.outputs.exact_error }}
+          RECOMMENDED_FIX: ${{ steps.assist_probe.outputs.recommended_fix }}
         run: |
           mkdir -p backend/runtime/assist_apply_diagnostics
           if [ ! -f backend/runtime/assist_apply_diagnostics/latest_assist_apply_probe.json ]; then
