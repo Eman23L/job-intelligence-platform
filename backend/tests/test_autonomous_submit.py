@@ -101,6 +101,56 @@ def test_interrupted_previous_attempt_can_retry_after_deploy(monkeypatch) -> Non
     assert autonomous_submit._new_code_and_fresh_safe_diagnostic(assisted) is True
 
 
+def test_interrupted_attempt_without_result_can_retry(monkeypatch) -> None:
+    monkeypatch.setattr(autonomous_submit, "_code_revision", lambda: "new-revision")
+    assisted = {
+        "autonomous_real_submit_attempted": True,
+        "status": "running",
+        "running_step": "field_fill_start",
+        "progress": {"current_step": "field_fill_start"},
+    }
+
+    assert autonomous_submit._new_code_and_fresh_safe_diagnostic(assisted) is True
+
+
+def test_repair_focus_candidate_is_prioritized_over_unattempted_higher_candidate(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    monkeypatch.setattr(autonomous_submit, "_new_code_and_fresh_safe_diagnostic", lambda assisted: True)
+    user = User(email="user@example.com")
+    unattempted = _job(source_job_id="DEF456", canonical_url="https://www.jobserve.com/gb/en/job/DEF456", assisted_result={"latest_safe_diagnostic": _safe_diag("DEF456")})
+    focused = _job(
+        source_job_id="ABC123",
+        canonical_url="https://www.jobserve.com/gb/en/job/ABC123",
+        assisted_result={
+            "latest_safe_diagnostic": _safe_diag("ABC123"),
+            "autonomous_real_submit_attempted": True,
+            "autonomous_fix_attempt_count": 1,
+            "autonomous_waiting_for_fix_deploy": True,
+            "autonomous_real_submit_result": {
+                "status": "failed",
+                "failed_phase": "field_fill",
+                "exact_error": "worker killed during field fill",
+                "code_revision": "old",
+                "created_at": "2026-06-01T20:00:00+00:00",
+            },
+        },
+    )
+    db_session.add_all([user, unattempted, focused])
+    db_session.commit()
+    monkeypatch.setattr(autonomous_submit, "_candidate_application_rows", lambda db, candidate_user: [(unattempted, None), (focused, None)])
+    attempts = []
+    monkeypatch.setattr(
+        autonomous_submit,
+        "assist_apply_application",
+        lambda db, job, user, **kwargs: attempts.append(job.id) or AssistApplyResult(status="submitted", submitted=True, confirmation_text="Your application has been submitted."),
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["application_id"] == focused.id
+    assert attempts == [focused.id]
+
+
 def test_success_text_required_before_marking_submitted(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
     user = User(email="user@example.com")

@@ -46,7 +46,13 @@ def latest_safe_diagnostic_passed(job: Job) -> bool:
     )
 
 
-def autonomous_real_submit_verification(job: Job, *, write_artifact: bool = True, include_feature_check: bool = True) -> dict[str, Any]:
+def autonomous_real_submit_verification(
+    job: Job,
+    *,
+    write_artifact: bool = True,
+    include_feature_check: bool = True,
+    allow_previous_autonomous_attempt: bool = False,
+) -> dict[str, Any]:
     assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
     latest_safe = assisted.get("latest_safe_diagnostic") if isinstance(assisted.get("latest_safe_diagnostic"), dict) else {}
     expected_refs = {str(value).strip() for value in [job.source_job_id, job.original_external_id] if str(value or "").strip()}
@@ -57,7 +63,11 @@ def autonomous_real_submit_verification(job: Job, *, write_artifact: bool = True
         *([_check("feature_enabled", settings.autonomous_real_submit_enabled, "AUTONOMOUS_REAL_SUBMIT_ENABLED must be true.")] if include_feature_check else []),
         _check("application_status_allowed", job.application_status in {"ready_to_apply", "opened"}, f"status={job.application_status}"),
         _check("not_already_submitted", not bool(assisted.get("submitted") or job.applied_at or job.application_status == "applied"), "Application is not already submitted/applied."),
-        _check("not_previously_autonomous_attempted", not bool(assisted.get("autonomous_real_submit_attempted")), "No prior autonomous real-submit attempt for this application."),
+        _check(
+            "not_previously_autonomous_attempted",
+            allow_previous_autonomous_attempt or not bool(assisted.get("autonomous_real_submit_attempted")),
+            "No prior autonomous real-submit attempt for this application, unless this is a focused repair retry after a fix/deploy or interrupted attempt.",
+        ),
         _check("source_is_jobserve", "jobserve" in " ".join([job.canonical_url or "", getattr(job, "apply_url", "") or "", job.source_job_id or ""]).lower(), "Job source/url must be JobServe."),
         _check("latest_safe_diagnostic_passed", latest_safe_diagnostic_passed(job), f"latest_safe_diagnostic_status={latest_safe.get('status')}"),
         _check("exact_job_reference_matches", bool(safe_ref and safe_ref in expected_refs), f"safe_diagnostic_reference={safe_ref or 'missing'} expected={sorted(expected_refs)}"),
@@ -140,7 +150,7 @@ def run_autonomous_real_submit_canary(db: Session, user: User) -> dict[str, Any]
             return result
         if step["final_outcome"] not in {"eligible", "eligible_after_recovery"}:
             continue
-        report = autonomous_real_submit_verification(job, include_feature_check=False)
+        report = autonomous_real_submit_verification(job, include_feature_check=False, allow_previous_autonomous_attempt=_allow_repair_retry(job))
         if report["overall_status"] != "ok":
             step["final_outcome"] = "blocked"
             step["blocked_reason"] = report.get("failed_phase")
@@ -258,7 +268,8 @@ def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str,
         )
         _persist_orchestration_step(db, job, step)
         return step
-    if assisted.get("autonomous_real_submit_attempted") and not _new_code_and_fresh_safe_diagnostic(assisted):
+    allow_repair_retry = bool(assisted.get("autonomous_real_submit_attempted") and _new_code_and_fresh_safe_diagnostic(assisted))
+    if assisted.get("autonomous_real_submit_attempted") and not allow_repair_retry:
         step.update(
             {
                 "blocked_reason": "already_attempted_autonomous_submit",
@@ -271,7 +282,7 @@ def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str,
         _persist_orchestration_step(db, job, step)
         return step
 
-    report = autonomous_real_submit_verification(job, write_artifact=False, include_feature_check=False)
+    report = autonomous_real_submit_verification(job, write_artifact=False, include_feature_check=False, allow_previous_autonomous_attempt=allow_repair_retry)
     reason = report.get("failed_phase")
     if report["overall_status"] == "ok":
         step["final_outcome"] = "eligible"
@@ -292,7 +303,7 @@ def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str,
                 step["reset_performed"] = True
                 db.commit()
             step["retried"] = True
-            retry_report = autonomous_real_submit_verification(job, write_artifact=False, include_feature_check=False)
+            retry_report = autonomous_real_submit_verification(job, write_artifact=False, include_feature_check=False, allow_previous_autonomous_attempt=allow_repair_retry)
             if retry_report["overall_status"] == "ok":
                 step["final_outcome"] = "eligible_after_recovery"
             else:
@@ -325,8 +336,53 @@ def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str,
 def _candidate_jobs(db: Session, user: User) -> list[Job]:
     rows = _candidate_application_rows(db, user)
     if rows:
-        return [job for job, _score in rows]
-    return db.scalars(select(Job).where(Job.status != "excluded").order_by(Job.id)).all()
+        return _prioritize_repair_focus_jobs([job for job, _score in rows])
+    return _prioritize_repair_focus_jobs(db.scalars(select(Job).where(Job.status != "excluded").order_by(Job.id)).all())
+
+
+def _allow_repair_retry(job: Job) -> bool:
+    assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+    return bool(assisted.get("autonomous_real_submit_attempted") and _new_code_and_fresh_safe_diagnostic(assisted))
+
+
+def _prioritize_repair_focus_jobs(jobs: list[Job]) -> list[Job]:
+    focused: list[Job] = []
+    remaining: list[Job] = []
+    for job in jobs:
+        if _is_active_repair_focus(job):
+            focused.append(job)
+        else:
+            remaining.append(job)
+    focused.sort(key=_repair_focus_sort_key)
+    return [*focused, *remaining]
+
+
+def _is_active_repair_focus(job: Job) -> bool:
+    assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+    if job.application_status == "applied" or job.applied_at or assisted.get("submitted"):
+        return False
+    count = _failure_attempt_count(assisted)
+    if count >= settings.max_autonomous_fix_attempts_per_application:
+        return False
+    result = assisted.get("autonomous_real_submit_result") if isinstance(assisted.get("autonomous_real_submit_result"), dict) else {}
+    return bool(
+        assisted.get("autonomous_real_submit_attempted")
+        or assisted.get("autonomous_waiting_for_fix_deploy")
+        or count > 0
+        or result.get("status") in {"failed", "waiting_for_fix_deploy"}
+    )
+
+
+def _repair_focus_sort_key(job: Job) -> tuple[float, int, int]:
+    assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+    result = assisted.get("autonomous_real_submit_result") if isinstance(assisted.get("autonomous_real_submit_result"), dict) else {}
+    attempts = assisted.get("autonomous_fix_attempts") if isinstance(assisted.get("autonomous_fix_attempts"), list) else []
+    timestamps = [
+        _parse_time(result.get("created_at")),
+        *[_parse_time(attempt.get("created_at")) for attempt in attempts if isinstance(attempt, dict)],
+    ]
+    latest = max((value.timestamp() for value in timestamps if value is not None), default=0.0)
+    return (-latest, -_failure_attempt_count(assisted), job.id)
 
 
 def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[str, Any]) -> dict[str, Any]:
@@ -688,6 +744,8 @@ def _new_code_and_fresh_safe_diagnostic(assisted: dict[str, Any]) -> bool:
     previous_revision = result.get("code_revision")
     if current_revision and previous_revision and current_revision != previous_revision and _previous_attempt_was_interrupted(assisted, result):
         return True
+    if assisted.get("autonomous_real_submit_attempted") and not result and _previous_attempt_was_interrupted(assisted, result):
+        return True
     if not latest_safe_diagnostic_passed(type("JobLike", (), {"assisted_result": assisted})()):
         return False
     latest_completed = _parse_time(latest.get("completed_at"))
@@ -699,8 +757,13 @@ def _previous_attempt_was_interrupted(assisted: dict[str, Any], result: dict[str
     failed_phase = str(result.get("failed_phase") or assisted.get("final_error") or "")
     exact_error = str(result.get("exact_error") or assisted.get("final_error") or "")
     status = str(result.get("status") or assisted.get("status") or "")
-    text = " ".join([failed_phase, exact_error, status]).lower()
-    return any(marker in text for marker in ["worker_shutdown", "work-horse", "warm shut", "killed", "stalled", "timeout"])
+    running_step = str(assisted.get("running_step") or "")
+    progress = assisted.get("progress") if isinstance(assisted.get("progress"), dict) else {}
+    progress_step = str(progress.get("current_step") or "")
+    text = " ".join([failed_phase, exact_error, status, running_step, progress_step]).lower()
+    if any(marker in text for marker in ["worker_shutdown", "work-horse", "warm shut", "killed", "stalled", "timeout"]):
+        return True
+    return bool(assisted.get("autonomous_real_submit_attempted") and not result and status in {"running", "queued"})
 
 
 def _code_revision() -> str:
