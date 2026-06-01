@@ -1791,6 +1791,18 @@ def test_travel_25_selects_16_to_30() -> None:
     assert apply_agent.travel_distance_label("25") == "16 to 30"
 
 
+def test_jobserve_candidates_default_required_dropdown_values() -> None:
+    user = User(email="user@example.invalid")
+    profile = SimpleNamespace(preferences={}, work_status_uk="SC Cleared; BPSS Cleared")
+
+    candidates = apply_agent.profile_field_candidates(user, profile)
+
+    assert candidates["availability_notice"].value == "Immediate"
+    assert candidates["salary_expectation_gbp"].value == "65000"
+    assert candidates["travel_distance_miles"].value == "30"
+    assert candidates["work_authorization"].value == "UK Citizen"
+
+
 def test_missing_optional_dropdowns_do_not_block_submit_validation(monkeypatch) -> None:
     monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
     with apply_client(jobserve=True, with_profile=True, with_cv=True, dropdowns=False) as (_client, ids):

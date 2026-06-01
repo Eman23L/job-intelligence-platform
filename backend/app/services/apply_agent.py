@@ -44,6 +44,9 @@ JOBSERVE_DEFAULTS = {
     "posted_within": "Within 7 days",
     "job_type": "Any",
     "working_status": "UK Citizen",
+    "availability_notice": "Immediate",
+    "salary_expectation_gbp": "65000",
+    "travel_distance_miles": "30",
 }
 JOBSERVE_REQUIRED_DROPDOWN_PATTERNS = {
     "availability_notice": [r"availability", r"notice"],
@@ -634,6 +637,8 @@ def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str
             "progress": progress,
             "detected_buttons": payload.get("detected_buttons") or autonomous_result.get("detected_buttons") or [],
             "detected_fields": payload.get("detected_fields") or autonomous_result.get("detected_fields") or [],
+            "detected_selects": payload.get("detected_selects") or autonomous_result.get("detected_selects") or [],
+            "select_diagnostics": existing.get("select_diagnostics") or autonomous_result.get("select_diagnostics") or [],
             "screenshot_paths": existing.get("screenshot_paths") or autonomous_result.get("screenshot_paths") or [],
             "html_snapshot_paths": existing.get("html_snapshot_paths") or autonomous_result.get("html_snapshot_paths") or [],
         }
@@ -719,21 +724,37 @@ def profile_field_candidates(user: User, profile) -> dict[str, FieldCandidate]:
         "phone": getattr(profile, "phone", None) or preferences.get("phone") or preferences.get("phone_number"),
         "address": getattr(profile, "address", None),
         "country": getattr(profile, "country", None),
-        "location": profile.location_preference if profile is not None else preferences.get("location"),
+        "location": getattr(profile, "location_preference", None) if profile is not None else preferences.get("location"),
         "linkedin": preferences.get("linkedin") or preferences.get("linkedin_url"),
         "portfolio": preferences.get("portfolio") or preferences.get("portfolio_url") or preferences.get("website"),
         "salary": getattr(profile, "salary_expectation", None) or preferences.get("salary_expectation") or preferences.get("salary"),
         "travel_distance": getattr(profile, "travel_distance", None),
-        "availability_notice": getattr(profile, "availability_notice", None),
-        "salary_expectation_gbp": getattr(profile, "salary_expectation_gbp", None),
-        "travel_distance_miles": getattr(profile, "travel_distance_miles", None),
-        "work_authorization": getattr(profile, "work_status_uk", None) or preferences.get("work_authorization") or JOBSERVE_DEFAULTS["working_status"],
+        "availability_notice": getattr(profile, "availability_notice", None) or preferences.get("availability_notice") or JOBSERVE_DEFAULTS["availability_notice"],
+        "salary_expectation_gbp": getattr(profile, "salary_expectation_gbp", None) or getattr(profile, "salary_expectation", None) or preferences.get("salary_expectation_gbp") or preferences.get("salary_expectation") or preferences.get("salary") or JOBSERVE_DEFAULTS["salary_expectation_gbp"],
+        "travel_distance_miles": getattr(profile, "travel_distance_miles", None) or getattr(profile, "travel_distance", None) or preferences.get("travel_distance_miles") or preferences.get("travel_distance") or JOBSERVE_DEFAULTS["travel_distance_miles"],
+        "work_authorization": _jobserve_work_authorization_value(getattr(profile, "work_status_uk", None) or preferences.get("work_authorization")),
     }
     return {
         key: FieldCandidate(key=key, value=str(value).strip(), reason="Saved profile value")
         for key, value in raw_values.items()
         if value is not None and str(value).strip()
     }
+
+
+def _jobserve_work_authorization_value(value: Any) -> str:
+    text = str(value or "").strip()
+    normalized = _normalize_select_text(text)
+    if normalized in {"uk", "uk citizen", "british citizen", "citizen"}:
+        return "UK Citizen"
+    if "indefinite" in normalized or "leave to remain" in normalized:
+        return "Indefinite Leave to Remain"
+    if "eu citizen" in normalized:
+        return "EU Citizen"
+    if "no sponsor" in normalized or "no sponsorship" in normalized:
+        return "Work Permit Holder (No Sponsor Required)"
+    if "sponsor required" in normalized or "sponsorship required" in normalized:
+        return "Sponsorship Required (No Work Permit)"
+    return JOBSERVE_DEFAULTS["working_status"]
 
 
 def profile_debug_payload(user: User, profile, candidates: dict[str, FieldCandidate]) -> dict[str, Any]:
@@ -3827,20 +3848,29 @@ def _handle_required_dropdown(
     mapped_fields = profile_diagnostics.setdefault("mapped_fields", {}) if profile_diagnostics is not None else {}
     candidate = candidates.get(key)
     if candidate is None:
+        logger.info("jobserve_required_dropdown_missing_candidate field=%s key=%s", field_name, key)
         warnings.append(missing_warning)
         unfilled_required.append(field_name)
         mapped_fields[key] = {"mapped": False, "reason": "candidate missing"}
         return
     option = matcher(candidate.value)
     if option is None:
+        logger.info("jobserve_required_dropdown_no_option field=%s key=%s value=%s", field_name, key, candidate.value)
         warnings.append(no_match_warning or f"Could not match {field_name.lower()}")
         unfilled_required.append(field_name)
         mapped_fields[key] = {"mapped": False, "reason": "profile value could not be converted to JobServe option", "value": candidate.value}
         return
-    if _select_dropdown_by_label_patterns(page, label_patterns, option, field_name=field_name, diagnostics=select_diagnostics) or _select_required_dropdown_by_options(page, key, candidate.value, option, field_name=field_name, diagnostics=select_diagnostics):
+    logger.info("jobserve_required_dropdown_fill_start field=%s key=%s value=%s target_option=%s", field_name, key, candidate.value, option)
+    if (
+        _select_generated_jobserve_dropdown(page, key, candidate.value, option, field_name=field_name, diagnostics=select_diagnostics)
+        or _select_dropdown_by_label_patterns(page, label_patterns, option, field_name=field_name, diagnostics=select_diagnostics)
+        or _select_required_dropdown_by_options(page, key, candidate.value, option, field_name=field_name, diagnostics=select_diagnostics)
+    ):
+        logger.info("jobserve_required_dropdown_fill_done field=%s key=%s target_option=%s", field_name, key, option)
         filled.append(field_name)
         mapped_fields[key] = {"mapped": True, "label": field_name, "target_option": option}
         return
+    logger.info("jobserve_required_dropdown_fill_failed field=%s key=%s target_option=%s", field_name, key, option)
     warnings.append(f"Could not fill {field_name.lower()}")
     unfilled_required.append(field_name)
     select_failure = select_diagnostics[-1] if select_diagnostics else None
@@ -3870,6 +3900,64 @@ def _select_dropdown_by_label_patterns(
     for pattern in label_patterns:
         locator = page.get_by_label(re.compile(pattern, re.I)).first
         if _select_locator_option(locator, visible_text, field_name=field_name or visible_text, label_pattern=pattern, diagnostics=diagnostics):
+            return True
+    return False
+
+
+def _select_generated_jobserve_dropdown(
+    page,
+    key: str,
+    raw_value: Any,
+    visible_text: str,
+    *,
+    field_name: str,
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> bool:
+    selectors = {
+        "availability_notice": ['select#Q0009_ans', 'select[name*="Q0009_ans"]'],
+        "salary_expectation_gbp": ['select#Q0015_ans', 'select[name*="Q0015_ans"]', 'select#Q0012_ans', 'select[name*="Q0012_ans"]'],
+        "travel_distance_miles": ['select#Q0076_ans', 'select[name*="Q0076_ans"]', 'select#Q0078_ans', 'select[name*="Q0078_ans"]'],
+        "work_authorization": ['select#Q0133_ans', 'select[name*="Q0133_ans"]'],
+    }.get(key, [])
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if not locator.count():
+                continue
+            options = locator.evaluate(
+                """element => Array.from(element.options || []).map((option, index) => ({
+                    index,
+                    label: option.label || option.textContent || '',
+                    text: option.textContent || '',
+                    value: option.value || ''
+                }))""",
+                timeout=1000,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if diagnostics is not None:
+                diagnostics.append({"field": field_name, "label_pattern": f"{key}:generated_selector", "selector": selector, "target": visible_text, "success": False, "failure_reason": str(exc)})
+            continue
+        target = _required_dropdown_target_for_options(key, raw_value, visible_text, options)
+        if not target:
+            continue
+        target_option = next((option for option in options if str(option.get("label") or option.get("text") or "") == target), None)
+        if target_option is None:
+            continue
+        selected, failure_reason = _select_option_candidate(locator, target_option, target)
+        diagnostic = {
+            "field": field_name,
+            "label_pattern": f"{key}:generated_selector",
+            "selector": selector,
+            "target": target,
+            "available_options": options,
+            "selected_option": target_option if selected else None,
+            "strategy": "generated_selector",
+            "success": selected,
+            "failure_reason": failure_reason,
+        }
+        if diagnostics is not None:
+            diagnostics.append(diagnostic)
+        if selected:
             return True
     return False
 

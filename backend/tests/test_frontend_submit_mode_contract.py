@@ -67,6 +67,8 @@ def test_ui_shows_orchestration_summary() -> None:
     assert "Focused application" in page
     assert "Attempt" in page
     assert "Retry same application after deploy" in page
+    assert "Detected selects" in page
+    assert "Select diagnostics" in page
 
 
 def test_ui_polls_autonomous_orchestration_status() -> None:

@@ -644,6 +644,8 @@ function AutonomousOrchestrationSummary({ result }: { result: AutonomousRealSubm
       <DiagnosticArtifacts links={result.artifact_links ?? []} />
       <DebugJsonList title="Detected buttons" items={result.detected_buttons ?? []} empty="No button inventory returned" />
       <DebugJsonList title="Detected fields" items={result.detected_fields ?? []} empty="No field inventory returned" />
+      <DebugJsonList title="Detected selects" items={result.detected_selects ?? []} empty="No select inventory returned" />
+      <DebugJsonList title="Select diagnostics" items={result.select_diagnostics ?? []} empty="No select diagnostics returned" />
       {result.traceback ? (
         <div className="debug-block">
           <h4>Traceback</h4>
@@ -864,6 +866,8 @@ function normaliseAutonomousResult(value: Record<string, unknown>, fallback: Aut
     html_snapshot_urls: Array.isArray(value.html_snapshot_urls) ? (value.html_snapshot_urls as string[]) : fallback.html_snapshot_urls ?? [],
     detected_buttons: Array.isArray(value.detected_buttons) ? (value.detected_buttons as Array<Record<string, unknown>>) : fallback.detected_buttons ?? [],
     detected_fields: Array.isArray(value.detected_fields) ? (value.detected_fields as Array<Record<string, unknown>>) : fallback.detected_fields ?? [],
+    detected_selects: Array.isArray(value.detected_selects) ? (value.detected_selects as Array<Record<string, unknown>>) : fallback.detected_selects ?? [],
+    select_diagnostics: Array.isArray(value.select_diagnostics) ? (value.select_diagnostics as Array<Record<string, unknown>>) : fallback.select_diagnostics ?? [],
     artifact_links: Array.isArray(value.artifact_links) ? (value.artifact_links as string[]) : fallback.artifact_links ?? [],
     created_at: String(value.created_at ?? fallback.created_at)
   };
