@@ -3445,7 +3445,10 @@ def _run_jobserve_modal(
         warnings.append("Captcha detected; manual review required.")
 
     _report_stage(progress_callback, "field_fill", "start", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
-    _disable_jobserve_account_options(context, warnings)
+    _report_jobserve_step(progress_callback, "account_toggle_disable_start", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
+    disabled_account_options = _disable_jobserve_account_options(context, warnings)
+    flow["account_toggles_turned_off_initial"] = disabled_account_options
+    _report_jobserve_step(progress_callback, "account_toggle_disable_done", succeeded=True, disabled=disabled_account_options)
     required = ["email"]
     for key, patterns in {
         "email": [r"email address", r"email"],
@@ -3944,13 +3947,73 @@ def _int_value(value: str) -> int | None:
 
 def _disable_jobserve_account_options(page, warnings: list[str]) -> list[str]:
     disabled: list[str] = []
+    phrases = [
+        "I would like to register a Job Seeker account",
+        "register a Job Seeker account",
+        "make my CV searchable",
+        "CV searchable",
+        "job alerts",
+        "create an account",
+    ]
     for context in _page_and_frame_contexts(page):
-        for text in ["I would like to register a Job Seeker account", "register a Job Seeker account", "make my CV searchable", "CV searchable", "job alerts", "create an account"]:
-            diagnostic: dict[str, Any] = {}
-            if _set_checkbox_by_label(context, [re.escape(text)], checked=False, diagnostic=diagnostic, click_unknown=True):
-                if diagnostic.get("clicked") or diagnostic.get("result") in {"unchecked_after_click", "unknown_clicked_once"}:
-                    warnings.append(f"Disabled option: {text}.")
-                    disabled.append(text)
+        if not hasattr(context, "evaluate"):
+            for text in phrases:
+                diagnostic: dict[str, Any] = {}
+                if _set_checkbox_by_label(context, [re.escape(text)], checked=False, diagnostic=diagnostic, click_unknown=True):
+                    if diagnostic.get("clicked") or diagnostic.get("result") in {"unchecked_after_click", "unknown_clicked_once"}:
+                        warnings.append(f"Disabled option: {text}.")
+                        disabled.append(text)
+            continue
+        try:
+            clicked = context.evaluate(
+                """(phrases) => {
+                    const norm = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                    const phrasesNorm = phrases.map(norm);
+                    const visible = (el) => {
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+                    };
+                    const textFor = (el) => [
+                        el.innerText,
+                        el.textContent,
+                        el.getAttribute('aria-label'),
+                        el.getAttribute('title'),
+                        el.getAttribute('name'),
+                        el.getAttribute('id')
+                    ].filter(Boolean).join(' ');
+                    const labelText = (input) => {
+                        const id = input.getAttribute('id');
+                        const label = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`) : null;
+                        const parentLabel = input.closest('label');
+                        return [label && label.innerText, parentLabel && parentLabel.innerText, textFor(input)].filter(Boolean).join(' ');
+                    };
+                    const controls = Array.from(document.querySelectorAll('input[type="checkbox"], [role="checkbox"]'));
+                    const disabled = [];
+                    for (const control of controls) {
+                        if (!visible(control)) continue;
+                        const haystack = norm(labelText(control));
+                        const phrase = phrasesNorm.find((candidate) => candidate && haystack.includes(candidate));
+                        if (!phrase) continue;
+                        const rawPhrase = phrases[phrasesNorm.indexOf(phrase)];
+                        const checked = control.matches('input[type="checkbox"]')
+                            ? Boolean(control.checked)
+                            : String(control.getAttribute('aria-checked') || '').toLowerCase() === 'true';
+                        if (checked || !control.matches('input[type="checkbox"]')) {
+                            control.click();
+                            disabled.push(rawPhrase);
+                        }
+                    }
+                    return disabled;
+                }""",
+                phrases,
+                timeout=1500,
+            )
+            for text in clicked or []:
+                warnings.append(f"Disabled option: {text}.")
+                disabled.append(str(text))
+        except Exception as exc:  # noqa: BLE001
+            logger.info("jobserve_account_options_dom_disable_failed context=%s error=%s", _context_name(context), exc)
     return disabled
 
 
