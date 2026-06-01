@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import asyncio
 import os
 
 from app.api import health
@@ -102,6 +103,32 @@ def test_chromium_detection_supports_hermetic_browser_path(monkeypatch, tmp_path
     monkeypatch.setattr(browser_automation, "_hermetic_browser_root", lambda: local_browsers)
 
     detection = browser_automation.detect_chromium()
+
+    assert detection.executable_path == str(executable)
+    assert detection.exists is True
+    assert detection.executable is True
+    assert detection.source == "cache_glob"
+
+
+def test_chromium_detection_is_safe_inside_asyncio_loop(monkeypatch, tmp_path) -> None:
+    local_browsers = tmp_path / "driver" / "package" / ".local-browsers"
+    executable = local_browsers / "chromium-1201" / "chrome-linux" / "chrome"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+    monkeypatch.setattr(browser_automation, "playwright_installed", lambda: True)
+    monkeypatch.setattr(browser_automation, "_hermetic_browser_root", lambda: local_browsers)
+    monkeypatch.setattr(
+        browser_automation,
+        "_playwright_chromium_executable_path",
+        lambda: (_ for _ in ()).throw(AssertionError("sync_playwright should not be called in an event loop")),
+    )
+
+    async def detect():
+        return browser_automation.detect_chromium()
+
+    detection = asyncio.run(detect())
 
     assert detection.executable_path == str(executable)
     assert detection.exists is True

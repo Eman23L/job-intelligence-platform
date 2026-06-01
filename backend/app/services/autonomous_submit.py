@@ -343,8 +343,8 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
     except BrowserAutomationError as exc:
         diagnostic_run_id = new_run_id()
         run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
-        failed_phase = "browser_launch" if exc.error in {"browser_launch", "chromium_not_installed", "playwright_not_installed"} else exc.error
-        payload = _run_result("failed", failed_phase, exc.message, "Fix browser automation startup in Render, then rerun safe diagnostics.", job.id, diagnostic_run_id)
+        failed_phase, exact_error, recommended_fix = _classify_autonomous_submit_exception(exc)
+        payload = _run_result("failed", failed_phase, exact_error, recommended_fix, job.id, diagnostic_run_id)
         handoff_result = _create_codex_handoff(
             job,
             {
@@ -363,7 +363,8 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
     except Exception as exc:  # noqa: BLE001
         diagnostic_run_id = new_run_id()
         run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
-        payload = _run_result("failed", "autonomous_submit_exception", str(exc), "Inspect safe diagnostic artifacts and final-submit verification report.", job.id, diagnostic_run_id)
+        failed_phase, exact_error, recommended_fix = _classify_autonomous_submit_exception(exc)
+        payload = _run_result("failed", failed_phase, exact_error, recommended_fix, job.id, diagnostic_run_id)
         handoff_result = _create_codex_handoff(
             job,
             {
@@ -406,6 +407,22 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
     payload["submitted"] = True
     _persist_result(db, job, payload)
     return payload
+
+
+def _classify_autonomous_submit_exception(exc: Exception) -> tuple[str, str, str]:
+    message = getattr(exc, "message", None) or str(exc)
+    if "using Playwright Sync API inside the asyncio loop" in message or "Sync API inside the asyncio loop" in message:
+        return (
+            "playwright_api_mismatch",
+            "Sync Playwright API called inside asyncio loop",
+            "Use async_playwright or move sync check outside async runtime.",
+        )
+    error = getattr(exc, "error", None)
+    if error in {"browser_launch", "chromium_not_installed", "playwright_not_installed"}:
+        return ("browser_launch", message, "Fix browser automation startup in Render, then rerun safe diagnostics.")
+    if isinstance(exc, BrowserAutomationError):
+        return (error or "browser_launch", message, "Fix browser automation startup in Render, then rerun safe diagnostics.")
+    return ("autonomous_submit_exception", message, "Inspect safe diagnostic artifacts and final-submit verification report.")
 
 
 def _confirmation_means_submitted(value: str | None) -> bool:

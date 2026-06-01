@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 import logging
@@ -64,6 +65,14 @@ class BrowserAutomationError(RuntimeError):
         super().__init__(message)
         self.error = error
         self.message = message
+
+
+def _event_loop_running() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -1028,6 +1037,8 @@ def run_playwright_assist(
     availability = validate_browser_automation_availability(require_worker=settings.queue_enabled)
     if not availability.available:
         raise BrowserAutomationError(availability.error or "worker_unavailable", availability.message or "Browser automation worker is offline.")
+    if _event_loop_running():
+        raise BrowserAutomationError("playwright_api_mismatch", "Sync Playwright API called inside asyncio loop")
     try:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+
 from app.config import settings
 from app.db.models import Job, User
 from app.schemas.database import AssistApplyResult
+from app.services import apply_agent
 from app.services.apply_agent import BrowserAutomationError
 from app.services import autonomous_submit
 from sqlalchemy.orm.attributes import flag_modified
@@ -324,6 +327,87 @@ def test_canary_logs_browser_preflight_before_submit(db_session, monkeypatch, ca
     assert "autonomous_submit_browser_preflight" in caplog.text
     assert "chromium_executable_path=/app/.local-browsers/chromium/chrome" in caplog.text
     assert "chromium_file_exists=True" in caplog.text
+
+
+def test_async_autonomous_canary_preflight_does_not_call_sync_playwright(db_session, monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job()
+    db_session.add_all([user, job])
+    db_session.commit()
+
+    local_browsers = tmp_path / "driver" / "package" / ".local-browsers"
+    executable = local_browsers / "chromium-1201" / "chrome-linux" / "chrome"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+    monkeypatch.setattr(autonomous_submit, "playwright_installed", lambda: True, raising=False)
+    monkeypatch.setattr("app.services.browser_automation.playwright_installed", lambda: True)
+    monkeypatch.setattr("app.services.browser_automation._hermetic_browser_root", lambda: local_browsers)
+    monkeypatch.setattr(
+        "app.services.browser_automation._playwright_chromium_executable_path",
+        lambda: (_ for _ in ()).throw(AssertionError("sync_playwright should not be called in an event loop")),
+    )
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: AssistApplyResult(status="submitted", submitted=True, confirmation_text="Your application has been submitted."))
+
+    async def run_canary():
+        return autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    result = asyncio.run(run_canary())
+
+    assert result["status"] == "submitted"
+
+
+def test_playwright_sync_async_mismatch_classified_and_handed_off(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job()
+    db_session.add_all([user, job])
+    db_session.commit()
+    handoff_reports = []
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        autonomous_submit,
+        "assist_apply_application",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("It looks like you are using Playwright Sync API inside the asyncio loop. Please use the Async API instead.")),
+    )
+    monkeypatch.setattr(
+        autonomous_submit,
+        "create_or_update_codex_handoff",
+        lambda report: handoff_reports.append(report) or {"status": "updated", "issue_url": "https://github.com/owner/repo/issues/15"},
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["status"] == "failed"
+    assert result["failed_phase"] == "playwright_api_mismatch"
+    assert result["exact_error"] == "Sync Playwright API called inside asyncio loop"
+    assert result["recommended_fix"] == "Use async_playwright or move sync check outside async runtime."
+    assert result["codex_handoff_status"] == "updated"
+    assert handoff_reports[0]["failed_phase"] == "playwright_api_mismatch"
+    assert handoff_reports[0]["exact_error"] == "Sync Playwright API called inside asyncio loop"
+
+
+def test_run_playwright_assist_rejects_sync_api_inside_asyncio_loop(monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "validate_browser_automation_availability", lambda require_worker=False: type("Availability", (), {"available": True, "error": None, "message": None})())
+    monkeypatch.setattr(apply_agent, "chromium_diagnostics", lambda: {"playwright_browsers_path": "0", "chromium_executable_path": "/chromium", "chromium_file_exists": True, "chromium_file_executable": True})
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "playwright.sync_api",
+        type("SyncApi", (), {"Error": Exception, "sync_playwright": lambda: (_ for _ in ()).throw(AssertionError("sync_playwright should not be called"))})(),
+    )
+
+    async def run_assist():
+        return apply_agent.run_playwright_assist("https://example.invalid", {}, apply_strategy="jobserve_apply_easy")
+
+    try:
+        asyncio.run(run_assist())
+    except BrowserAutomationError as exc:
+        assert exc.error == "playwright_api_mismatch"
+        assert exc.message == "Sync Playwright API called inside asyncio loop"
+    else:
+        raise AssertionError("Expected BrowserAutomationError")
 
 
 def test_second_failure_stays_on_same_application(db_session, monkeypatch) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import importlib.util
 import logging
@@ -117,6 +118,12 @@ def launch_chromium(playwright: Any, *, validate: bool = True, **options: Any) -
 def detect_chromium() -> ChromiumDetection:
     if not playwright_installed():
         return ChromiumDetection(executable_path=None, exists=False, executable=False)
+    if _event_loop_running():
+        glob_path = _glob_chromium_executable_path()
+        if glob_path:
+            return _detection_for_path(str(glob_path), source="cache_glob")
+        logger.info("playwright_chromium_path_check_skipped reason=asyncio_loop_running")
+        return ChromiumDetection(executable_path=None, exists=False, executable=False)
     api_path = _playwright_chromium_executable_path()
     if api_path:
         detection = _detection_for_path(api_path, source="playwright_api")
@@ -153,6 +160,14 @@ def _playwright_chromium_executable_path() -> str | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("playwright_chromium_path_check_failed error=%s", exc)
         return None
+
+
+def _event_loop_running() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def _glob_chromium_executable_path() -> Path | None:
