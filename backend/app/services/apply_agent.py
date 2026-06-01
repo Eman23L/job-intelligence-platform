@@ -1050,12 +1050,11 @@ def run_playwright_assist(
     filled: list[str] = []
     unfilled: list[str] = []
     warnings: list[str] = []
+    launch_options = chromium_launch_options(headless=headless)
+    browser_started = time.perf_counter()
+    _report_stage(progress_callback, "browser_launch", "start", launch_options={key: value for key, value in launch_options.items() if key != "executable_path"}, browser_diagnostics=_browser_startup_diagnostics(headless=headless))
     try:
         with sync_playwright() as playwright:
-            launch_options = chromium_launch_options(headless=headless)
-            browser_started = time.perf_counter()
-            if progress_callback:
-                progress_callback("browser_launch_start", {"launch_options": {key: value for key, value in launch_options.items() if key != "executable_path"}, "browser_diagnostics": _browser_startup_diagnostics(headless=headless)})
             try:
                 browser = launch_chromium(playwright, validate=False, **launch_options)
             except Exception as exc:  # noqa: BLE001
@@ -1063,6 +1062,7 @@ def run_playwright_assist(
                     progress_callback("browser_launch_failed", {"browser_diagnostics": _browser_startup_diagnostics(browser_launch_succeeded=False, launch_duration_ms=int((time.perf_counter() - browser_started) * 1000), headless=headless), "error": str(exc)})
                 raise BrowserAutomationError("browser_launch", str(exc)) from exc
             timing_diagnostics["browser_startup_ms"] = int((time.perf_counter() - browser_started) * 1000)
+            _report_stage(progress_callback, "browser_launch", "done", browser_diagnostics=_browser_startup_diagnostics(browser_launch_succeeded=True, launch_duration_ms=timing_diagnostics["browser_startup_ms"], headless=headless))
             if progress_callback:
                 progress_callback("browser_launch_success", {"browser_diagnostics": _browser_startup_diagnostics(browser_launch_succeeded=True, launch_duration_ms=timing_diagnostics["browser_startup_ms"], headless=headless)})
             keep_open_for_review = not headless
@@ -2025,8 +2025,13 @@ def _fill_jobserve_search_form(
 
 
 def _report_jobserve_step(step_callback: Callable[[str, dict[str, Any]], None] | None, step: str, **payload: Any) -> None:
+    logger.info("%s %s", step, payload)
     if step_callback is not None:
         step_callback(step, payload)
+
+
+def _report_stage(step_callback: Callable[[str, dict[str, Any]], None] | None, stage: str, state: str, **payload: Any) -> None:
+    _report_jobserve_step(step_callback, f"{stage}_{state}", **payload)
 
 
 def _jobserve_dropdown_screenshot(screenshot_callback: Callable[[str], None] | None, name: str) -> None:
@@ -3232,8 +3237,10 @@ def _run_jobserve_modal(
     flow: dict[str, Any] = {"mode": "direct_job_url" if direct_url else "modal", "target": job_context or {}, "direct_url": direct_url, "identity_source": (job_context or {}).get("identity_source") or "db", "verified_detail_panel_identity": None, "blocked_reason": None}
     if direct_url:
         try:
+            _report_stage(progress_callback, "jobserve_navigation", "start", url=direct_url)
             page.goto(direct_url, wait_until="domcontentloaded", timeout=settings.page_navigation_timeout_ms)
             page.wait_for_timeout(1200)
+            _report_stage(progress_callback, "jobserve_navigation", "done", current_url=_safe_url(page), page_title=_safe_title(page))
         except Exception as exc:  # noqa: BLE001
             if mode == "submit_with_confirmation":
                 _raise_jobserve_stage(debug, page, browser, "jobserve_navigation", "JobServe direct URL could not be opened.", exc=exc, extra={"jobserve_flow_diagnostics": dict(flow)})
@@ -3268,7 +3275,9 @@ def _run_jobserve_modal(
             )
         flow["identity_check_result"] = "matched_direct_detail" if detail_identity else "direct_detail_identity_unavailable"
 
+    _report_stage(progress_callback, "apply_button_lookup", "start", current_url=_safe_url(page), page_title=_safe_title(page))
     apply_target = _find_apply_target(page, browser)
+    _report_stage(progress_callback, "apply_button_lookup", "done", apply_button_found=apply_target is not None, detected_buttons=_inventory_browser(page, browser)["buttons"][:20])
     debug.step("apply_button_lookup", apply_button_found=apply_target is not None, detected_buttons=_inventory_browser(page, browser)["buttons"][:20])
     if apply_target is None:
         debug.final_error = "No visible JobServe Apply button/link found."
@@ -3294,6 +3303,7 @@ def _run_jobserve_modal(
         )
 
     try:
+        _report_stage(progress_callback, "apply_button_click", "start", current_url=_safe_url(page), page_title=_safe_title(page))
         pages_before = len(page.context.pages)
         apply_target.click(timeout=8000)
         page.wait_for_timeout(1000)
@@ -3302,6 +3312,7 @@ def _run_jobserve_modal(
             target_page = page
         else:
             target_page.wait_for_load_state("domcontentloaded", timeout=15000)
+        _report_stage(progress_callback, "apply_button_click", "done", current_url=_safe_url(target_page), page_title=_safe_title(target_page), popup_opened=target_page is not page)
     except Exception as exc:  # noqa: BLE001
         if mode == "submit_with_confirmation":
             _raise_jobserve_stage(debug, page, browser, "apply_button_click", "JobServe Apply button could not be clicked.", exc=exc, extra={"jobserve_flow_diagnostics": dict(flow)})
@@ -3309,9 +3320,11 @@ def _run_jobserve_modal(
     debug.page = target_page
     debug.step("apply_button_clicked", apply_button_clicked=True, popup_opened=target_page is not page)
 
+    _report_stage(progress_callback, "modal_wait", "start", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
     target_page.wait_for_timeout(3500 if debug_mode else 1200)
     debug.screenshot("after_clicking_apply")
     context = _find_jobserve_form_context(target_page, browser)
+    _report_stage(progress_callback, "modal_wait", "done", modal_found=context is not None, job_application_modal_found=context is not None, target_context=_context_name(context) if context else None)
     debug.step(
         "modal_wait_complete",
         modal_found=context is not None,
@@ -3342,7 +3355,9 @@ def _run_jobserve_modal(
             **debug.result_kwargs(target_page),
         )
 
+    _report_stage(progress_callback, "form_detection", "start", current_url=_safe_url(target_page), page_title=_safe_title(target_page), target_context=_context_name(context))
     form_inventory = _inventory_context(context)
+    _report_stage(progress_callback, "form_detection", "done", form_fields_detected=len(form_inventory["fields"]), cv_upload_input_detected=bool(form_inventory["file_inputs"]), required_dropdowns_detected=_detect_jobserve_dropdowns(form_inventory["selects"]), detected_fields=form_inventory["fields"], detected_selects=form_inventory["selects"])
     debug.step(
         "before_filling",
         form_fields_detected=len(form_inventory["fields"]),
@@ -3378,6 +3393,7 @@ def _run_jobserve_modal(
     if _captcha_visible(target_page):
         warnings.append("Captcha detected; manual review required.")
 
+    _report_stage(progress_callback, "field_fill", "start", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
     _disable_jobserve_account_options(context, warnings)
     required = ["email"]
     for key, patterns in {
@@ -3470,11 +3486,13 @@ def _run_jobserve_modal(
         profile_diagnostics,
         exceptions,
     )
+    _report_stage(progress_callback, "field_fill", "done", filled_fields=_dedupe(filled), unfilled_fields=_dedupe(unfilled), unfilled_required_fields=_dedupe(unfilled_required))
 
     upload_diagnostics["detected_file_inputs"] = form_inventory["file_inputs"]
     upload_diagnostics["file_input_detected"] = bool(context.locator("input[type=file]").count())
     cv_path = _cv_upload_path(profile, upload_diagnostics)
     debug.step("before_cv_upload", upload_diagnostics=upload_diagnostics)
+    _report_stage(progress_callback, "cv_upload", "start", path=cv_path, file_input_detected=upload_diagnostics["file_input_detected"])
     _report_jobserve_step(progress_callback, "cv_upload_started", path=cv_path, file_input_detected=upload_diagnostics["file_input_detected"])
     if not upload_diagnostics["file_input_detected"]:
         debug.final_error = debug.final_error or "CV upload input not found in JobServe apply form."
@@ -3526,6 +3544,7 @@ def _run_jobserve_modal(
         unfilled_required.append("CV upload")
         _report_jobserve_step(progress_callback, "cv_uploaded", succeeded=False, path=cv_path, error=upload_diagnostics["failure_reason"])
     debug.screenshot("after_cv_upload_attempt")
+    _report_stage(progress_callback, "cv_upload", "done", uploaded_cv=uploaded_cv, upload_diagnostics=upload_diagnostics)
     if mode == "submit_with_confirmation" and not uploaded_cv:
         _raise_jobserve_stage(
             debug,
@@ -3549,6 +3568,7 @@ def _run_jobserve_modal(
     if mode == "submit_with_confirmation":
         debug.screenshot("before_final_submit")
         debug.html("before_final_submit", context)
+        _report_stage(progress_callback, "pre_submit_verification", "start", unfilled_required_fields=_dedupe(unfilled_required), uploaded_cv=uploaded_cv)
         if unfilled_required:
             _raise_jobserve_stage(
                 debug,
@@ -3564,14 +3584,19 @@ def _run_jobserve_modal(
             debug.final_error = "Submit button not found in JobServe apply form."
             debug.html("submit_button_not_found", context)
             _raise_jobserve_stage(debug, target_page, browser, "final_submit_click", debug.final_error, target=target_page, extra={"jobserve_flow_diagnostics": dict(flow)})
+        _report_stage(progress_callback, "pre_submit_verification", "done", unfilled_required_fields=[], uploaded_cv=uploaded_cv)
         try:
+            _report_stage(progress_callback, "final_submit_click", "start", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
             apply_button.click(timeout=8000)
+            _report_stage(progress_callback, "final_submit_click", "done", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
         except Exception as exc:  # noqa: BLE001
             _raise_jobserve_stage(debug, target_page, browser, "final_submit_click", "Final JobServe Apply button could not be clicked.", target=target_page, exc=exc, extra={"jobserve_flow_diagnostics": dict(flow)})
         flow["final_apply_clicked"] = True
         _report_jobserve_step(progress_callback, "final_apply_clicked", succeeded=True)
         try:
+            _report_stage(progress_callback, "success_confirmation", "start", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
             confirmation_text = _wait_for_jobserve_submission_success(target_page, browser)
+            _report_stage(progress_callback, "success_confirmation", "done", current_url=_safe_url(target_page), page_title=_safe_title(target_page), confirmation_text=confirmation_text)
         except Exception as exc:  # noqa: BLE001
             _raise_jobserve_stage(debug, target_page, browser, "success_confirmation", "JobServe submission success confirmation was not detected.", target=target_page, exc=exc, extra={"jobserve_flow_diagnostics": dict(flow)})
         debug.screenshot("after_final_submit")

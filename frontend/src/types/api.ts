@@ -309,6 +309,8 @@ export interface AutonomousRealSubmitRunResult {
   html_snapshot_urls?: string[];
   detected_buttons?: Array<Record<string, unknown>>;
   detected_fields?: Array<Record<string, unknown>>;
+  last_known_stage?: string | null;
+  artifact_links?: string[];
   traceback?: string | null;
   created_at: string;
 }

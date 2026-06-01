@@ -600,6 +600,7 @@ function AutonomousOrchestrationSummary({ result }: { result: AutonomousRealSubm
         <Metric label="Attempt" value={`${result.attempt_number ?? 0} / ${result.max_attempts ?? 3}`} />
         <Metric label="Codex handoff" value={result.codex_handoff_status ?? "Not created"} />
         <Metric label="GitHub issue URL" value={result.github_issue_url ?? "None"} />
+        <Metric label="Last known stage" value={result.last_known_stage ?? "Not captured"} />
         <Metric label="Current URL" value={result.current_url ?? "Not captured"} />
         <Metric label="Page title" value={result.page_title ?? "Not captured"} />
         <Metric label="Loop attempt" value={result.codex_handoff_attempt_count == null ? "Not reported" : String(result.codex_handoff_attempt_count)} />
@@ -613,6 +614,7 @@ function AutonomousOrchestrationSummary({ result }: { result: AutonomousRealSubm
       ) : null}
       <ArtifactLinks title="Canary screenshots" urls={result.screenshot_urls ?? []} paths={result.screenshot_paths ?? []} image />
       <ArtifactLinks title="Canary HTML snapshots" urls={result.html_snapshot_urls ?? []} paths={result.html_snapshot_paths ?? []} />
+      <DiagnosticArtifacts links={result.artifact_links ?? []} />
       <DebugJsonList title="Detected buttons" items={result.detected_buttons ?? []} empty="No button inventory returned" />
       <DebugJsonList title="Detected fields" items={result.detected_fields ?? []} empty="No field inventory returned" />
       {result.traceback ? (

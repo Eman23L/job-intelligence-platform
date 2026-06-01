@@ -257,27 +257,48 @@ def test_no_infinite_loop_when_reset_still_not_eligible(db_session, monkeypatch)
     assert result["codex_handoff_status"] == "created"
 
 
-def test_canary_failure_creates_codex_handoff_issue(db_session, monkeypatch) -> None:
+def test_canary_failure_creates_codex_handoff_issue(db_session, monkeypatch, caplog) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
     user = User(email="user@example.com")
-    job = _job()
+    job = _job(
+        assisted_result={
+            "latest_safe_diagnostic": _safe_diag(),
+            "progress": {"current_step": "modal_wait_start"},
+            "running_step": "modal_wait_start",
+            "debug_steps": [{"step": "modal_wait_start", "current_url": "https://www.jobserve.com/job/ABC123", "page_title": "JobServe"}],
+            "screenshot_paths": ["modal.jpg"],
+            "html_snapshot_paths": ["modal.html"],
+        }
+    )
     db_session.add_all([user, job])
     db_session.commit()
+    handoff_reports = []
     monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
     monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("submit failed")))
     monkeypatch.setattr(
         autonomous_submit,
         "create_or_update_codex_handoff",
-        lambda report: {"status": "created", "issue_url": "https://github.com/owner/repo/issues/12"},
+        lambda report: handoff_reports.append(report) or {"status": "created", "issue_url": "https://github.com/owner/repo/issues/12"},
     )
 
-    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+    with caplog.at_level("ERROR"):
+        result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
 
     assert result["status"] == "failed"
-    assert result["failed_phase"] == "unexpected_canary_exception"
+    assert result["failed_phase"] == "modal_wait"
+    assert result["exact_error"] == "RuntimeError: submit failed"
     assert result["traceback"]
+    assert "RuntimeError: submit failed" in result["traceback"]
+    assert result["last_known_stage"] == "modal_wait_start"
+    assert result["current_url"] == "https://www.jobserve.com/job/ABC123"
+    assert result["artifact_links"] == ["modal.jpg", "modal.html"]
     assert result["codex_handoff_status"] == "created"
     assert result["github_issue_url"].endswith("/12")
+    assert "autonomous_submit_failed" in caplog.text
+    assert "application_id=" in caplog.text
+    assert handoff_reports[0]["exact_error"] == "RuntimeError: submit failed"
+    assert "RuntimeError: submit failed" in handoff_reports[0]["traceback"]
+    assert handoff_reports[0]["last_known_stage"] == "modal_wait_start"
 
 
 def test_canary_stage_failure_creates_phase_specific_handoff(db_session, monkeypatch) -> None:
@@ -321,6 +342,7 @@ def test_canary_stage_failure_creates_phase_specific_handoff(db_session, monkeyp
     assert result["page_title"] == "JobServe"
     assert result["screenshot_paths"] == ["before.jpg"]
     assert result["html_snapshot_paths"] == ["before.html"]
+    assert result["artifact_links"] == ["before.jpg", "before.html"]
     assert result["detected_buttons"] == [{"text": "Apply"}]
     assert result["detected_fields"] == [{"name": "email"}]
     assert handoff_reports[0]["failed_phase"] == "jobserve_navigation"

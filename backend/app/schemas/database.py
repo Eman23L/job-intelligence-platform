@@ -799,6 +799,8 @@ class AutonomousRealSubmitRunResult(BaseModel):
     html_snapshot_urls: list[str] = Field(default_factory=list)
     detected_buttons: list[dict[str, Any]] = Field(default_factory=list)
     detected_fields: list[dict[str, Any]] = Field(default_factory=list)
+    last_known_stage: str | None = None
+    artifact_links: list[str] = Field(default_factory=list)
     traceback: str | None = None
     created_at: str
 

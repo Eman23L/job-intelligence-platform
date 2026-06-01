@@ -218,7 +218,8 @@ def run_autonomous_real_submit_canary_background(user_id: int) -> None:
                 result.get("failed_phase"),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("autonomous_submit_background_failed user_id=%s error=%s", user_id, exc)
+            logger.exception("autonomous_submit_background_failed user_id=%s error_type=%s error=%s", user_id, type(exc).__name__, exc)
+            _persist_background_unexpected_failure(db, user, exc)
 
 
 def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str, Any]:
@@ -344,6 +345,16 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
         diagnostic_run_id = new_run_id()
         run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
         failed_phase, exact_error, recommended_fix, details = _classify_autonomous_submit_exception(exc)
+        details = {**_assist_result_failure_details(job), **details}
+        failed_phase = _stage_or_fallback(failed_phase, details)
+        logger.exception(
+            "autonomous_submit_failed application_id=%s failed_phase=%s last_known_stage=%s current_url=%s exact_error=%s",
+            job.id,
+            failed_phase,
+            details.get("last_known_stage"),
+            details.get("current_url"),
+            exact_error,
+        )
         payload = _run_result("failed", failed_phase, exact_error, recommended_fix, job.id, diagnostic_run_id)
         _attach_failure_details(payload, details)
         payload.setdefault("traceback", traceback.format_exc())
@@ -366,6 +377,16 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
         diagnostic_run_id = new_run_id()
         run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
         failed_phase, exact_error, recommended_fix, details = _classify_autonomous_submit_exception(exc)
+        details = {**_assist_result_failure_details(job), **details}
+        failed_phase = _stage_or_fallback(failed_phase, details)
+        logger.exception(
+            "autonomous_submit_failed application_id=%s failed_phase=%s last_known_stage=%s current_url=%s exact_error=%s",
+            job.id,
+            failed_phase,
+            details.get("last_known_stage"),
+            details.get("current_url"),
+            exact_error,
+        )
         payload = _run_result("failed", failed_phase, exact_error, recommended_fix, job.id, diagnostic_run_id)
         _attach_failure_details(payload, details)
         payload.setdefault("traceback", traceback.format_exc())
@@ -436,6 +457,74 @@ def _classify_autonomous_submit_exception(exc: Exception) -> tuple[str, str, str
     )
 
 
+_CANARY_STAGES = {
+    "browser_launch",
+    "jobserve_navigation",
+    "apply_button_lookup",
+    "apply_button_click",
+    "modal_wait",
+    "form_detection",
+    "field_fill",
+    "cv_upload",
+    "pre_submit_verification",
+    "final_submit_click",
+    "success_confirmation",
+}
+
+
+def _stage_or_fallback(failed_phase: str, details: dict[str, Any]) -> str:
+    if failed_phase != "unexpected_canary_exception":
+        return failed_phase
+    stage = str(details.get("last_known_stage") or "")
+    if stage.endswith("_start"):
+        stage = stage.removesuffix("_start")
+    if stage.endswith("_done"):
+        stage = stage.removesuffix("_done")
+    return stage if stage in _CANARY_STAGES else failed_phase
+
+
+def _assist_result_failure_details(job: Job) -> dict[str, Any]:
+    assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+    progress = assisted.get("progress") if isinstance(assisted.get("progress"), dict) else {}
+    debug_steps = assisted.get("debug_steps") if isinstance(assisted.get("debug_steps"), list) else []
+    last_step = debug_steps[-1] if debug_steps else {}
+    last_known_stage = progress.get("current_step") or assisted.get("running_step") or last_step.get("step")
+    return {
+        "last_known_stage": last_known_stage,
+        "current_url": assisted.get("final_url") or last_step.get("current_url"),
+        "page_title": last_step.get("page_title"),
+        "screenshot_paths": list(assisted.get("screenshot_paths") or []),
+        "screenshot_urls": list(assisted.get("screenshot_urls") or []),
+        "html_snapshot_paths": list(assisted.get("html_snapshot_paths") or []),
+        "html_snapshot_urls": list(assisted.get("html_snapshot_urls") or []),
+        "detected_buttons": list(assisted.get("detected_buttons") or last_step.get("detected_buttons") or []),
+        "detected_fields": list(assisted.get("detected_fields") or last_step.get("detected_fields") or []),
+        "detected_selects": list(assisted.get("detected_selects") or last_step.get("detected_selects") or []),
+        "detected_iframes": list(assisted.get("detected_iframes") or []),
+        "debug_steps": debug_steps,
+    }
+
+
+def _persist_background_unexpected_failure(db: Session, user: User, exc: Exception) -> None:
+    job = next(iter(_candidate_jobs(db, user)), None)
+    if job is None:
+        return
+    details = _assist_result_failure_details(job)
+    exact_error = f"{type(exc).__name__}: {exc}"
+    payload = _run_result(
+        "failed",
+        _stage_or_fallback("unexpected_canary_exception", details),
+        exact_error,
+        "Inspect the captured traceback and artifacts, then add a structured stage handler if this is a known canary phase.",
+        job.id,
+    )
+    _attach_failure_details(payload, details)
+    payload["traceback"] = traceback.format_exc()
+    payload["last_known_stage"] = details.get("last_known_stage")
+    payload["artifact_links"] = _artifact_links_from_payload(payload)
+    _persist_result(db, job, payload)
+
+
 def _attach_failure_details(payload: dict[str, Any], details: dict[str, Any]) -> None:
     if not details:
         return
@@ -451,14 +540,27 @@ def _attach_failure_details(payload: dict[str, Any], details: dict[str, Any]) ->
         "detected_selects",
         "detected_iframes",
         "debug_steps",
+        "last_known_stage",
         "upload_diagnostics",
         "select_diagnostics",
         "exceptions",
+        "artifact_links",
     ]:
         if key in details:
             payload[key] = details[key]
     if details.get("traceback"):
         payload["traceback"] = details["traceback"]
+    if "artifact_links" not in payload:
+        payload["artifact_links"] = _artifact_links_from_payload(payload)
+
+
+def _artifact_links_from_payload(payload: dict[str, Any]) -> list[str]:
+    return [
+        *list(payload.get("screenshot_urls") or []),
+        *list(payload.get("html_snapshot_urls") or []),
+        *list(payload.get("screenshot_paths") or []),
+        *list(payload.get("html_snapshot_paths") or []),
+    ]
 
 
 def _confirmation_means_submitted(value: str | None) -> bool:
