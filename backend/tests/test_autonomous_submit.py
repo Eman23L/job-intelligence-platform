@@ -151,6 +151,56 @@ def test_repair_focus_candidate_is_prioritized_over_unattempted_higher_candidate
     assert attempts == [focused.id]
 
 
+def test_fresh_safe_diagnostic_focus_is_prioritized_over_older_repair_focus(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    older_repair = _job(
+        source_job_id="ABC123",
+        canonical_url="https://www.jobserve.com/gb/en/job/ABC123",
+        assisted_result={
+            "latest_safe_diagnostic": _safe_diag("ABC123"),
+            "autonomous_real_submit_attempted": True,
+            "autonomous_fix_attempt_count": 1,
+            "autonomous_waiting_for_fix_deploy": True,
+            "autonomous_real_submit_result": {
+                "status": "failed",
+                "failed_phase": "field_fill",
+                "exact_error": "worker killed during field fill",
+                "code_revision": "old",
+                "created_at": "2026-06-01T20:00:00+00:00",
+            },
+        },
+    )
+    fresh_diagnostic = _job(
+        source_job_id="DEF456",
+        canonical_url="https://www.jobserve.com/gb/en/job/DEF456",
+        assisted_result={
+            "latest_safe_diagnostic": _safe_diag("DEF456"),
+            "autonomous_focus_after_diagnostic": {
+                "run_id": "diag-2",
+                "status": "passed",
+                "overall_status": "ok",
+                "application_id": 0,
+                "completed_at": "2026-06-01T21:00:00+00:00",
+            },
+        },
+    )
+    db_session.add_all([user, older_repair, fresh_diagnostic])
+    db_session.commit()
+    monkeypatch.setattr(autonomous_submit, "_candidate_application_rows", lambda db, candidate_user: [(older_repair, None), (fresh_diagnostic, None)])
+    attempts = []
+    monkeypatch.setattr(
+        autonomous_submit,
+        "assist_apply_application",
+        lambda db, job, user, **kwargs: attempts.append(job.id) or AssistApplyResult(status="submitted", submitted=True, confirmation_text="Your application has been submitted."),
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["application_id"] == fresh_diagnostic.id
+    assert attempts == [fresh_diagnostic.id]
+
+
 def test_success_text_required_before_marking_submitted(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
     user = User(email="user@example.com")

@@ -365,10 +365,12 @@ def _is_active_repair_focus(job: Job) -> bool:
     if count >= settings.max_autonomous_fix_attempts_per_application:
         return False
     result = assisted.get("autonomous_real_submit_result") if isinstance(assisted.get("autonomous_real_submit_result"), dict) else {}
+    diagnostic_focus = assisted.get("autonomous_focus_after_diagnostic") if isinstance(assisted.get("autonomous_focus_after_diagnostic"), dict) else {}
     return bool(
         assisted.get("autonomous_real_submit_attempted")
         or assisted.get("autonomous_waiting_for_fix_deploy")
         or count > 0
+        or diagnostic_focus.get("status") == "passed"
         or result.get("status") in {"failed", "waiting_for_fix_deploy"}
     )
 
@@ -376,8 +378,10 @@ def _is_active_repair_focus(job: Job) -> bool:
 def _repair_focus_sort_key(job: Job) -> tuple[float, int, int]:
     assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
     result = assisted.get("autonomous_real_submit_result") if isinstance(assisted.get("autonomous_real_submit_result"), dict) else {}
+    diagnostic_focus = assisted.get("autonomous_focus_after_diagnostic") if isinstance(assisted.get("autonomous_focus_after_diagnostic"), dict) else {}
     attempts = assisted.get("autonomous_fix_attempts") if isinstance(assisted.get("autonomous_fix_attempts"), list) else []
     timestamps = [
+        _parse_time(diagnostic_focus.get("completed_at")),
         _parse_time(result.get("created_at")),
         *[_parse_time(attempt.get("created_at")) for attempt in attempts if isinstance(attempt, dict)],
     ]

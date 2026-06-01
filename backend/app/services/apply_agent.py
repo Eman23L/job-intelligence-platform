@@ -4056,7 +4056,6 @@ def _disable_jobserve_account_options(page, warnings: list[str]) -> list[str]:
                     return disabled;
                 }""",
                 phrases,
-                timeout=1500,
             )
             for text in clicked or []:
                 warnings.append(f"Disabled option: {text}.")

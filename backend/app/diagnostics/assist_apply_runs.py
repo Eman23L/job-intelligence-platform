@@ -198,8 +198,16 @@ def _persist_latest_safe_diagnostic(
             if job is None:
                 return
             assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+            focus_after_diagnostic = {
+                "run_id": run_id,
+                "status": status,
+                "overall_status": report.get("overall_status"),
+                "application_id": application_id,
+                "completed_at": _now(),
+            }
             job.assisted_result = {
                 **assisted,
+                "autonomous_focus_after_diagnostic": focus_after_diagnostic,
                 "latest_safe_diagnostic": {
                     "run_id": run_id,
                     "status": status,

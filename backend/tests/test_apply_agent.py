@@ -1078,6 +1078,24 @@ def test_account_registration_toggles_are_disabled_if_present() -> None:
     assert any("Disabled option" in warning for warning in warnings)
 
 
+def test_account_registration_dom_disable_does_not_pass_evaluate_timeout() -> None:
+    class EvaluateOnlyPage:
+        frames = []
+        main_frame = None
+
+        def evaluate(self, script, phrases):
+            assert isinstance(script, str)
+            assert "register a Job Seeker account" in phrases
+            return ["register a Job Seeker account"]
+
+    warnings: list[str] = []
+
+    disabled = apply_agent._disable_jobserve_account_options(EvaluateOnlyPage(), warnings)
+
+    assert disabled == ["register a Job Seeker account"]
+    assert warnings == ["Disabled option: register a Job Seeker account."]
+
+
 def test_jobserve_generated_email_field_is_filled_without_label() -> None:
     class GeneratedEmailLocator:
         value = ""
