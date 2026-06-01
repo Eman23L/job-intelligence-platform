@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.config import settings
 from app.db.models import Job, User
 from app.schemas.database import AssistApplyResult
@@ -272,9 +274,79 @@ def test_canary_failure_creates_codex_handoff_issue(db_session, monkeypatch) -> 
     result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
 
     assert result["status"] == "failed"
-    assert result["failed_phase"] == "autonomous_submit_exception"
+    assert result["failed_phase"] == "unexpected_canary_exception"
+    assert result["traceback"]
     assert result["codex_handoff_status"] == "created"
     assert result["github_issue_url"].endswith("/12")
+
+
+def test_canary_stage_failure_creates_phase_specific_handoff(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job()
+    db_session.add_all([user, job])
+    db_session.commit()
+    handoff_reports = []
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        autonomous_submit,
+        "assist_apply_application",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            BrowserAutomationError(
+                "jobserve_navigation",
+                "navigation failed",
+                {
+                    "current_url": "https://www.jobserve.com/job/ABC123",
+                    "page_title": "JobServe",
+                    "screenshot_paths": ["before.jpg"],
+                    "html_snapshot_paths": ["before.html"],
+                    "detected_buttons": [{"text": "Apply"}],
+                    "detected_fields": [{"name": "email"}],
+                    "traceback": "Traceback...",
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        autonomous_submit,
+        "create_or_update_codex_handoff",
+        lambda report: handoff_reports.append(report) or {"status": "updated", "issue_url": "https://github.com/owner/repo/issues/16"},
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["failed_phase"] == "jobserve_navigation"
+    assert result["exact_error"] == "navigation failed"
+    assert result["current_url"] == "https://www.jobserve.com/job/ABC123"
+    assert result["page_title"] == "JobServe"
+    assert result["screenshot_paths"] == ["before.jpg"]
+    assert result["html_snapshot_paths"] == ["before.html"]
+    assert result["detected_buttons"] == [{"text": "Apply"}]
+    assert result["detected_fields"] == [{"name": "email"}]
+    assert handoff_reports[0]["failed_phase"] == "jobserve_navigation"
+    assert handoff_reports[0]["exact_error"] == "navigation failed"
+
+
+@pytest.mark.parametrize("phase", ["modal_wait", "cv_upload", "final_submit_click"])
+def test_canary_known_stage_failures_are_not_generic(db_session, monkeypatch, phase) -> None:
+    user = User(email=f"{phase}@example.com")
+    job = _job(source_job_id=phase, canonical_url=f"https://www.jobserve.com/gb/en/job/{phase}", assisted_result={"latest_safe_diagnostic": _safe_diag(phase)})
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(autonomous_submit, "create_or_update_codex_handoff", lambda report: {"status": "updated", "issue_url": "https://github.com/owner/repo/issues/17"})
+    monkeypatch.setattr(
+        autonomous_submit,
+        "assist_apply_application",
+        lambda *args, **kwargs: (_ for _ in ()).throw(BrowserAutomationError(phase, f"{phase} failed", {"traceback": "Traceback..."})),
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["failed_phase"] == phase
+    assert result["exact_error"] == f"{phase} failed"
+    assert result["failed_phase"] != "autonomous_submit_exception"
 
 
 def test_missing_chromium_creates_browser_launch_handoff(db_session, monkeypatch) -> None:
@@ -481,7 +553,7 @@ def test_timeout_failure_counts_as_failed_attempt(db_session, monkeypatch) -> No
     result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
 
     assert result["attempt_number"] == 1
-    assert result["failed_phase"] == "autonomous_submit_exception"
+    assert result["failed_phase"] == "unexpected_canary_exception"
     assert "submit_stalled" in result["exact_error"]
 
 

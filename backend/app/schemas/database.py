@@ -791,6 +791,15 @@ class AutonomousRealSubmitRunResult(BaseModel):
     will_retry_same_application: bool = False
     will_move_to_next_application: bool = False
     orchestration_steps: list[dict[str, Any]] = Field(default_factory=list)
+    current_url: str | None = None
+    page_title: str | None = None
+    screenshot_paths: list[str] = Field(default_factory=list)
+    screenshot_urls: list[str] = Field(default_factory=list)
+    html_snapshot_paths: list[str] = Field(default_factory=list)
+    html_snapshot_urls: list[str] = Field(default_factory=list)
+    detected_buttons: list[dict[str, Any]] = Field(default_factory=list)
+    detected_fields: list[dict[str, Any]] = Field(default_factory=list)
+    traceback: str | None = None
     created_at: str
 
 

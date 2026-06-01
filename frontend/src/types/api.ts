@@ -301,6 +301,15 @@ export interface AutonomousRealSubmitRunResult {
   will_retry_same_application?: boolean;
   will_move_to_next_application?: boolean;
   orchestration_steps: Array<Record<string, unknown>>;
+  current_url?: string | null;
+  page_title?: string | null;
+  screenshot_paths?: string[];
+  screenshot_urls?: string[];
+  html_snapshot_paths?: string[];
+  html_snapshot_urls?: string[];
+  detected_buttons?: Array<Record<string, unknown>>;
+  detected_fields?: Array<Record<string, unknown>>;
+  traceback?: string | null;
   created_at: string;
 }
 
