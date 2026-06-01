@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import traceback
@@ -17,10 +18,12 @@ from app.diagnostics.assist_apply_runs import new_run_id, run_assist_apply_probe
 from app.schemas.database import AssistApplyResult
 from app.services.apply_agent import BrowserAutomationError, assist_apply_application
 from app.services.applications import _candidate_application_rows
+from app.services.browser_automation import chromium_diagnostics
 from app.services.codex_handoff import create_or_update_codex_handoff, environment_summary
 
 AUTONOMOUS_ARTIFACT_ROOT = Path("backend/runtime/autonomous_real_submit")
 SAFE_DIAGNOSTIC_MAX_AGE_SECONDS = 24 * 60 * 60
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -305,6 +308,7 @@ def _candidate_jobs(db: Session, user: User) -> list[Job]:
 
 
 def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[str, Any]) -> dict[str, Any]:
+    _log_autonomous_browser_preflight(job)
     assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
     job.assisted_result = {
         **assisted,
@@ -388,6 +392,20 @@ def _confirmation_means_submitted(value: str | None) -> bool:
         return False
     lowered = value.lower()
     return any(text in lowered for text in ["your application has been submitted", "application received", "already applied", "already submitted", "you have applied"])
+
+
+def _log_autonomous_browser_preflight(job: Job) -> None:
+    diagnostics = chromium_diagnostics()
+    logger.info(
+        "autonomous_submit_browser_preflight application_id=%s service_type=%s playwright_enabled=%s playwright_browsers_path=%s chromium_executable_path=%s chromium_file_exists=%s chromium_file_executable=%s",
+        job.id,
+        settings.service_type,
+        settings.playwright_enabled,
+        diagnostics.get("playwright_browsers_path"),
+        diagnostics.get("chromium_executable_path"),
+        diagnostics.get("chromium_file_exists"),
+        diagnostics.get("chromium_file_executable"),
+    )
 
 
 def _persist_result(db: Session, job: Job, result: dict[str, Any]) -> None:

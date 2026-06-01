@@ -300,6 +300,32 @@ def test_missing_chromium_creates_browser_launch_handoff(db_session, monkeypatch
     assert result["codex_handoff_attempt_count"] == 1
 
 
+def test_canary_logs_browser_preflight_before_submit(db_session, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job()
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(
+        autonomous_submit,
+        "chromium_diagnostics",
+        lambda: {
+            "playwright_browsers_path": "0",
+            "chromium_executable_path": "/app/.local-browsers/chromium/chrome",
+            "chromium_file_exists": True,
+            "chromium_file_executable": True,
+        },
+    )
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: AssistApplyResult(status="submitted", submitted=True, confirmation_text="Your application has been submitted."))
+
+    with caplog.at_level("INFO"):
+        autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert "autonomous_submit_browser_preflight" in caplog.text
+    assert "chromium_executable_path=/app/.local-browsers/chromium/chrome" in caplog.text
+    assert "chromium_file_exists=True" in caplog.text
+
+
 def test_second_failure_stays_on_same_application(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
     user = User(email="user@example.com")

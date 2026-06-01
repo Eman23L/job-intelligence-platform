@@ -156,6 +156,17 @@ def test_post_deploy_autonomous_verify_workflow_uses_remote_backend_and_handoff(
     assert "post_deploy_autonomous_verify" in workflow
 
 
+def test_render_yaml_installs_playwright_chromium_for_web_and_worker() -> None:
+    render = open("render.yaml", encoding="utf-8").read()
+
+    assert "pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium && cd frontend && npm install && npm run build" in render
+    assert "pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium" in render
+    assert render.count("PLAYWRIGHT_ENABLED") >= 2
+    assert render.count('value: "true"') >= 2
+    assert render.count("PLAYWRIGHT_BROWSERS_PATH") >= 2
+    assert render.count('value: "0"') >= 2
+
+
 def test_diagnostic_endpoint_route_exists() -> None:
     routes = {getattr(route, "path", "") for route in app.routes}
 
