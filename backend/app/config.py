@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     diagnostic_admin_token: str = Field(default="", alias="DIAGNOSTIC_ADMIN_TOKEN")
     autonomous_real_submit_enabled: bool = Field(default=False, alias="AUTONOMOUS_REAL_SUBMIT_ENABLED")
     max_autonomous_real_submits_per_run: int = Field(default=1, alias="MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN")
+    max_autonomous_fix_attempts_per_application: int = Field(default=3, alias="MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_APPLICATION")
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
     github_repository: str = Field(default="", alias="GITHUB_REPOSITORY")
     codex_mention: str = Field(default="@codex", alias="CODEX_MENTION")

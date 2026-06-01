@@ -64,3 +64,6 @@ def test_ui_shows_orchestration_summary() -> None:
     assert "Codex handoff" in page
     assert "GitHub issue URL" in page
     assert "Open Codex handoff issue" in page
+    assert "Focused application" in page
+    assert "Attempt" in page
+    assert "Retry same application after deploy" in page

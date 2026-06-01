@@ -293,6 +293,12 @@ export interface AutonomousRealSubmitRunResult {
   github_issue_url?: string | null;
   codex_handoff_error?: string | null;
   codex_handoff_attempt_count?: number | null;
+  focused_application_id?: number | null;
+  attempt_number?: number;
+  max_attempts?: number;
+  waiting_for_fix_deploy?: boolean;
+  will_retry_same_application?: boolean;
+  will_move_to_next_application?: boolean;
   orchestration_steps: Array<Record<string, unknown>>;
   created_at: string;
 }

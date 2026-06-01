@@ -125,6 +125,10 @@ def test_first_failure_stops_run(db_session, monkeypatch) -> None:
 
     assert result["status"] == "failed"
     assert len(attempts) == 1
+    assert result["application_id"] == first.id
+    assert result["attempt_number"] == 1
+    assert result["will_retry_same_application"] is True
+    assert result["will_move_to_next_application"] is False
 
 
 def test_validation_errors_block_submit(monkeypatch) -> None:
@@ -294,6 +298,101 @@ def test_missing_chromium_creates_browser_launch_handoff(db_session, monkeypatch
     assert result["failed_phase"] == "browser_launch"
     assert result["codex_handoff_status"] == "created"
     assert result["codex_handoff_attempt_count"] == 1
+
+
+def test_second_failure_stays_on_same_application(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    first = _job(assisted_result={"latest_safe_diagnostic": _safe_diag(), "autonomous_fix_attempt_count": 1})
+    second = _job(source_job_id="DEF456", canonical_url="https://www.jobserve.com/gb/en/job/DEF456", assisted_result={"latest_safe_diagnostic": _safe_diag("DEF456")})
+    db_session.add_all([user, first, second])
+    db_session.commit()
+    attempts = []
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda db, job, user, **kwargs: attempts.append(job.id) or (_ for _ in ()).throw(RuntimeError("still failing")))
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["application_id"] == first.id
+    assert result["attempt_number"] == 2
+    assert result["will_retry_same_application"] is True
+    assert result["will_move_to_next_application"] is False
+    assert attempts == [first.id]
+
+
+def test_third_failure_marks_blocked_after_3_attempts(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job(assisted_result={"latest_safe_diagnostic": _safe_diag(), "autonomous_fix_attempt_count": 2})
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("third failure")))
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["status"] == "blocked_after_3_attempts"
+    assert result["application_id"] == job.id
+    assert result["attempt_number"] == 3
+    assert result["will_retry_same_application"] is False
+    assert result["will_move_to_next_application"] is True
+
+
+def test_after_third_failure_moves_to_next_eligible_application(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    blocked = _job(assisted_result={"latest_safe_diagnostic": _safe_diag(), "autonomous_fix_attempt_count": 3, "autonomous_blocked_after_3_attempts": True})
+    second = _job(source_job_id="DEF456", canonical_url="https://www.jobserve.com/gb/en/job/DEF456", assisted_result={"latest_safe_diagnostic": _safe_diag("DEF456")})
+    db_session.add_all([user, blocked, second])
+    db_session.commit()
+    attempts = []
+    monkeypatch.setattr(
+        autonomous_submit,
+        "assist_apply_application",
+        lambda db, job, user, **kwargs: attempts.append(job.id) or AssistApplyResult(status="submitted", submitted=True, confirmation_text="Your application has been submitted."),
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["submitted"] is True
+    assert result["application_id"] == second.id
+    assert attempts == [second.id]
+
+
+def test_timeout_failure_counts_as_failed_attempt(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job()
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("submit_stalled")))
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["attempt_number"] == 1
+    assert result["failed_phase"] == "autonomous_submit_exception"
+    assert "submit_stalled" in result["exact_error"]
+
+
+def test_already_submitted_moves_on_safely(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    submitted = _job(application_status="applied", assisted_result={"latest_safe_diagnostic": _safe_diag(), "submitted": True})
+    second = _job(source_job_id="DEF456", canonical_url="https://www.jobserve.com/gb/en/job/DEF456", assisted_result={"latest_safe_diagnostic": _safe_diag("DEF456")})
+    db_session.add_all([user, submitted, second])
+    db_session.commit()
+    attempts = []
+    monkeypatch.setattr(
+        autonomous_submit,
+        "assist_apply_application",
+        lambda db, job, user, **kwargs: attempts.append(job.id) or AssistApplyResult(status="submitted", submitted=True, confirmation_text="Your application has been submitted."),
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["submitted"] is True
+    assert attempts == [second.id]
 
 
 def test_submit_failure_after_safe_diagnostic_creates_handoff_when_canary_disabled(db_session, monkeypatch) -> None:

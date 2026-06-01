@@ -66,6 +66,8 @@ POST ${BACKEND_API_BASE_URL}/diagnostics/handoff/codex
 
 The endpoint is protected by `DIAGNOSTIC_ADMIN_TOKEN` and creates or updates a GitHub issue with the labels `codex`, `autonomous-canary`, and `assist-apply`. It reuses the existing open issue for the same `application_id` and `failed_phase`, stops after `MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE` attempts, and stops if the same `exact_error` repeats after two deploys.
 
+The canary focuses on one JobServe application at a time. A failed submit, timeout, stall, browser launch failure, navigation failure, form/CV/final-submit failure, or missing success confirmation increments `autonomous_fix_attempt_count` for that application. The app retries the same application only after a Codex fix/deploy and fresh safe diagnostic while the count is below `MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_APPLICATION`, default `3`. At attempt 3 it marks the application `blocked_after_3_attempts` and only then moves to the next eligible application.
+
 The `Post Deploy Autonomous Verify` workflow runs after `CI Deploy Render` succeeds. It uses `CODEX_GITHUB_TOKEN` to find open `autonomous-canary` / `assist-apply` issues, reruns safe diagnostics for those application ids in Render, then calls the deployed backend autonomous verification route. It records or updates a Codex handoff issue on failure, and comments/closes matching handoff issues when verification passes.
 
 Render web/worker services use `GITHUB_TOKEN`, `GITHUB_REPOSITORY=Eman23L/job-intelligence-platform`, `CODEX_MENTION=@codex`, and `DIAGNOSTIC_ADMIN_TOKEN`. GitHub Actions uses `CODEX_GITHUB_TOKEN` because repository secrets cannot be named with the reserved `GITHUB_` prefix.

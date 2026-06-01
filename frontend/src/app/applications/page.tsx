@@ -596,9 +596,13 @@ function AutonomousOrchestrationSummary({ result }: { result: AutonomousRealSubm
         <Metric label="Failed phase" value={result.failed_phase ?? "None"} />
         <Metric label="Exact error" value={result.exact_error ?? "None"} />
         <Metric label="Recommended fix" value={result.recommended_fix} />
+        <Metric label="Focused application" value={result.focused_application_id == null ? "Not reported" : String(result.focused_application_id)} />
+        <Metric label="Attempt" value={`${result.attempt_number ?? 0} / ${result.max_attempts ?? 3}`} />
         <Metric label="Codex handoff" value={result.codex_handoff_status ?? "Not created"} />
         <Metric label="GitHub issue URL" value={result.github_issue_url ?? "None"} />
         <Metric label="Loop attempt" value={result.codex_handoff_attempt_count == null ? "Not reported" : String(result.codex_handoff_attempt_count)} />
+        <Metric label="Waiting for fix/deploy" value={result.waiting_for_fix_deploy ? "Yes" : "No"} />
+        <Metric label="Retry plan" value={result.will_retry_same_application ? "Retry same application after deploy" : result.will_move_to_next_application ? "Move to next eligible application" : "No retry planned"} />
       </div>
       {result.github_issue_url ? (
         <a className="artifact-link" href={result.github_issue_url} target="_blank" rel="noreferrer">

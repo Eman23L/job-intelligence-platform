@@ -113,12 +113,21 @@ def run_autonomous_real_submit_canary(db: Session, user: User) -> dict[str, Any]
 
     submitted = 0
     steps: list[dict[str, Any]] = []
+    last_blocked_result: dict[str, Any] | None = None
     jobs = _candidate_jobs(db, user)
     for job in jobs:
         step = _orchestrate_one_application(db, job, user)
         steps.append(step)
         if step["final_outcome"] in {"skipped_not_jobserve", "skipped_already_submitted"}:
             continue
+        if step["final_outcome"] == "blocked_after_3_attempts":
+            continue
+        if step["final_outcome"] == "blocked_waiting_for_fix_deploy":
+            result = _run_result("waiting_for_fix_deploy", step.get("blocked_reason"), step.get("exact_error"), "Waiting for Codex fix, deploy, and fresh safe diagnostic before retrying this same application.", job.id, step.get("diagnostic_run_id"))
+            _attach_attempt_state(result, job.assisted_result if isinstance(job.assisted_result, dict) else {})
+            result["orchestration_steps"] = steps
+            _persist_result(db, job, result)
+            return result
         if step.get("codex_handoff_created"):
             result = _run_result("failed", step.get("failed_phase") or step.get("blocked_reason"), step.get("exact_error"), step.get("recommended_fix") or "Inspect orchestration handoff.", job.id, step.get("diagnostic_run_id"))
             _attach_handoff_result(result, step.get("codex_handoff_result"))
@@ -153,17 +162,36 @@ def run_autonomous_real_submit_canary(db: Session, user: User) -> dict[str, Any]
                 _attach_handoff_result(step, handoff_result)
                 step["codex_handoff_created"] = handoff_result.get("status") in {"created", "updated", "loop_guard_stopped", "failed"}
                 step["codex_handoff_result"] = handoff_result
+                _record_failed_attempt(db, job, "submit_failure_after_safe_diagnostic", step["exact_error"], None, handoff_result.get("issue_url"))
+                _attach_attempt_state(step, job.assisted_result if isinstance(job.assisted_result, dict) else {})
                 result = _run_result("failed", "submit_failure_after_safe_diagnostic", step["exact_error"], step["recommended_fix"], job.id)
                 _attach_handoff_result(result, handoff_result)
+                _attach_attempt_state(result, job.assisted_result if isinstance(job.assisted_result, dict) else {})
                 result["orchestration_steps"] = steps
                 _persist_result(db, job, result)
                 return result
             continue
         result = _attempt_one(db, job, user, report)
         result["orchestration_steps"] = steps
+        if result.get("status") == "blocked_after_3_attempts":
+            last_blocked_result = result
+            steps.append(
+                {
+                    "application_id": job.id,
+                    "inspected": True,
+                    "final_outcome": "blocked_after_3_attempts",
+                    "action_taken": "move_to_next_application",
+                    "attempt_number": result.get("attempt_number"),
+                    "max_attempts": result.get("max_attempts"),
+                }
+            )
+            continue
         submitted += 1 if result.get("submitted") else 0
         if result.get("status") != "submitted" or submitted >= max_submits:
             return result
+    if last_blocked_result is not None:
+        last_blocked_result["orchestration_steps"] = steps
+        return last_blocked_result
     result = _run_result("completed", None, None, "No real submit performed. See orchestration_steps for recovered, skipped, and blocked applications.")
     result["orchestration_steps"] = steps
     return result
@@ -183,14 +211,39 @@ def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str,
         "codex_handoff_created": False,
     }
     assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+    _attach_attempt_state(step, assisted)
     if job.application_status == "applied" or job.applied_at or assisted.get("submitted"):
         step.update({"blocked_reason": "already_submitted", "final_outcome": "skipped_already_submitted"})
         return step
     if not _is_jobserve(job):
         step.update({"blocked_reason": "not_jobserve", "final_outcome": "skipped_not_jobserve"})
         return step
+    if _failure_attempt_count(assisted) >= settings.max_autonomous_fix_attempts_per_application:
+        step.update(
+            {
+                "blocked_reason": "blocked_after_3_attempts",
+                "failed_phase": "blocked_after_3_attempts",
+                "exact_error": "Application reached the autonomous repair attempt limit.",
+                "recommended_fix": "Inspect accumulated Codex handoff issue, diagnostics, and artifacts before manual reset.",
+                "final_outcome": "blocked_after_3_attempts",
+                "waiting_for_fix_deploy": False,
+                "will_retry_same_application": False,
+                "will_move_to_next_application": True,
+            }
+        )
+        _persist_orchestration_step(db, job, step)
+        return step
     if assisted.get("autonomous_real_submit_attempted") and not _new_code_and_fresh_safe_diagnostic(assisted):
-        step.update({"blocked_reason": "already_attempted_autonomous_submit", "final_outcome": "blocked"})
+        step.update(
+            {
+                "blocked_reason": "already_attempted_autonomous_submit",
+                "final_outcome": "blocked_waiting_for_fix_deploy",
+                "waiting_for_fix_deploy": True,
+                "will_retry_same_application": True,
+                "will_move_to_next_application": False,
+            }
+        )
+        _persist_orchestration_step(db, job, step)
         return step
 
     report = autonomous_real_submit_verification(job, write_artifact=False, include_feature_check=False)
@@ -223,11 +276,21 @@ def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str,
                 _attach_handoff_result(step, handoff_result)
                 step["codex_handoff_created"] = True
                 step["codex_handoff_result"] = handoff_result
+                count = _record_failed_attempt(db, job, step.get("blocked_reason"), step.get("exact_error"), step.get("diagnostic_run_id"), handoff_result.get("issue_url"))
+                if count >= settings.max_autonomous_fix_attempts_per_application:
+                    step["final_outcome"] = "blocked_after_3_attempts"
+                    step["blocked_reason"] = "blocked_after_3_attempts"
+                _attach_attempt_state(step, job.assisted_result if isinstance(job.assisted_result, dict) else {})
         else:
             handoff = _codex_handoff(job, latest_safe)
             step.update(handoff)
             step["codex_handoff_created"] = True
             step["final_outcome"] = "diagnostic_failed"
+            count = _record_failed_attempt(db, job, step.get("failed_phase"), step.get("exact_error"), step.get("diagnostic_run_id"), step.get("github_issue_url"))
+            if count >= settings.max_autonomous_fix_attempts_per_application:
+                step["final_outcome"] = "blocked_after_3_attempts"
+                step["blocked_reason"] = "blocked_after_3_attempts"
+            _attach_attempt_state(step, job.assisted_result if isinstance(job.assisted_result, dict) else {})
     else:
         step.update({"exact_error": report.get("exact_error"), "recommended_fix": report.get("recommended_fix"), "final_outcome": "blocked"})
     _persist_orchestration_step(db, job, step)
@@ -266,6 +329,10 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
             },
         )
         _attach_handoff_result(payload, handoff_result)
+        count = _record_failed_attempt(db, job, payload.get("failed_phase"), payload.get("exact_error"), diagnostic_run_id, payload.get("github_issue_url"))
+        if count >= settings.max_autonomous_fix_attempts_per_application:
+            payload["status"] = "blocked_after_3_attempts"
+        _attach_attempt_state(payload, job.assisted_result if isinstance(job.assisted_result, dict) else {})
         _persist_result(db, job, payload)
         return payload
     except Exception as exc:  # noqa: BLE001
@@ -281,6 +348,10 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
             },
         )
         _attach_handoff_result(payload, handoff_result)
+        count = _record_failed_attempt(db, job, payload.get("failed_phase"), payload.get("exact_error"), diagnostic_run_id, payload.get("github_issue_url"))
+        if count >= settings.max_autonomous_fix_attempts_per_application:
+            payload["status"] = "blocked_after_3_attempts"
+        _attach_attempt_state(payload, job.assisted_result if isinstance(job.assisted_result, dict) else {})
         _persist_result(db, job, payload)
         return payload
 
@@ -300,6 +371,10 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
             },
         )
         _attach_handoff_result(payload, handoff_result)
+        count = _record_failed_attempt(db, job, payload.get("failed_phase"), payload.get("exact_error"), diagnostic_run_id, payload.get("github_issue_url"))
+        if count >= settings.max_autonomous_fix_attempts_per_application:
+            payload["status"] = "blocked_after_3_attempts"
+        _attach_attempt_state(payload, job.assisted_result if isinstance(job.assisted_result, dict) else {})
         _persist_result(db, job, payload)
         return payload
     payload = _run_result("submitted", None, None, "Autonomous real-submit canary submitted exactly one application.", job.id)
@@ -328,6 +403,49 @@ def _persist_orchestration_step(db: Session, job: Job, step: dict[str, Any]) -> 
     job.assisted_result = {**assisted, "autonomous_orchestration_steps": [*existing_steps, step]}
     flag_modified(job, "assisted_result")
     db.commit()
+
+
+def _failure_attempt_count(assisted: dict[str, Any]) -> int:
+    try:
+        return int(assisted.get("autonomous_fix_attempt_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _record_failed_attempt(db: Session, job: Job, failed_phase: str | None, exact_error: str | None, diagnostic_run_id: str | None, github_issue_url: str | None) -> int:
+    assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+    attempts = assisted.get("autonomous_fix_attempts") if isinstance(assisted.get("autonomous_fix_attempts"), list) else []
+    count = _failure_attempt_count(assisted) + 1
+    entry = {
+        "attempt": count,
+        "failed_phase": failed_phase,
+        "exact_error": exact_error,
+        "diagnostic_run_id": diagnostic_run_id,
+        "github_issue_url": github_issue_url,
+        "code_revision": _code_revision(),
+        "created_at": _now(),
+    }
+    job.assisted_result = {
+        **assisted,
+        "autonomous_fix_attempt_count": count,
+        "autonomous_fix_attempts": [*attempts, entry],
+        "autonomous_waiting_for_fix_deploy": count < settings.max_autonomous_fix_attempts_per_application,
+        "autonomous_blocked_after_3_attempts": count >= settings.max_autonomous_fix_attempts_per_application,
+    }
+    flag_modified(job, "assisted_result")
+    db.commit()
+    return count
+
+
+def _attach_attempt_state(payload: dict[str, Any], assisted: dict[str, Any]) -> None:
+    count = _failure_attempt_count(assisted)
+    max_attempts = settings.max_autonomous_fix_attempts_per_application
+    payload["focused_application_id"] = payload.get("application_id")
+    payload["attempt_number"] = count
+    payload["max_attempts"] = max_attempts
+    payload["waiting_for_fix_deploy"] = bool(assisted.get("autonomous_waiting_for_fix_deploy"))
+    payload["will_retry_same_application"] = count > 0 and count < max_attempts
+    payload["will_move_to_next_application"] = count >= max_attempts
 
 
 def _is_jobserve(job: Job) -> bool:
@@ -448,6 +566,12 @@ def _run_result(status: str, failed_phase: str | None, exact_error: str | None, 
         "codex_handoff_status": None,
         "github_issue_url": None,
         "codex_handoff_error": None,
+        "focused_application_id": application_id,
+        "attempt_number": 0,
+        "max_attempts": settings.max_autonomous_fix_attempts_per_application,
+        "waiting_for_fix_deploy": False,
+        "will_retry_same_application": False,
+        "will_move_to_next_application": False,
         "code_revision": _code_revision(),
         "created_at": _now(),
     }

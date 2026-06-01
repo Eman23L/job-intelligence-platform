@@ -22,6 +22,8 @@ services:
         value: "false"
       - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN
         value: "1"
+      - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_APPLICATION
+        value: "3"
       - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE
         value: "5"
       - key: GITHUB_TOKEN
@@ -88,6 +90,8 @@ services:
         value: "false"
       - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN
         value: "1"
+      - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_APPLICATION
+        value: "3"
       - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE
         value: "5"
       - key: GITHUB_TOKEN

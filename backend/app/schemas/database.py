@@ -783,6 +783,12 @@ class AutonomousRealSubmitRunResult(BaseModel):
     github_issue_url: str | None = None
     codex_handoff_error: str | None = None
     codex_handoff_attempt_count: int | None = None
+    focused_application_id: int | None = None
+    attempt_number: int = 0
+    max_attempts: int = 3
+    waiting_for_fix_deploy: bool = False
+    will_retry_same_application: bool = False
+    will_move_to_next_application: bool = False
     orchestration_steps: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str
 
