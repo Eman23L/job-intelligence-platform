@@ -796,7 +796,7 @@ def test_worker_shutdown_after_before_filling_persists_failure(monkeypatch) -> N
             assert job.assisted_result["debug_steps"][-1]["step"] == "before_filling"
 
 
-def test_failed_rq_assist_job_is_persisted_on_applications_list(db_session, monkeypatch) -> None:
+def test_applications_list_does_not_call_rq_failure_check(db_session, monkeypatch) -> None:
     user, job = _seed_application(db_session, jobserve=True)
     job.assisted_result = {
         "status": "queued",
@@ -806,18 +806,54 @@ def test_failed_rq_assist_job_is_persisted_on_applications_list(db_session, monk
     }
     job.last_apply_attempt_at = apply_agent.utcnow()
     db_session.commit()
-    monkeypatch.setattr(
-        applications_service,
-        "rq_job_failure",
-        lambda rq_job_id: {"rq_job_id": rq_job_id, "rq_status": "failed", "failure_reason": "worker traceback"},
-    )
+    called = []
+    monkeypatch.setattr(applications_service, "rq_job_failure", lambda rq_job_id: called.append(rq_job_id))
 
     applications_service.list_applications(db_session, user)
 
     db_session.refresh(job)
-    assert job.assisted_result["status"] == "failed"
-    assert job.assisted_result["final_error"] == "rq_job_failed"
-    assert job.assisted_result["jobserve_flow_diagnostics"]["queue_failure"]["failure_reason"] == "worker traceback"
+    assert called == []
+    assert job.assisted_result["status"] == "queued"
+    assert "queue_failure" not in job.assisted_result["jobserve_flow_diagnostics"]
+
+
+def test_applications_endpoint_does_not_invoke_playwright(monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "run_playwright_assist", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("playwright should not run")))
+    with apply_client(jobserve=True) as (client, _ids):
+        response = client.get("/applications")
+
+    assert response.status_code == 200
+
+
+def test_applications_endpoint_returns_cached_data_on_list_failure(db_session, monkeypatch) -> None:
+    user, _job = _seed_application(db_session, jobserve=True)
+    applications_api._APPLICATIONS_CACHE = None
+
+    first = applications_api.get_applications(db_session)
+    monkeypatch.setattr(applications_api, "list_applications", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("slow query timeout")))
+    second = applications_api.get_applications(db_session)
+
+    assert first.items
+    assert second.items
+    assert second.warning
+    assert "stale" in second.warning
+
+
+def test_autonomous_canary_endpoint_queues_background_work(db_session, monkeypatch) -> None:
+    from fastapi import BackgroundTasks
+
+    user, _job = _seed_application(db_session, jobserve=True)
+    enqueued = []
+    monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)
+    monkeypatch.setattr(applications_api, "enqueue_or_background", lambda background_tasks, func, *args, **kwargs: enqueued.append((func, args, kwargs)) or "rq-canary")
+
+    result = applications_api.run_autonomous_real_submit(BackgroundTasks(), db_session)
+
+    assert result.status == "queued"
+    assert result.recommended_fix == "Autonomous canary queued. Background run still processing."
+    assert enqueued
+    assert enqueued[0][0] is applications_api.run_autonomous_real_submit_canary_background
+    assert enqueued[0][1][0] == user.id
 
 
 def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:

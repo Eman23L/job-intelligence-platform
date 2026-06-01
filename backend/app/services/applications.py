@@ -1,6 +1,7 @@
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 import logging
+import time
 
 from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
@@ -13,7 +14,8 @@ from app.services.apply_strategy import classify_job, refresh_apply_readiness
 from app.services.job_availability import QUEUEABLE_AVAILABILITY_STATUSES, check_job_availability
 from app.services.profile import get_profile
 from app.services.run_tracking import finish_run, heartbeat, utcnow
-from app.services.queue import rq_job_failure
+
+rq_job_failure = None  # Kept only so tests can assert the applications list does not call external RQ checks.
 
 APPLICATION_STATUSES = {"not_started", "ready_to_apply", "opened", "applied", "skipped", "failed"}
 QUEUEABLE_RECOMMENDATIONS = {"apply", "maybe"}
@@ -176,8 +178,10 @@ def run_prepare_applications_background(run_id: int, user_id: int) -> None:
 
 
 def list_applications(db: Session, user: User | None = None) -> list[ApplicationItem]:
+    started = time.perf_counter()
     _fail_stale_or_failed_assist_queue(db)
     _fail_stale_browser_startups(db)
+    query_started = time.perf_counter()
     score_query = select(
         JobScore.job_id.label("job_id"),
         JobScore.total_score.label("total_score"),
@@ -221,6 +225,24 @@ def list_applications(db: Session, user: User | None = None) -> list[Application
             Job.id,
         )
     ).all()
+    query_duration_ms = int((time.perf_counter() - query_started) * 1000)
+    total_duration_ms = int((time.perf_counter() - started) * 1000)
+    if query_duration_ms > 500 or total_duration_ms > 1000:
+        logger.warning(
+            "applications_list_slow count=%s query_duration_ms=%s total_duration_ms=%s user_id=%s",
+            len(rows),
+            query_duration_ms,
+            total_duration_ms,
+            getattr(user, "id", None),
+        )
+    else:
+        logger.info(
+            "applications_list_done count=%s query_duration_ms=%s total_duration_ms=%s user_id=%s",
+            len(rows),
+            query_duration_ms,
+            total_duration_ms,
+            getattr(user, "id", None),
+        )
     return [
         ApplicationItem(
             job_id=row.id,
@@ -289,22 +311,8 @@ def _fail_stale_or_failed_assist_queue(db: Session) -> None:
         worker_progress_seen = _assist_worker_progress_seen(result)
         last_heartbeat_at = _parse_assist_datetime(progress.get("last_heartbeat_at"))
         rq_job_id = progress.get("rq_job_id") or diagnostics.get("rq_job_id")
-        failure = None
         rq_status = None
-        if rq_job_id:
-            try:
-                failure = rq_job_failure(str(rq_job_id))
-                rq_status = failure.get("rq_status") if failure else None
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("assist_apply_rq_status_check_failed application_id=%s rq_job_id=%s error=%s", job.id, rq_job_id, exc)
-        if failure:
-            result = _assist_queue_failure_result(
-                result,
-                "rq_job_failed",
-                failure.get("failure_reason") or "RQ job failed.",
-                _assist_queue_decision_details(job, result, rq_job_id, rq_status, worker_progress_seen, "rq_job_failed", failure),
-            )
-        elif result.get("status") == "queued" and not worker_progress_seen and job.last_apply_attempt_at and _aware_datetime(job.last_apply_attempt_at) < queue_cutoff:
+        if result.get("status") == "queued" and not worker_progress_seen and job.last_apply_attempt_at and _aware_datetime(job.last_apply_attempt_at) < queue_cutoff:
             result = _assist_queue_failure_result(
                 result,
                 "stale_queue_timeout",

@@ -709,6 +709,7 @@ class ApplicationItem(BaseModel):
 class ApplicationsList(BaseModel):
     items: list[ApplicationItem]
     minimum_apply_score: int = 80
+    warning: str | None = None
 
 
 class AssistApplyResult(BaseModel):

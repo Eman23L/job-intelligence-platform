@@ -14,6 +14,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import settings
 from app.db.models import Job, User
+from app.db.session import SessionLocal
 from app.diagnostics.assist_apply_runs import new_run_id, run_assist_apply_probe_background
 from app.schemas.database import AssistApplyResult
 from app.services.apply_agent import BrowserAutomationError, assist_apply_application
@@ -198,6 +199,26 @@ def run_autonomous_real_submit_canary(db: Session, user: User) -> dict[str, Any]
     result = _run_result("completed", None, None, "No real submit performed. See orchestration_steps for recovered, skipped, and blocked applications.")
     result["orchestration_steps"] = steps
     return result
+
+
+def run_autonomous_real_submit_canary_background(user_id: int) -> None:
+    logger.info("autonomous_submit_background_start user_id=%s", user_id)
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        if user is None:
+            logger.error("autonomous_submit_background_missing_user user_id=%s", user_id)
+            return
+        try:
+            result = run_autonomous_real_submit_canary(db, user)
+            logger.info(
+                "autonomous_submit_background_done user_id=%s status=%s application_id=%s failed_phase=%s",
+                user_id,
+                result.get("status"),
+                result.get("application_id"),
+                result.get("failed_phase"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("autonomous_submit_background_failed user_id=%s error=%s", user_id, exc)
 
 
 def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str, Any]:

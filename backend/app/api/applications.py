@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -19,12 +20,13 @@ from app.services.applications import (
     run_prepare_applications_background,
     start_prepare_applications_run,
 )
-from app.services.autonomous_submit import autonomous_submit_status, run_autonomous_real_submit_canary
+from app.services.autonomous_submit import autonomous_submit_status, run_autonomous_real_submit_canary, run_autonomous_real_submit_canary_background
 from app.services.queue import enqueue_or_background, queue_enabled, redis_url_host
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 logger = logging.getLogger(__name__)
 DEBUG_ARTIFACT_ROOT = Path("backend/runtime/apply_debug").resolve()
+_APPLICATIONS_CACHE: ApplicationsList | None = None
 
 
 def _default_user(db: Session) -> User:
@@ -36,8 +38,38 @@ def _default_user(db: Session) -> User:
 
 @router.get("", response_model=ApplicationsList)
 def get_applications(db: Session = Depends(get_db)):
+    global _APPLICATIONS_CACHE
+    started = time.perf_counter()
+    path = "/applications"
     user = _default_user(db)
-    return ApplicationsList(items=list_applications(db, user), minimum_apply_score=minimum_apply_score(db, user))
+    try:
+        threshold_started = time.perf_counter()
+        threshold = minimum_apply_score(db, user)
+        threshold_duration_ms = int((time.perf_counter() - threshold_started) * 1000)
+        list_started = time.perf_counter()
+        items = list_applications(db, user)
+        list_duration_ms = int((time.perf_counter() - list_started) * 1000)
+        response = ApplicationsList(items=items, minimum_apply_score=threshold)
+        _APPLICATIONS_CACHE = response
+        logger.info(
+            "applications_request_done path=%s count=%s threshold_duration_ms=%s list_duration_ms=%s total_duration_ms=%s",
+            path,
+            len(items),
+            threshold_duration_ms,
+            list_duration_ms,
+            int((time.perf_counter() - started) * 1000),
+        )
+        return response
+    except Exception as exc:  # noqa: BLE001
+        total_duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.exception("applications_request_failed path=%s total_duration_ms=%s error=%s", path, total_duration_ms, exc)
+        if _APPLICATIONS_CACHE is not None:
+            return ApplicationsList(
+                items=_APPLICATIONS_CACHE.items,
+                minimum_apply_score=_APPLICATIONS_CACHE.minimum_apply_score,
+                warning="Applications data is temporarily stale because the latest refresh failed.",
+            )
+        raise
 
 
 @router.post("/prepare", response_model=ApplicationPrepareRunStart)
@@ -236,6 +268,28 @@ def get_autonomous_real_submit_status(db: Session = Depends(get_db)):
 
 
 @router.post("/autonomous-real-submit", response_model=AutonomousRealSubmitRunResult)
-def run_autonomous_real_submit(db: Session = Depends(get_db)):
+def run_autonomous_real_submit(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     user = _default_user(db)
+    if queue_enabled():
+        rq_job_id = enqueue_or_background(
+            background_tasks,
+            run_autonomous_real_submit_canary_background,
+            user.id,
+            job_id=f"autonomous-real-submit-{user.id}",
+            job_timeout=settings.apply_timeout_seconds,
+            result_ttl=settings.rq_result_ttl_seconds,
+            failure_ttl=settings.rq_failure_ttl_seconds,
+        )
+        result = autonomous_submit_status(db, user).get("last_result") or {}
+        return AutonomousRealSubmitRunResult(
+            status="queued",
+            application_id=result.get("application_id"),
+            submitted=False,
+            failed_phase=None,
+            exact_error=None,
+            recommended_fix="Autonomous canary queued. Background run still processing.",
+            diagnostic_run_id=None,
+            orchestration_steps=result.get("orchestration_steps") if isinstance(result.get("orchestration_steps"), list) else [],
+            created_at=result.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
     return AutonomousRealSubmitRunResult(**run_autonomous_real_submit_canary(db, user))

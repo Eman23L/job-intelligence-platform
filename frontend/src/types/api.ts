@@ -224,6 +224,7 @@ export interface ApplicationItem {
 export interface ApplicationsList {
   items: ApplicationItem[];
   minimum_apply_score: number;
+  warning?: string | null;
 }
 
 export interface AssistApplyResult {
