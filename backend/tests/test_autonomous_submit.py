@@ -602,6 +602,29 @@ def test_named_timeout_uses_timeout_code_as_failed_phase(db_session, monkeypatch
     assert result["last_known_stage"] == "availability_check_start"
 
 
+def test_profile_validation_error_is_not_unexpected_canary_exception(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="")
+    job = _job(
+        assisted_result={
+            "latest_safe_diagnostic": _safe_diag(),
+            "progress": {"current_step": "profile_validation_start"},
+            "running_step": "profile_validation_start",
+            "debug_steps": [{"step": "profile_validation_start"}],
+        }
+    )
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("Email is required before submitting a JobServe application.")))
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["failed_phase"] == "profile_validation"
+    assert result["exact_error"] == "ValueError: Email is required before submitting a JobServe application."
+    assert result["last_known_stage"] == "profile_validation_start"
+
+
 def test_already_submitted_moves_on_safely(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
     user = User(email="user@example.com")

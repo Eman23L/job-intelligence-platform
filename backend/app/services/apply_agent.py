@@ -134,7 +134,9 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
         resolved_url = _resolve_assist_apply_url(job)
         progress_callback("job_url_resolved", {**_assist_lookup_payload(job, user, profile, mode, debug_mode), "resolved_job_url": resolved_url})
         if mode == "submit_with_confirmation":
+            progress_callback("profile_validation_start", _assist_lookup_payload(job, user, profile, mode, debug_mode))
             _validate_jobserve_submit(db, job, user, profile)
+            progress_callback("profile_validation_done", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         candidates = profile_field_candidates(user, profile)
         warnings = _safety_warnings(job)
         if browser_runner:
@@ -1279,7 +1281,7 @@ def _validate_jobserve_submit(db: Session, job: Job, user: User, profile) -> Non
         raise ValueError("profile_not_found")
     if not (getattr(profile, "cv_file_path", None) or getattr(profile, "cv_file_bytes", None)):
         raise ValueError("Saved CV file is required before submitting a JobServe application.")
-    if not (getattr(profile, "email", None) or ""):
+    if not ((getattr(profile, "email", None) or "").strip() or (getattr(user, "email", None) or "").strip()):
         raise ValueError("Email is required before submitting a JobServe application.")
     preferences = getattr(profile, "preferences", None) or {}
     if not (getattr(profile, "work_status_uk", None) or preferences.get("jobserve_working_status") or JOBSERVE_DEFAULTS["working_status"]):

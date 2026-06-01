@@ -995,9 +995,26 @@ def test_missing_cv_blocks_submit(monkeypatch) -> None:
     assert "Saved CV file is required" in response.json()["detail"]
 
 
-def test_missing_email_blocks_submit(monkeypatch) -> None:
+def test_user_email_fallback_allows_submit(monkeypatch) -> None:
+    monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
+    monkeypatch.setattr(
+        apply_agent,
+        "run_playwright_assist",
+        lambda *args, **kwargs: AssistApplyResult(status="submitted", uploaded_cv=True, submitted=True, confirmation_text="Your application has been submitted."),
+    )
+    with apply_client(jobserve=True, with_profile=True, with_cv=True, email="") as (client, ids):
+        response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "submit_with_confirmation"})
+
+    assert response.status_code == 200
+
+
+def test_missing_profile_and_user_email_blocks_submit(monkeypatch) -> None:
     monkeypatch.setattr(apply_agent, "check_job_availability", lambda db, candidate: SimpleNamespace(availability_status="active", availability_reason="fixture"))
     with apply_client(jobserve=True, with_profile=True, with_cv=True, email="") as (client, ids):
+        with ids["Session"]() as db:
+            user = db.get(User, ids["user"])
+            user.email = ""
+            db.commit()
         response = client.post(f"/applications/{ids['job']}/assist-apply", json={"mode": "submit_with_confirmation"})
 
     assert response.status_code == 400

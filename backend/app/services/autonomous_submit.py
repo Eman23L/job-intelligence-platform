@@ -437,6 +437,13 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
 def _classify_autonomous_submit_exception(exc: Exception) -> tuple[str, str, str, dict[str, Any]]:
     message = getattr(exc, "message", None) or str(exc)
     details = dict(getattr(exc, "details", {}) or {})
+    if isinstance(exc, ValueError):
+        return (
+            "profile_validation",
+            f"{type(exc).__name__}: {message}",
+            "Update the saved profile or user account data required for JobServe submit, then rerun the canary.",
+            details,
+        )
     if isinstance(exc, TimeoutError) and message.endswith("_timeout"):
         return (
             message,
@@ -467,6 +474,7 @@ def _classify_autonomous_submit_exception(exc: Exception) -> tuple[str, str, str
 _CANARY_STAGES = {
     "browser_launch",
     "availability_check",
+    "profile_validation",
     "jobserve_navigation",
     "apply_button_lookup",
     "apply_button_click",
