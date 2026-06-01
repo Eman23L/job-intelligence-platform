@@ -27,7 +27,7 @@ services:
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_REPOSITORY
-        sync: false
+        value: Eman23L/job-intelligence-platform
       - key: CODEX_MENTION
         value: "@codex"
       - key: DATABASE_URL
@@ -93,7 +93,7 @@ services:
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_REPOSITORY
-        sync: false
+        value: Eman23L/job-intelligence-platform
       - key: CODEX_MENTION
         value: "@codex"
       - key: DATABASE_URL

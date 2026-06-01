@@ -15,7 +15,8 @@ from app.config import settings
 from app.db.models import Job, User
 from app.diagnostics.assist_apply_runs import new_run_id, run_assist_apply_probe_background
 from app.schemas.database import AssistApplyResult
-from app.services.apply_agent import assist_apply_application
+from app.services.apply_agent import BrowserAutomationError, assist_apply_application
+from app.services.applications import _candidate_application_rows
 from app.services.codex_handoff import create_or_update_codex_handoff, environment_summary
 
 AUTONOMOUS_ARTIFACT_ROOT = Path("backend/runtime/autonomous_real_submit")
@@ -112,7 +113,7 @@ def run_autonomous_real_submit_canary(db: Session, user: User) -> dict[str, Any]
 
     submitted = 0
     steps: list[dict[str, Any]] = []
-    jobs = db.scalars(select(Job).where(Job.status != "excluded").order_by(Job.id)).all()
+    jobs = _candidate_jobs(db, user)
     for job in jobs:
         step = _orchestrate_one_application(db, job, user)
         steps.append(step)
@@ -233,6 +234,13 @@ def _orchestrate_one_application(db: Session, job: Job, user: User) -> dict[str,
     return step
 
 
+def _candidate_jobs(db: Session, user: User) -> list[Job]:
+    rows = _candidate_application_rows(db, user)
+    if rows:
+        return [job for job, _score in rows]
+    return db.scalars(select(Job).where(Job.status != "excluded").order_by(Job.id)).all()
+
+
 def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[str, Any]) -> dict[str, Any]:
     assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
     job.assisted_result = {
@@ -244,6 +252,22 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
     db.commit()
     try:
         result: AssistApplyResult = assist_apply_application(db, job, user, mode="submit_with_confirmation", debug_mode=True)
+    except BrowserAutomationError as exc:
+        diagnostic_run_id = new_run_id()
+        run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
+        failed_phase = "browser_launch" if exc.error in {"browser_launch", "chromium_not_installed", "playwright_not_installed"} else exc.error
+        payload = _run_result("failed", failed_phase, exc.message, "Fix browser automation startup in Render, then rerun safe diagnostics.", job.id, diagnostic_run_id)
+        handoff_result = _create_codex_handoff(
+            job,
+            {
+                **payload,
+                "traceback": traceback.format_exc(),
+                "orchestration_steps": (job.assisted_result or {}).get("autonomous_orchestration_steps") or [],
+            },
+        )
+        _attach_handoff_result(payload, handoff_result)
+        _persist_result(db, job, payload)
+        return payload
     except Exception as exc:  # noqa: BLE001
         diagnostic_run_id = new_run_id()
         run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
@@ -260,7 +284,7 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
         _persist_result(db, job, payload)
         return payload
 
-    if not result.submitted or result.confirmation_text != "Your application has been submitted.":
+    if not result.submitted or not _confirmation_means_submitted(result.confirmation_text):
         diagnostic_run_id = new_run_id()
         run_assist_apply_probe_background(diagnostic_run_id, job.id, user.id, safe_mode=True, submit_allowed=False)
         payload = _run_result("failed", "success_text_missing", "JobServe submission success text was not confirmed.", "Do not mark applied unless JobServe success text is visible.", job.id, diagnostic_run_id)
@@ -282,6 +306,13 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
     payload["submitted"] = True
     _persist_result(db, job, payload)
     return payload
+
+
+def _confirmation_means_submitted(value: str | None) -> bool:
+    if not value:
+        return False
+    lowered = value.lower()
+    return any(text in lowered for text in ["your application has been submitted", "application received", "already applied", "already submitted", "you have applied"])
 
 
 def _persist_result(db: Session, job: Job, result: dict[str, Any]) -> None:
@@ -380,6 +411,9 @@ def _handoff_report(job: Job, report: dict[str, Any]) -> dict[str, Any]:
         "application_id": job.id,
         "job_title": job.title,
         "job_company": job.company_name,
+        "source_job_id": job.source_job_id,
+        "original_external_id": job.original_external_id,
+        "selected_url": job.canonical_url,
         "environment_summary": environment_summary(),
         "latest_commit_sha": _code_revision(),
     }
@@ -391,6 +425,7 @@ def _attach_handoff_result(payload: dict[str, Any], handoff_result: dict[str, An
     payload["codex_handoff_status"] = handoff_result.get("status")
     payload["github_issue_url"] = handoff_result.get("issue_url")
     payload["codex_handoff_error"] = handoff_result.get("error")
+    payload["codex_handoff_attempt_count"] = handoff_result.get("attempt_count")
 
 
 def _write_verification_report(application_id: int, report: dict[str, Any]) -> str:

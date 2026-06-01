@@ -19,8 +19,7 @@ Required repository secrets:
 - `RENDER_WORKER_DEPLOY_HOOK_URL`
 - `BACKEND_API_BASE_URL`
 - `DIAGNOSTIC_ADMIN_TOKEN`
-- `GITHUB_TOKEN`
-- `GITHUB_REPOSITORY`
+- `CODEX_GITHUB_TOKEN`
 
 The workflow must not print these values. It logs only `deploying_web`, `deploying_worker`, and `deploy_hooks_triggered`.
 
@@ -67,4 +66,8 @@ POST ${BACKEND_API_BASE_URL}/diagnostics/handoff/codex
 
 The endpoint is protected by `DIAGNOSTIC_ADMIN_TOKEN` and creates or updates a GitHub issue with the labels `codex`, `autonomous-canary`, and `assist-apply`. It reuses the existing open issue for the same `application_id` and `failed_phase`, stops after `MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE` attempts, and stops if the same `exact_error` repeats after two deploys.
 
-The `Post Deploy Autonomous Verify` workflow runs after `CI Deploy Render` succeeds. It calls the deployed backend autonomous verification route, records or updates a Codex handoff issue on failure, and comments/closes matching handoff issues when verification passes. Real JobServe submission still requires `AUTONOMOUS_REAL_SUBMIT_ENABLED=true`, and the submit limit remains `MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN`.
+The `Post Deploy Autonomous Verify` workflow runs after `CI Deploy Render` succeeds. It uses `CODEX_GITHUB_TOKEN` to find open `autonomous-canary` / `assist-apply` issues, reruns safe diagnostics for those application ids in Render, then calls the deployed backend autonomous verification route. It records or updates a Codex handoff issue on failure, and comments/closes matching handoff issues when verification passes.
+
+Render web/worker services use `GITHUB_TOKEN`, `GITHUB_REPOSITORY=Eman23L/job-intelligence-platform`, `CODEX_MENTION=@codex`, and `DIAGNOSTIC_ADMIN_TOKEN`. GitHub Actions uses `CODEX_GITHUB_TOKEN` because repository secrets cannot be named with the reserved `GITHUB_` prefix.
+
+Real JobServe submission still requires `AUTONOMOUS_REAL_SUBMIT_ENABLED=true`, and the submit limit remains `MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN`.

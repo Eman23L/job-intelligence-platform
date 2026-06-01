@@ -2231,3 +2231,9 @@ class _FakeSelectLocator:
             self.page.selected = label
             return
         self.page.selected = getattr(label, "pattern", str(label))
+
+
+def test_jobserve_already_applied_confirmation_counts_as_submitted() -> None:
+    assert apply_agent._jobserve_confirmation_means_submitted("You have already applied for this job") is True
+    assert apply_agent._jobserve_confirmation_means_submitted("Your application has been submitted.") is True
+    assert apply_agent._jobserve_confirmation_means_submitted("Validation error") is False

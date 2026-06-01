@@ -21,7 +21,7 @@ from app.config import settings
 from app.db.models import Job, JobScore, User
 from app.db.session import SessionLocal
 from app.schemas.database import AssistApplyResult
-from app.services.browser_automation import chromium_diagnostics, chromium_executable_path, validate_browser_automation_availability
+from app.services.browser_automation import chromium_diagnostics, chromium_executable_path, chromium_launch_options, launch_chromium, validate_browser_automation_availability
 from app.services.job_availability import check_job_availability
 from app.services.profile import get_profile
 from app.services.run_tracking import utcnow
@@ -1040,15 +1040,16 @@ def run_playwright_assist(
     warnings: list[str] = []
     try:
         with sync_playwright() as playwright:
-            executable_path = chromium_executable_path()
-            launch_options = {"headless": headless}
-            launch_options["timeout"] = 30000
-            if executable_path:
-                launch_options["executable_path"] = executable_path
+            launch_options = chromium_launch_options(headless=headless)
             browser_started = time.perf_counter()
             if progress_callback:
                 progress_callback("browser_launch_start", {"launch_options": {key: value for key, value in launch_options.items() if key != "executable_path"}, "browser_diagnostics": _browser_startup_diagnostics(headless=headless)})
-            browser = playwright.chromium.launch(**launch_options)
+            try:
+                browser = launch_chromium(playwright, validate=False, **launch_options)
+            except Exception as exc:  # noqa: BLE001
+                if progress_callback:
+                    progress_callback("browser_launch_failed", {"browser_diagnostics": _browser_startup_diagnostics(browser_launch_succeeded=False, launch_duration_ms=int((time.perf_counter() - browser_started) * 1000), headless=headless), "error": str(exc)})
+                raise BrowserAutomationError("browser_launch", str(exc)) from exc
             timing_diagnostics["browser_startup_ms"] = int((time.perf_counter() - browser_started) * 1000)
             if progress_callback:
                 progress_callback("browser_launch_success", {"browser_diagnostics": _browser_startup_diagnostics(browser_launch_succeeded=True, launch_duration_ms=timing_diagnostics["browser_startup_ms"], headless=headless)})
@@ -1845,6 +1846,8 @@ def _run_jobserve_search_to_apply(
             timing_diagnostics["submit_wait_ms"] = int((time.perf_counter() - submit_started) * 1000)
             flow["submitted_confirmation_detected"] = True
             flow["confirmation_text"] = confirmation_text
+            if re.search(r"already applied|already submitted|you have applied", confirmation_text, flags=re.I):
+                flow["already_applied_detected"] = True
             flow["submitted_identity"] = _jobserve_modal_identity(page)
             submitted = True
             status = "submitted"
@@ -3478,13 +3481,16 @@ def _run_jobserve_modal(
         apply_button.click(timeout=8000)
         flow["final_apply_clicked"] = True
         _report_jobserve_step(progress_callback, "final_apply_clicked", succeeded=True)
-        success = target_page.get_by_text("Your application has been submitted.").first
-        success.wait_for(timeout=12000)
+        confirmation_text = _wait_for_jobserve_submission_success(target_page, browser)
         debug.screenshot("after_final_submit")
         debug.html("after_final_submit", target_page)
+        flow["confirmation_text"] = confirmation_text
+        flow["submitted_confirmation_detected"] = True
+        if re.search(r"already applied|already submitted|you have applied", confirmation_text, flags=re.I):
+            flow["already_applied_detected"] = True
         submitted = True
         status = "submitted"
-        _report_jobserve_step(progress_callback, "submitted_message_seen", succeeded=True, confirmation_text="Your application has been submitted.")
+        _report_jobserve_step(progress_callback, "submitted_message_seen", succeeded=True, confirmation_text=confirmation_text)
         flow["account_toggles_turned_off"] = _disable_jobserve_account_options(context, warnings)
         flow["registration_toggle_disabled"] = any("register a Job Seeker account" in item for item in flow["account_toggles_turned_off"])
         _report_jobserve_step(progress_callback, "account_toggle_disabled", succeeded=flow["registration_toggle_disabled"], disabled=flow["account_toggles_turned_off"])
@@ -3513,6 +3519,7 @@ def _run_jobserve_modal(
         upload_diagnostics=upload_diagnostics,
         select_diagnostics=select_diagnostics,
         exceptions=exceptions,
+        confirmation_text=str(flow.get("confirmation_text") or "") or None,
         **debug.result_kwargs(target_page),
     )
 
@@ -3796,22 +3803,41 @@ def _jobserve_apply_button(page):
 
 
 def _wait_for_jobserve_submission_success(page, browser) -> str:
+    success_patterns = [
+        re.compile(r"your application has been submitted", re.I),
+        re.compile(r"application (?:has been )?received", re.I),
+        re.compile(r"already applied", re.I),
+        re.compile(r"already submitted", re.I),
+        re.compile(r"you have applied", re.I),
+    ]
     deadline = time.time() + (settings.page_navigation_timeout_ms / 1000)
     last_exc: Exception | None = None
     while time.time() < deadline:
         for context in _all_contexts(page, browser):
-            try:
-                locator = context.get_by_text("Your application has been submitted.").first
-                locator.wait_for(timeout=1000)
+            for pattern in success_patterns:
                 try:
-                    return locator.inner_text(timeout=500)
-                except Exception:  # noqa: BLE001
-                    return "Your application has been submitted."
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                continue
+                    locator = context.get_by_text(pattern).first
+                    locator.wait_for(timeout=1000)
+                    try:
+                        return locator.inner_text(timeout=500)
+                    except Exception:  # noqa: BLE001
+                        return pattern.pattern
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    continue
         page.wait_for_timeout(500)
     raise RuntimeError("JobServe submission confirmation not detected.") from last_exc
+
+
+def _jobserve_confirmation_means_submitted(value: str | None) -> bool:
+    return bool(
+        value
+        and re.search(
+            r"your application has been submitted|application (?:has been )?received|already applied|already submitted|you have applied",
+            value,
+            flags=re.I,
+        )
+    )
 
 
 def _close_modal(page) -> bool:

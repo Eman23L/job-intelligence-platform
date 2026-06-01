@@ -37,7 +37,7 @@ from app.scrapers.jobserve import JobServeAdapter, JobServeSourceAdapter, extrac
 from app.scrapers.jobserve import extract_jobserve_job_ids
 from app.scrapers.utils.hashing import content_hash
 from app.services.analysis import analyse_job
-from app.services.browser_automation import chromium_diagnostics
+from app.services.browser_automation import chromium_diagnostics, launch_chromium
 from app.services.job_validation import validate_normalised_job
 from app.services.job_availability import check_jobs_availability
 from app.services.link_discovery import discover_links
@@ -743,7 +743,7 @@ def _fetch_jobserve_rendered_result_page(final_url: str, payload: JobServeSearch
             browser_diag.get("chromium_file_executable"),
         )
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = launch_chromium(playwright, headless=True)
             try:
                 page = browser.new_page(viewport={"width": 1440, "height": 1000}, user_agent=BROWSER_USER_AGENT)
                 page.goto(final_url, wait_until="domcontentloaded", timeout=30000)
@@ -874,7 +874,7 @@ def _capture_jobserve_debug_screenshot(url: str) -> str | None:
             browser_diag.get("chromium_file_executable"),
         )
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = launch_chromium(playwright, headless=True)
             try:
                 page = browser.new_page(viewport={"width": 1440, "height": 1000}, user_agent=BROWSER_USER_AGENT)
                 page.goto(url, wait_until="domcontentloaded", timeout=20000)

@@ -36,14 +36,14 @@ def create_or_update_codex_handoff(report: dict[str, Any]) -> dict[str, Any]:
                 return guard
             comment = f"{ATTEMPT_MARKER}\n\n{body}"
             _github_request("POST", f"/repos/{settings.github_repository}/issues/{existing['number']}/comments", json={"body": comment})
-            return {"status": "updated", "issue_url": existing.get("html_url"), "issue_number": existing.get("number")}
+            return {"status": "updated", "issue_url": existing.get("html_url"), "issue_number": existing.get("number"), "attempt_count": _attempt_count(existing) + 1}
 
         issue = _github_request(
             "POST",
             f"/repos/{settings.github_repository}/issues",
             json={"title": title, "body": f"{ATTEMPT_MARKER}\n\n{body}", "labels": HANDOFF_LABELS},
         )
-        return {"status": "created", "issue_url": issue.get("html_url"), "issue_number": issue.get("number")}
+        return {"status": "created", "issue_url": issue.get("html_url"), "issue_number": issue.get("number"), "attempt_count": 1}
     except Exception as exc:  # noqa: BLE001
         return {"status": "failed", "error": f"github_handoff_error: {exc}", "issue_url": None}
 
@@ -137,6 +137,7 @@ def _loop_guard(issue: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]
             "error": "max_autonomous_fix_attempts_reached",
             "issue_url": issue.get("html_url"),
             "issue_number": issue.get("number"),
+            "attempt_count": attempts,
         }
     if repeated_errors >= 2:
         return {
@@ -144,6 +145,7 @@ def _loop_guard(issue: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]
             "error": "same_exact_error_repeated_after_two_deploys",
             "issue_url": issue.get("html_url"),
             "issue_number": issue.get("number"),
+            "attempt_count": attempts,
         }
     return None
 
@@ -164,6 +166,8 @@ def _issue_body(report: dict[str, Any]) -> str:
         f"application_id: {report.get('application_id') or 'unknown'}",
         f"job_title: {report.get('job_title') or 'unknown'}",
         f"job_company: {report.get('job_company') or 'unknown'}",
+        f"source_job_id: {report.get('source_job_id') or 'unknown'}",
+        f"selected_url: {report.get('selected_url') or 'unknown'}",
         f"latest_commit_sha: {report.get('latest_commit_sha') or report.get('code_revision') or 'unknown'}",
         "",
         "environment_summary:",
@@ -178,6 +182,11 @@ def _issue_body(report: dict[str, Any]) -> str:
     if report.get("traceback"):
         lines.extend(["", "traceback:", "```", _one_line(str(report["traceback"]), 6000), "```"])
     return "\n".join(lines)
+
+
+def _attempt_count(issue: dict[str, Any]) -> int:
+    body = str(issue.get("body") or "")
+    return body.count(ATTEMPT_MARKER)
 
 
 def _github_request(method: str, path: str, **kwargs: Any) -> Any:

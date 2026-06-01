@@ -87,6 +87,33 @@ def chromium_executable_path() -> str | None:
     return detect_chromium().executable_path
 
 
+def chromium_launch_options(**options: Any) -> dict[str, Any]:
+    launch_options = dict(options)
+    launch_options.setdefault("timeout", 30000)
+    executable_path = chromium_executable_path()
+    if executable_path:
+        launch_options["executable_path"] = executable_path
+    return launch_options
+
+
+def launch_chromium(playwright: Any, *, validate: bool = True, **options: Any) -> Any:
+    if validate:
+        availability = validate_browser_automation_availability(require_worker=False)
+        if not availability.available:
+            raise RuntimeError(availability.error or "browser_launch_failed")
+    launch_options = chromium_launch_options(**options)
+    try:
+        return playwright.chromium.launch(**launch_options)
+    except Exception as exc:  # noqa: BLE001
+        diagnostics = chromium_diagnostics()
+        raise RuntimeError(
+            "browser_launch failed: "
+            f"{exc}; chromium_executable_path={diagnostics.get('chromium_executable_path')}; "
+            f"chromium_file_exists={diagnostics.get('chromium_file_exists')}; "
+            f"playwright_browsers_path={diagnostics.get('playwright_browsers_path')}"
+        ) from exc
+
+
 def detect_chromium() -> ChromiumDetection:
     if not playwright_installed():
         return ChromiumDetection(executable_path=None, exists=False, executable=False)

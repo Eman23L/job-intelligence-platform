@@ -147,6 +147,9 @@ def test_post_deploy_autonomous_verify_workflow_uses_remote_backend_and_handoff(
     assert "workflow_run" in workflow
     assert "CI Deploy Render" in workflow
     assert "BACKEND_API_BASE_URL" in workflow
+    assert "CODEX_GITHUB_TOKEN" in workflow
+    assert "Rerun affected safe diagnostics" in workflow
+    assert "/diagnostics/assist-apply/{app_id}" in workflow
     assert "$backend_base/applications/autonomous-real-submit" in workflow
     assert "$backend_base/diagnostics/handoff/codex" in workflow
     assert "DIAGNOSTIC_ADMIN_TOKEN" in workflow

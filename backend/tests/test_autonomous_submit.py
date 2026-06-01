@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.config import settings
 from app.db.models import Job, User
 from app.schemas.database import AssistApplyResult
+from app.services.apply_agent import BrowserAutomationError
 from app.services import autonomous_submit
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -267,6 +268,32 @@ def test_canary_failure_creates_codex_handoff_issue(db_session, monkeypatch) -> 
     assert result["failed_phase"] == "autonomous_submit_exception"
     assert result["codex_handoff_status"] == "created"
     assert result["github_issue_url"].endswith("/12")
+
+
+def test_missing_chromium_creates_browser_launch_handoff(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job()
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        autonomous_submit,
+        "assist_apply_application",
+        lambda *args, **kwargs: (_ for _ in ()).throw(BrowserAutomationError("chromium_not_installed", "Executable doesn't exist at /opt/render/.cache/ms-playwright/chromium-1140/chrome-linux/chrome")),
+    )
+    monkeypatch.setattr(
+        autonomous_submit,
+        "create_or_update_codex_handoff",
+        lambda report: {"status": "created", "issue_url": "https://github.com/owner/repo/issues/14", "attempt_count": 1},
+    )
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["status"] == "failed"
+    assert result["failed_phase"] == "browser_launch"
+    assert result["codex_handoff_status"] == "created"
+    assert result["codex_handoff_attempt_count"] == 1
 
 
 def test_submit_failure_after_safe_diagnostic_creates_handoff_when_canary_disabled(db_session, monkeypatch) -> None:

@@ -782,6 +782,7 @@ class AutonomousRealSubmitRunResult(BaseModel):
     codex_handoff_status: str | None = None
     github_issue_url: str | None = None
     codex_handoff_error: str | None = None
+    codex_handoff_attempt_count: int | None = None
     orchestration_steps: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str
 

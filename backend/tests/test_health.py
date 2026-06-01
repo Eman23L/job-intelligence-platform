@@ -109,6 +109,19 @@ def test_chromium_detection_supports_hermetic_browser_path(monkeypatch, tmp_path
     assert detection.source == "cache_glob"
 
 
+def test_chromium_launch_options_use_resolved_executable(monkeypatch, tmp_path) -> None:
+    executable = tmp_path / "chrome"
+    executable.write_text("", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setattr(browser_automation, "chromium_executable_path", lambda: str(executable))
+
+    options = browser_automation.chromium_launch_options(headless=True)
+
+    assert options["headless"] is True
+    assert options["executable_path"] == str(executable)
+    assert options["timeout"] == 30000
+
+
 def test_chromium_detection_requires_executable(monkeypatch, tmp_path) -> None:
     executable = tmp_path / "chrome"
     executable.write_text("", encoding="utf-8")

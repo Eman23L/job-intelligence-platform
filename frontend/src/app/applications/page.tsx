@@ -598,6 +598,7 @@ function AutonomousOrchestrationSummary({ result }: { result: AutonomousRealSubm
         <Metric label="Recommended fix" value={result.recommended_fix} />
         <Metric label="Codex handoff" value={result.codex_handoff_status ?? "Not created"} />
         <Metric label="GitHub issue URL" value={result.github_issue_url ?? "None"} />
+        <Metric label="Loop attempt" value={result.codex_handoff_attempt_count == null ? "Not reported" : String(result.codex_handoff_attempt_count)} />
       </div>
       {result.github_issue_url ? (
         <a className="artifact-link" href={result.github_issue_url} target="_blank" rel="noreferrer">

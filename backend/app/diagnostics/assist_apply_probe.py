@@ -210,7 +210,7 @@ def import_runtime_dependencies() -> dict[str, Any]:
     from app.db.models import Job, JobScore, User
     from app.db.session import SessionLocal
     from app.services import apply_agent
-    from app.services.browser_automation import browser_status, chromium_executable_path
+    from app.services.browser_automation import browser_status, chromium_executable_path, launch_chromium
     from app.services.profile import get_profile
     from app.services.queue import redis_connection, redis_url_host
 
@@ -224,6 +224,7 @@ def import_runtime_dependencies() -> dict[str, Any]:
         "apply_agent": apply_agent,
         "browser_status": browser_status,
         "chromium_executable_path": chromium_executable_path,
+        "launch_chromium": launch_chromium,
         "get_profile": get_profile,
         "redis_connection": redis_connection,
         "redis_url_host": redis_url_host,
@@ -276,6 +277,7 @@ def build_report(
     apply_agent = deps["apply_agent"]
     browser_status = deps["browser_status"]
     chromium_executable_path = deps["chromium_executable_path"]
+    launch_chromium = deps.get("launch_chromium")
     get_profile = deps["get_profile"]
     redis_connection = deps["redis_connection"]
     redis_url_host = deps["redis_url_host"]
@@ -314,7 +316,17 @@ def build_report(
 
     _phase(report, "jobserve_url_resolution", resolve_url)
 
-    _phase(report, "browser_launch", lambda: {"browser_status": browser_status(), "chromium_executable_path": chromium_executable_path()})
+    def browser_launch_check() -> dict[str, Any]:
+        if not run_browser_navigation or launch_chromium is None:
+            return {"browser_status": browser_status(), "chromium_executable_path": chromium_executable_path(), "launch_skipped": not run_browser_navigation}
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = launch_chromium(playwright, headless=True)
+            browser.close()
+        return {"browser_status": browser_status(), "chromium_executable_path": chromium_executable_path()}
+
+    _phase(report, "browser_launch", browser_launch_check)
 
     if not safe_mode or submit_allowed:
         report["phases"]["submit_guard"] = {"status": "ok", "data": {"submit_allowed": submit_allowed}}
@@ -330,7 +342,7 @@ def build_report(
         screenshot_path = output_dir / f"assist_apply_{application_id}_{timestamp}.png"
         html_path = output_dir / f"assist_apply_{application_id}_{timestamp}.html"
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = launch_chromium(playwright, headless=True)
             page = browser.new_page()
             try:
                 page.goto(resolved_url, wait_until="domcontentloaded", timeout=settings.page_navigation_timeout_ms)

@@ -16,6 +16,62 @@ jobs:
       - name: Prepare report directory
         run: mkdir -p backend/runtime/post_deploy_autonomous_verify
 
+      - name: Rerun affected safe diagnostics
+        continue-on-error: true
+        env:
+          BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
+          DIAGNOSTIC_ADMIN_TOKEN: ${{ secrets.DIAGNOSTIC_ADMIN_TOKEN }}
+          CODEX_GITHUB_TOKEN: ${{ secrets.CODEX_GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json, os, re, time, urllib.error, urllib.request
+
+          root = "backend/runtime/post_deploy_autonomous_verify"
+          backend = (os.environ.get("BACKEND_API_BASE_URL") or "").rstrip("/")
+          diagnostic_token = os.environ.get("DIAGNOSTIC_ADMIN_TOKEN") or ""
+          github_token = os.environ.get("CODEX_GITHUB_TOKEN") or ""
+          repo = os.environ.get("GITHUB_REPOSITORY") or ""
+          output = {"status": "skipped", "applications": []}
+
+          def request_json(method, url, body=None, headers=None):
+              data = json.dumps(body).encode("utf-8") if body is not None else None
+              req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.loads(response.read().decode("utf-8") or "{}")
+
+          if not (backend and diagnostic_token and github_token and repo):
+              output["reason"] = "missing BACKEND_API_BASE_URL, DIAGNOSTIC_ADMIN_TOKEN, CODEX_GITHUB_TOKEN, or GITHUB_REPOSITORY"
+          else:
+              gh_headers = {"Authorization": f"Bearer {github_token}", "Accept": "application/vnd.github+json"}
+              labels = "autonomous-canary,assist-apply"
+              issues = request_json("GET", f"https://api.github.com/repos/{repo}/issues?state=open&labels={labels}&per_page=100", headers=gh_headers)
+              app_ids = sorted({int(match.group(1)) for issue in issues for match in [re.search(r"application (\d+)", issue.get("title", ""), re.I)] if match})
+              output = {"status": "completed", "applications": []}
+              api_headers = {"Authorization": f"Bearer {diagnostic_token}", "Content-Type": "application/json"}
+              for app_id in app_ids:
+                  item = {"application_id": app_id, "status": "queued"}
+                  output["applications"].append(item)
+                  try:
+                      started = request_json("POST", f"{backend}/diagnostics/assist-apply/{app_id}", {"user_id": 1, "safe_mode": True, "submit_allowed": False}, api_headers)
+                      run_id = started["run_id"]
+                      item["run_id"] = run_id
+                      for _ in range(40):
+                          state = request_json("GET", f"{backend}/diagnostics/assist-apply/runs/{run_id}", headers=api_headers)
+                          item["status"] = state.get("status")
+                          item["failed_phase"] = ((state.get("final_report") or {}).get("failed_phase"))
+                          item["exact_error"] = ((state.get("final_report") or {}).get("exact_error"))
+                          item["artifact_links"] = state.get("artifact_links") or []
+                          if item["status"] in {"passed", "failed"}:
+                              break
+                          time.sleep(15)
+                  except Exception as exc:
+                      item["status"] = "failed"
+                      item["failed_phase"] = "affected_safe_diagnostic_failed"
+                      item["exact_error"] = str(exc)
+          open(f"{root}/affected_diagnostics.json", "w", encoding="utf-8").write(json.dumps(output, indent=2, sort_keys=True))
+          PY
+
       - name: Run autonomous verification
         env:
           BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
