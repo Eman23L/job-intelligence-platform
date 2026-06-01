@@ -44,6 +44,33 @@ export default function ApplicationsPage() {
   }, [refresh]);
 
   useEffect(() => {
+    if (!autonomousResult || !["queued", "running"].includes(autonomousResult.status)) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const status = await api.autonomousRealSubmitStatus();
+        if (cancelled) {
+          return;
+        }
+        setAutonomousStatus(status);
+        if (status.last_result) {
+          setAutonomousResult(normaliseAutonomousResult(status.last_result, autonomousResult));
+        }
+      } catch {
+        // Keep the current summary visible; the next interval can recover.
+      }
+    };
+    poll();
+    const intervalId = globalThis.setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(intervalId);
+    };
+  }, [autonomousResult]);
+
+  useEffect(() => {
     if (!prepareRunId) {
       return;
     }
@@ -821,6 +848,24 @@ function normaliseAssistResult(result: AssistApplyResult): AssistApplyResult {
     upload_diagnostics: result.upload_diagnostics ?? {},
     select_diagnostics: result.select_diagnostics ?? [],
     exceptions: result.exceptions ?? []
+  };
+}
+
+function normaliseAutonomousResult(value: Record<string, unknown>, fallback: AutonomousRealSubmitRunResult): AutonomousRealSubmitRunResult {
+  return {
+    ...fallback,
+    ...(value as Partial<AutonomousRealSubmitRunResult>),
+    submitted: Boolean(value.submitted ?? fallback.submitted),
+    recommended_fix: String(value.recommended_fix ?? fallback.recommended_fix),
+    orchestration_steps: Array.isArray(value.orchestration_steps) ? (value.orchestration_steps as Array<Record<string, unknown>>) : fallback.orchestration_steps ?? [],
+    screenshot_paths: Array.isArray(value.screenshot_paths) ? (value.screenshot_paths as string[]) : fallback.screenshot_paths ?? [],
+    screenshot_urls: Array.isArray(value.screenshot_urls) ? (value.screenshot_urls as string[]) : fallback.screenshot_urls ?? [],
+    html_snapshot_paths: Array.isArray(value.html_snapshot_paths) ? (value.html_snapshot_paths as string[]) : fallback.html_snapshot_paths ?? [],
+    html_snapshot_urls: Array.isArray(value.html_snapshot_urls) ? (value.html_snapshot_urls as string[]) : fallback.html_snapshot_urls ?? [],
+    detected_buttons: Array.isArray(value.detected_buttons) ? (value.detected_buttons as Array<Record<string, unknown>>) : fallback.detected_buttons ?? [],
+    detected_fields: Array.isArray(value.detected_fields) ? (value.detected_fields as Array<Record<string, unknown>>) : fallback.detected_fields ?? [],
+    artifact_links: Array.isArray(value.artifact_links) ? (value.artifact_links as string[]) : fallback.artifact_links ?? [],
+    created_at: String(value.created_at ?? fallback.created_at)
   };
 }
 

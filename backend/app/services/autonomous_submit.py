@@ -392,10 +392,24 @@ def _repair_focus_sort_key(job: Job) -> tuple[float, int, int]:
 def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[str, Any]) -> dict[str, Any]:
     _log_autonomous_browser_preflight(job)
     assisted = job.assisted_result if isinstance(job.assisted_result, dict) else {}
+    running_payload = _run_result(
+        "running",
+        None,
+        None,
+        "Autonomous canary is running. Background run still processing.",
+        job.id,
+    )
+    running_payload["progress"] = {
+        **(assisted.get("progress") if isinstance(assisted.get("progress"), dict) else {}),
+        "current_step": "autonomous_submit_started",
+        "last_heartbeat_at": _now(),
+    }
+    running_payload["orchestration_steps"] = assisted.get("autonomous_orchestration_steps") if isinstance(assisted.get("autonomous_orchestration_steps"), list) else []
     job.assisted_result = {
         **assisted,
         "autonomous_real_submit_attempted": True,
         "autonomous_real_submit_verification": verification_report,
+        "autonomous_real_submit_result": running_payload,
     }
     flag_modified(job, "assisted_result")
     db.commit()

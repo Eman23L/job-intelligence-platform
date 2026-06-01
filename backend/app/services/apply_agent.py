@@ -623,6 +623,20 @@ def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str
         "last_heartbeat_at": utcnow().isoformat(),
         "message": _progress_message(step),
     }
+    autonomous_result = existing.get("autonomous_real_submit_result") if isinstance(existing.get("autonomous_real_submit_result"), dict) else None
+    if autonomous_result and autonomous_result.get("status") == "running":
+        autonomous_result = {
+            **autonomous_result,
+            "running_step": step,
+            "last_known_stage": step,
+            "current_url": payload.get("current_url") or autonomous_result.get("current_url"),
+            "page_title": payload.get("page_title") or autonomous_result.get("page_title"),
+            "progress": progress,
+            "detected_buttons": payload.get("detected_buttons") or autonomous_result.get("detected_buttons") or [],
+            "detected_fields": payload.get("detected_fields") or autonomous_result.get("detected_fields") or [],
+            "screenshot_paths": existing.get("screenshot_paths") or autonomous_result.get("screenshot_paths") or [],
+            "html_snapshot_paths": existing.get("html_snapshot_paths") or autonomous_result.get("html_snapshot_paths") or [],
+        }
     job.assisted_result = {
         **existing,
         "status": "running" if existing.get("status") in {None, "queued"} else existing.get("status"),
@@ -637,6 +651,7 @@ def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str
         "progress": progress,
         "timing_diagnostics": {**existing.get("timing_diagnostics", {}), "total_runtime_ms": progress["elapsed_ms"]},
         "debug_steps": [*existing.get("debug_steps", []), {"step": step, **payload}][-100:],
+        **({"autonomous_real_submit_result": autonomous_result} if autonomous_result else {}),
     }
     job.last_apply_attempt_at = utcnow()
     db.commit()
@@ -1659,10 +1674,25 @@ def _detect_jobserve_dropdowns(selects: list[dict[str, Any]]) -> dict[str, bool]
     result: dict[str, bool] = {}
     for key, patterns in JOBSERVE_REQUIRED_DROPDOWN_PATTERNS.items():
         result[key] = any(
-            any(re.search(pattern, " ".join(str(select.get(part) or "") for part in ["label", "name", "id", "placeholder"]), re.I) for pattern in patterns)
+            _select_matches_required_dropdown(key, select)
+            or any(re.search(pattern, " ".join(str(select.get(part) or "") for part in ["label", "name", "id", "placeholder"]), re.I) for pattern in patterns)
             for select in selects
         )
     return result
+
+
+def _select_matches_required_dropdown(key: str, select: dict[str, Any]) -> bool:
+    options = [_normalize_select_text(str(option)) for option in select.get("options") or []]
+    option_text = " | ".join(options)
+    if key == "availability_notice":
+        return "immediate" in options and any("week" in option for option in options)
+    if key == "salary_expectation_gbp":
+        return any("per hour" in option for option in options) or any("100 000" in option or "75 000" in option for option in options)
+    if key == "travel_distance_miles":
+        return any("50" in option for option in options) and any(token in option_text for token in ["miles", "up to", "to 30"])
+    if key == "work_authorization":
+        return "uk citizen" in options and any("sponsor" in option for option in options)
+    return False
 
 
 def _run_jobserve_search_to_apply(
@@ -3807,7 +3837,7 @@ def _handle_required_dropdown(
         unfilled_required.append(field_name)
         mapped_fields[key] = {"mapped": False, "reason": "profile value could not be converted to JobServe option", "value": candidate.value}
         return
-    if _select_dropdown_by_label_patterns(page, label_patterns, option, field_name=field_name, diagnostics=select_diagnostics):
+    if _select_dropdown_by_label_patterns(page, label_patterns, option, field_name=field_name, diagnostics=select_diagnostics) or _select_required_dropdown_by_options(page, key, candidate.value, option, field_name=field_name, diagnostics=select_diagnostics):
         filled.append(field_name)
         mapped_fields[key] = {"mapped": True, "label": field_name, "target_option": option}
         return
@@ -3842,6 +3872,78 @@ def _select_dropdown_by_label_patterns(
         if _select_locator_option(locator, visible_text, field_name=field_name or visible_text, label_pattern=pattern, diagnostics=diagnostics):
             return True
     return False
+
+
+def _select_required_dropdown_by_options(
+    page,
+    key: str,
+    raw_value: Any,
+    visible_text: str,
+    *,
+    field_name: str,
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> bool:
+    try:
+        locators = page.locator("select").all()
+    except Exception:  # noqa: BLE001
+        return False
+    for locator in locators:
+        try:
+            options = locator.evaluate(
+                """element => Array.from(element.options || []).map((option, index) => ({
+                    index,
+                    label: option.label || option.textContent || '',
+                    text: option.textContent || '',
+                    value: option.value || ''
+                }))""",
+                timeout=1000,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        select_signature = {"options": [str(option.get("label") or option.get("text") or "") for option in options]}
+        if not _select_matches_required_dropdown(key, select_signature):
+            continue
+        target = _required_dropdown_target_for_options(key, raw_value, visible_text, options)
+        if not target:
+            continue
+        target_option = next((option for option in options if str(option.get("label") or option.get("text") or "") == target), None)
+        if target_option is None:
+            continue
+        selected, failure_reason = _select_option_candidate(locator, target_option, target)
+        diagnostic = {
+            "field": field_name,
+            "label_pattern": f"{key}:options",
+            "target": target,
+            "available_options": options,
+            "selected_option": target_option if selected else None,
+            "strategy": "option_signature",
+            "success": selected,
+            "failure_reason": failure_reason,
+        }
+        if diagnostics is not None:
+            diagnostics.append(diagnostic)
+        if selected:
+            return True
+    return False
+
+
+def _required_dropdown_target_for_options(key: str, raw_value: Any, visible_text: str, options: list[dict[str, Any]]) -> str | None:
+    labels = [str(option.get("label") or option.get("text") or "") for option in options]
+    normalized = [_normalize_select_text(label) for label in labels]
+    if key == "availability_notice":
+        return _option_label_by_normalized(labels, normalized, _normalize_select_text(str(raw_value))) or _option_label_by_normalized(labels, normalized, _normalize_select_text(visible_text))
+    if key == "salary_expectation_gbp":
+        return _salary_option_for_available_options(str(raw_value), labels)
+    if key == "travel_distance_miles":
+        return _travel_option_for_available_options(str(raw_value), labels)
+    return _option_label_by_normalized(labels, normalized, _normalize_select_text(visible_text))
+
+
+def _option_label_by_normalized(labels: list[str], normalized_labels: list[str], target: str) -> str | None:
+    for label, normalized in zip(labels, normalized_labels):
+        if normalized == target:
+            return label
+    return None
 
 
 def _select_locator_option(locator, visible_text: str, *, field_name: str, label_pattern: str, diagnostics: list[dict[str, Any]] | None = None) -> bool:
@@ -3972,6 +4074,22 @@ def salary_range_label(value: str) -> str | None:
     return None
 
 
+def _salary_option_for_available_options(value: str, labels: list[str]) -> str | None:
+    amount = _int_value(value)
+    if amount is None:
+        return None
+    normalized = [_normalize_select_text(label) for label in labels]
+    annual = salary_range_label(value)
+    if annual:
+        annual_match = _option_label_by_normalized(labels, normalized, _normalize_select_text(annual))
+        if annual_match:
+            return annual_match
+    if any("per hour" in option for option in normalized):
+        hourly = amount / 1920
+        return _numeric_range_option(hourly, labels)
+    return _numeric_range_option(amount, labels)
+
+
 def travel_distance_label(value: str) -> str | None:
     miles = _int_value(value)
     if miles is None:
@@ -3985,6 +4103,48 @@ def travel_distance_label(value: str) -> str | None:
     if miles <= 50:
         return "31 to 50"
     return "50+"
+
+
+def _travel_option_for_available_options(value: str, labels: list[str]) -> str | None:
+    miles = _int_value(value)
+    if miles is None:
+        return None
+    normalized = [_normalize_select_text(label) for label in labels]
+    direct = travel_distance_label(value)
+    direct_match = _option_label_by_normalized(labels, normalized, _normalize_select_text(direct)) if direct else None
+    if direct_match:
+        return direct_match
+    for label in labels:
+        numbers = [int(item.replace(",", "")) for item in re.findall(r"\d[\d,]*", label)]
+        if not numbers:
+            continue
+        normalized_label = _normalize_select_text(label)
+        if "up to" in normalized_label and miles <= max(numbers):
+            return label
+        if len(numbers) >= 2 and min(numbers) <= miles <= max(numbers):
+            return label
+        if "50" in normalized_label and "+" in label and miles >= 50:
+            return label
+    return None
+
+
+def _numeric_range_option(value: float, labels: list[str]) -> str | None:
+    fallback_highest: tuple[float, str] | None = None
+    for label in labels:
+        numbers = [float(item.replace(",", "")) for item in re.findall(r"\d[\d,]*", label)]
+        if not numbers:
+            continue
+        upper = max(numbers)
+        if fallback_highest is None or upper > fallback_highest[0]:
+            fallback_highest = (upper, label)
+        normalized_label = _normalize_select_text(label)
+        if len(numbers) >= 2 and min(numbers) <= value <= max(numbers):
+            return label
+        if "up to" in normalized_label and value <= upper:
+            return label
+        if (">" in label or "+" in label) and value >= upper:
+            return label
+    return fallback_highest[1] if fallback_highest and value > fallback_highest[0] else None
 
 
 def _int_value(value: str) -> int | None:

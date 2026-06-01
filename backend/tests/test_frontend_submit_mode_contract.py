@@ -67,3 +67,12 @@ def test_ui_shows_orchestration_summary() -> None:
     assert "Focused application" in page
     assert "Attempt" in page
     assert "Retry same application after deploy" in page
+
+
+def test_ui_polls_autonomous_orchestration_status() -> None:
+    page = (REPO_ROOT / "frontend" / "src" / "app" / "applications" / "page.tsx").read_text()
+
+    assert "normaliseAutonomousResult" in page
+    assert "api.autonomousRealSubmitStatus()" in page
+    assert '["queued", "running"].includes(autonomousResult.status)' in page
+    assert "setAutonomousResult(normaliseAutonomousResult(status.last_result, autonomousResult))" in page

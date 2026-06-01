@@ -1823,6 +1823,42 @@ def test_review_only_leaves_missing_dropdown_blank() -> None:
     assert "Availability notice missing" in warnings
 
 
+def test_generated_jobserve_dropdowns_are_selected_by_option_sets() -> None:
+    warnings: list[str] = []
+    filled: list[str] = []
+    unfilled_required: list[str] = []
+    diagnostics: list[dict] = []
+    page = _FakeSelectPage(["Immediate", "1 Week", "2 Weeks", "3 Weeks"])
+
+    apply_agent._handle_required_dropdown(
+        page,
+        {"availability_notice": apply_agent.FieldCandidate("availability_notice", "Immediate", "fixture")},
+        "availability_notice",
+        [r"availability"],
+        lambda value: value,
+        "Availability notice",
+        "Availability notice missing",
+        filled,
+        unfilled_required,
+        warnings,
+        diagnostics,
+    )
+
+    assert filled == ["Availability notice"]
+    assert unfilled_required == []
+    assert page.selected == "Immediate"
+
+
+def test_salary_and_travel_generated_dropdowns_choose_matching_ranges() -> None:
+    hourly_page = _FakeSelectPage(["0 - £10 Per Hour", "£10 - £20 Per Hour", "£20 - £30 Per Hour", "£30 - £40 Per Hour", "£40 - £50 Per Hour", ">£100"])
+    travel_page = _FakeSelectPage(["Up to 5", "Up to 15", "Up to 30", "Up to 50", "50+"])
+
+    assert apply_agent._select_required_dropdown_by_options(hourly_page, "salary_expectation_gbp", "65000", "£50,000 - £75,000", field_name="Salary expectation")
+    assert apply_agent._select_required_dropdown_by_options(travel_page, "travel_distance_miles", "25", "16 to 30", field_name="Travel distance")
+    assert hourly_page.selected == "£30 - £40 Per Hour"
+    assert travel_page.selected == "Up to 30"
+
+
 def test_default_threshold_is_80(db_session) -> None:
     user = User(email="threshold@example.invalid")
     db_session.add(user)
@@ -2360,6 +2396,18 @@ class _FakeSelectPage:
 
     def get_by_label(self, pattern):
         return _FakeSelectLocator(self)
+
+    def locator(self, selector):
+        assert selector == "select"
+        return _FakeSelectCollection(self)
+
+
+class _FakeSelectCollection:
+    def __init__(self, page: _FakeSelectPage) -> None:
+        self.page = page
+
+    def all(self):
+        return [_FakeSelectLocator(self.page)]
 
 
 class _FakeSelectLocator:

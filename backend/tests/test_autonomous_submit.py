@@ -224,6 +224,37 @@ def test_success_text_required_before_marking_submitted(db_session, monkeypatch)
     assert diagnostics
 
 
+def test_autonomous_status_exposes_running_canary_progress(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job()
+    db_session.add_all([user, job])
+    db_session.commit()
+    observed: dict = {}
+
+    def running_submit(db, candidate_job, candidate_user, **kwargs):
+        db.refresh(candidate_job)
+        candidate_job.assisted_result = {
+            **(candidate_job.assisted_result or {}),
+            "progress": {"current_step": "field_fill_start", "elapsed_ms": 123, "last_heartbeat_at": "2026-06-01T21:00:00+00:00"},
+            "running_step": "field_fill_start",
+        }
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(candidate_job, "assisted_result")
+        db.commit()
+        observed.update(autonomous_submit.autonomous_submit_status(db, candidate_user))
+        raise RuntimeError("stop after progress")
+
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", running_submit)
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert observed["last_result"]["status"] == "running"
+    assert observed["last_result"]["progress"]["current_step"] == "autonomous_submit_started"
+    assert observed["last_result"]["application_id"] == job.id
+
+
 def test_first_failure_stops_run(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
     monkeypatch.setattr(settings, "max_autonomous_real_submits_per_run", 1)
