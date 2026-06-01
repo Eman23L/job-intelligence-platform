@@ -3069,7 +3069,7 @@ def _fill_jobserve_application_form(
     form_inventory = _inventory_context(context)
     profile_diagnostics.setdefault("mapped_fields", {})
     email = candidates.get("email")
-    email_label = _fill_by_label_patterns(context, [r"email address", r"email"], email)
+    email_label = _fill_jobserve_email_field(context, email)
     if email_label:
         filled.append("Email Address")
         flow["email_filled"] = True
@@ -3241,7 +3241,30 @@ def _handle_optional_dropdown_if_present(
 def _ensure_confirmation_email_checked(page, flow: dict[str, Any]) -> None:
     diagnostic: dict[str, Any] = {}
     flow["confirmation_email_checked"] = _set_checkbox_by_label(page, [r"send confirmation.*email", r"confirmation.*email"], checked=True, diagnostic=diagnostic)
+    if not flow["confirmation_email_checked"]:
+        flow["confirmation_email_checked"] = _check_jobserve_generated_confirmation_checkbox(page, diagnostic)
     flow["confirmation_checkbox_diagnostic"] = diagnostic
+
+
+def _check_jobserve_generated_confirmation_checkbox(page, diagnostic: dict[str, Any]) -> bool:
+    for selector in [
+        'input[type="checkbox"][name*="rptAppMand"][name*="ctl04"]',
+        'input[type="checkbox"][name*="ctl04"]',
+        'input[type="checkbox"][name*="rptAppMand"]',
+    ]:
+        try:
+            locator = page.locator(selector).first
+            if not locator.count():
+                continue
+            checked = locator.is_checked(timeout=500)
+            if not checked:
+                locator.check(timeout=1500)
+            diagnostic.update({"checkbox_found": True, "strategy": "jobserve_generated_selector", "selector": selector, "initial_checked": checked, "final_checked": True, "result": "checked_after_selector"})
+            return True
+        except Exception as exc:  # noqa: BLE001
+            diagnostic["generated_selector_error"] = str(exc)
+            continue
+    return False
 
 
 def _uploaded_cv_display_name(page, file_name: str) -> str | None:
@@ -3456,7 +3479,7 @@ def _run_jobserve_modal(
         "last_name": [r"last name", r"surname"],
         "phone": [r"phone", r"mobile"],
     }.items():
-        label = _fill_by_label_patterns(context, patterns, candidates.get(key))
+        label = _fill_jobserve_email_field(context, candidates.get(key)) if key == "email" else _fill_by_label_patterns(context, patterns, candidates.get(key))
         if label:
             filled.append(label)
             profile_diagnostics.setdefault("mapped_fields", {})[key] = {"mapped": True, "label": label}
@@ -3699,10 +3722,36 @@ def _fill_by_label_patterns(page, patterns: list[str], candidate: FieldCandidate
     if candidate is None:
         return None
     for pattern in patterns:
-        locator = page.get_by_label(re.compile(pattern, re.I)).first
         try:
+            locator = page.get_by_label(re.compile(pattern, re.I)).first
             locator.fill(candidate.value, timeout=1500)
             return pattern
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _fill_jobserve_email_field(page, candidate: FieldCandidate | None) -> str | None:
+    label = _fill_by_label_patterns(page, [r"email address", r"email"], candidate)
+    if label:
+        return label
+    if candidate is None:
+        return None
+    for selector in [
+        'input[type="email"]',
+        'input[name*="email" i]',
+        'input[id*="email" i]',
+        'input#Q0006_ans',
+        'input[name*="Q0006_ans"]',
+        'input[type="text"][name*="rptAppMand"][name*="Q0006_ans"]',
+        'input[type="text"][id^="Q"][name*="rptAppMand"]',
+    ]:
+        try:
+            locator = page.locator(selector).first
+            if not locator.count():
+                continue
+            locator.fill(candidate.value, timeout=1500)
+            return selector
         except Exception:  # noqa: BLE001
             continue
     return None

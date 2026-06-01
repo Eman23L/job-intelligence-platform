@@ -684,13 +684,23 @@ def _safe_diagnostic_too_old(assisted: dict[str, Any]) -> bool:
 def _new_code_and_fresh_safe_diagnostic(assisted: dict[str, Any]) -> bool:
     result = assisted.get("autonomous_real_submit_result") if isinstance(assisted.get("autonomous_real_submit_result"), dict) else {}
     latest = assisted.get("latest_safe_diagnostic") if isinstance(assisted.get("latest_safe_diagnostic"), dict) else {}
-    if not latest_safe_diagnostic_passed(type("JobLike", (), {"assisted_result": assisted})()):
-        return False
     current_revision = _code_revision()
     previous_revision = result.get("code_revision")
+    if current_revision and previous_revision and current_revision != previous_revision and _previous_attempt_was_interrupted(assisted, result):
+        return True
+    if not latest_safe_diagnostic_passed(type("JobLike", (), {"assisted_result": assisted})()):
+        return False
     latest_completed = _parse_time(latest.get("completed_at"))
     attempt_created = _parse_time(result.get("created_at"))
     return bool(current_revision and previous_revision and current_revision != previous_revision and latest_completed and attempt_created and latest_completed > attempt_created)
+
+
+def _previous_attempt_was_interrupted(assisted: dict[str, Any], result: dict[str, Any]) -> bool:
+    failed_phase = str(result.get("failed_phase") or assisted.get("final_error") or "")
+    exact_error = str(result.get("exact_error") or assisted.get("final_error") or "")
+    status = str(result.get("status") or assisted.get("status") or "")
+    text = " ".join([failed_phase, exact_error, status]).lower()
+    return any(marker in text for marker in ["worker_shutdown", "work-horse", "warm shut", "killed", "stalled", "timeout"])
 
 
 def _code_revision() -> str:

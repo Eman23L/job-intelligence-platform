@@ -871,6 +871,7 @@ def test_autonomous_canary_endpoint_queues_background_work(db_session, monkeypat
     assert enqueued
     assert enqueued[0][0] is applications_api.run_autonomous_real_submit_canary_background
     assert enqueued[0][1][0] == user.id
+    assert str(enqueued[0][2]["job_id"]).startswith(f"autonomous-real-submit-{user.id}-")
 
 
 def test_assist_apply_endpoint_queues_when_queue_enabled(monkeypatch) -> None:
@@ -1075,6 +1076,70 @@ def test_account_registration_toggles_are_disabled_if_present() -> None:
     assert controls[0].unchecked is True
     assert controls[1].unchecked is False
     assert any("Disabled option" in warning for warning in warnings)
+
+
+def test_jobserve_generated_email_field_is_filled_without_label() -> None:
+    class GeneratedEmailLocator:
+        value = ""
+
+        def count(self):
+            return 1
+
+        def fill(self, value, timeout=None):
+            self.value = value
+
+    class GeneratedEmailPage:
+        def __init__(self):
+            self.generated = GeneratedEmailLocator()
+
+        def get_by_label(self, pattern):
+            raise RuntimeError("no label")
+
+        def locator(self, selector):
+            if selector == 'input#Q0006_ans':
+                return SimpleNamespace(first=self.generated)
+            return SimpleNamespace(first=SimpleNamespace(count=lambda: 0, fill=lambda *args, **kwargs: None))
+
+    page = GeneratedEmailPage()
+    label = apply_agent._fill_jobserve_email_field(page, apply_agent.FieldCandidate("email", "user@example.com", "fixture"))
+
+    assert label == 'input#Q0006_ans'
+    assert page.generated.value == "user@example.com"
+
+
+def test_jobserve_generated_confirmation_checkbox_is_checked() -> None:
+    class GeneratedCheckbox:
+        checked = False
+
+        def count(self):
+            return 1
+
+        def is_checked(self, timeout=None):
+            return self.checked
+
+        def check(self, timeout=None):
+            self.checked = True
+
+    class GeneratedCheckboxPage:
+        def __init__(self):
+            self.checkbox = GeneratedCheckbox()
+
+        def get_by_label(self, pattern):
+            raise RuntimeError("no label")
+
+        def get_by_text(self, pattern):
+            raise RuntimeError("no text")
+
+        def locator(self, selector):
+            if selector == 'input[type="checkbox"][name*="rptAppMand"][name*="ctl04"]':
+                return SimpleNamespace(first=self.checkbox)
+            return SimpleNamespace(first=SimpleNamespace(count=lambda: 0))
+
+    flow = {}
+    apply_agent._ensure_confirmation_email_checked(GeneratedCheckboxPage(), flow)
+
+    assert flow["confirmation_email_checked"] is True
+    assert flow["confirmation_checkbox_diagnostic"]["strategy"] == "jobserve_generated_selector"
 
 
 def test_availability_dropdown_selects_immediate() -> None:

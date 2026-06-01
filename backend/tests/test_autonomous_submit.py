@@ -85,6 +85,22 @@ def test_no_duplicate_submit(monkeypatch) -> None:
     assert report["failed_phase"] == "not_previously_autonomous_attempted"
 
 
+def test_interrupted_previous_attempt_can_retry_after_deploy(monkeypatch) -> None:
+    monkeypatch.setattr(autonomous_submit, "_code_revision", lambda: "new-revision")
+    assisted = {
+        "autonomous_real_submit_attempted": True,
+        "autonomous_real_submit_result": {
+            "status": "failed",
+            "failed_phase": "worker_shutdown_during_apply",
+            "exact_error": "Render warm shut down requested",
+            "code_revision": "old-revision",
+            "created_at": "2026-06-01T20:00:00+00:00",
+        },
+    }
+
+    assert autonomous_submit._new_code_and_fresh_safe_diagnostic(assisted) is True
+
+
 def test_success_text_required_before_marking_submitted(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
     user = User(email="user@example.com")

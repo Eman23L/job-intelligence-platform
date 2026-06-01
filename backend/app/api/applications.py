@@ -275,7 +275,7 @@ def run_autonomous_real_submit(background_tasks: BackgroundTasks, db: Session = 
             background_tasks,
             run_autonomous_real_submit_canary_background,
             user.id,
-            job_id=f"autonomous-real-submit-{user.id}",
+            job_id=f"autonomous-real-submit-{user.id}-{int(time.time() * 1000)}",
             job_timeout=settings.apply_timeout_seconds,
             result_ttl=settings.rq_result_ttl_seconds,
             failure_ttl=settings.rq_failure_ttl_seconds,
