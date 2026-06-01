@@ -579,6 +579,29 @@ def test_timeout_failure_counts_as_failed_attempt(db_session, monkeypatch) -> No
     assert "submit_stalled" in result["exact_error"]
 
 
+def test_named_timeout_uses_timeout_code_as_failed_phase(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
+    user = User(email="user@example.com")
+    job = _job(
+        assisted_result={
+            "latest_safe_diagnostic": _safe_diag(),
+            "progress": {"current_step": "availability_check_start"},
+            "running_step": "availability_check_start",
+            "debug_steps": [{"step": "availability_check_start"}],
+        }
+    )
+    db_session.add_all([user, job])
+    db_session.commit()
+    monkeypatch.setattr(autonomous_submit, "run_assist_apply_probe_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(autonomous_submit, "assist_apply_application", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("job_load_timeout")))
+
+    result = autonomous_submit.run_autonomous_real_submit_canary(db_session, user)
+
+    assert result["failed_phase"] == "job_load_timeout"
+    assert result["exact_error"] == "TimeoutError: job_load_timeout"
+    assert result["last_known_stage"] == "availability_check_start"
+
+
 def test_already_submitted_moves_on_safely(db_session, monkeypatch) -> None:
     monkeypatch.setattr(settings, "autonomous_real_submit_enabled", True)
     user = User(email="user@example.com")

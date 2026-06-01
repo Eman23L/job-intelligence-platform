@@ -825,6 +825,23 @@ def test_applications_endpoint_does_not_invoke_playwright(monkeypatch) -> None:
     assert response.status_code == 200
 
 
+def test_availability_check_is_not_treated_as_db_job_load_timeout(db_session, monkeypatch) -> None:
+    import time
+
+    user, job = _seed_application(db_session, jobserve=True)
+
+    def slow_availability(db, candidate):
+        time.sleep(0.02)
+        return SimpleNamespace(availability_status="active", availability_reason="fixture")
+
+    monkeypatch.setattr(apply_agent, "check_job_availability", slow_availability)
+    monkeypatch.setattr(apply_agent, "DB_LOOKUP_TIMEOUT_SECONDS", 0.001)
+
+    result = apply_agent._timed_availability_check(db_session, job)
+
+    assert result.availability_status == "active"
+
+
 def test_applications_endpoint_returns_cached_data_on_list_failure(db_session, monkeypatch) -> None:
     user, _job = _seed_application(db_session, jobserve=True)
     applications_api._APPLICATIONS_CACHE = None

@@ -437,6 +437,13 @@ def _attempt_one(db: Session, job: Job, user: User, verification_report: dict[st
 def _classify_autonomous_submit_exception(exc: Exception) -> tuple[str, str, str, dict[str, Any]]:
     message = getattr(exc, "message", None) or str(exc)
     details = dict(getattr(exc, "details", {}) or {})
+    if isinstance(exc, TimeoutError) and message.endswith("_timeout"):
+        return (
+            message,
+            f"{type(exc).__name__}: {message}",
+            "Inspect the timed stage and remove blocking work or increase the specific operation timeout only if appropriate.",
+            details,
+        )
     if "using Playwright Sync API inside the asyncio loop" in message or "Sync API inside the asyncio loop" in message:
         return (
             "playwright_api_mismatch",
@@ -459,6 +466,7 @@ def _classify_autonomous_submit_exception(exc: Exception) -> tuple[str, str, str
 
 _CANARY_STAGES = {
     "browser_launch",
+    "availability_check",
     "jobserve_navigation",
     "apply_button_lookup",
     "apply_button_click",

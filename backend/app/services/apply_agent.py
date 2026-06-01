@@ -103,7 +103,16 @@ def assist_apply_application(db: Session, job: Job, user: User, *, mode: str = "
         progress_callback("loading_job", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         progress_callback("job_loaded", _assist_lookup_payload(job, user, profile, mode, debug_mode))
         _timed_db_operation("loading_job", lambda: _validate_application(job), db=db, application_id=job.id)
-        availability = _timed_db_operation("loading_job", lambda: check_job_availability(db, job), db=db, application_id=job.id)
+        progress_callback("availability_check_start", _assist_lookup_payload(job, user, profile, mode, debug_mode))
+        availability = _timed_availability_check(db, job)
+        progress_callback(
+            "availability_check_done",
+            {
+                **_assist_lookup_payload(job, user, profile, mode, debug_mode),
+                "availability_status": availability.availability_status,
+                "availability_reason": availability.availability_reason,
+            },
+        )
         if availability.availability_status != "active":
             raise ValueError(f"Application assistance blocked because job is {availability.availability_status}. {availability.availability_reason or ''}".strip())
         _validate_application(job)
@@ -546,6 +555,44 @@ def _timed_db_operation(name: str, operation: Callable[[], Any], *, db: Session 
     return result
 
 
+def _timed_availability_check(db: Session, job: Job):
+    started = time.perf_counter()
+    logger.info("availability_check_start application_id=%s database_host=%s pool_status=%s", job.id, _database_url_host(), _db_pool_status(db))
+    try:
+        result = check_job_availability(db, job)
+    except SQLAlchemyError as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.exception(
+            "availability_check_database_error application_id=%s duration_ms=%s database_host=%s pool_status=%s",
+            job.id,
+            duration_ms,
+            _database_url_host(),
+            _db_pool_status(db),
+        )
+        raise RuntimeError("database_lookup_error") from exc
+    except Exception:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.exception(
+            "availability_check_failed application_id=%s duration_ms=%s database_host=%s pool_status=%s",
+            job.id,
+            duration_ms,
+            _database_url_host(),
+            _db_pool_status(db),
+        )
+        raise
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "availability_check_done application_id=%s duration_ms=%s availability_status=%s availability_reason=%s database_host=%s pool_status=%s",
+        job.id,
+        duration_ms,
+        result.availability_status,
+        result.availability_reason,
+        _database_url_host(),
+        _db_pool_status(db),
+    )
+    return result
+
+
 def _db_operation_timeout_code(name: str) -> str:
     if name == "loading_application":
         return "application_load_timeout"
@@ -634,6 +681,8 @@ def update_queued_assist_metadata(db: Session, job: Job, *, rq_job_id: str, queu
 def _progress_message(step: str) -> str:
     if "browser" in step:
         return "browser startup"
+    if "availability" in step:
+        return "checking job availability"
     if "search" in step:
         return "waiting on JobServe"
     if "cv_upload" in step:
