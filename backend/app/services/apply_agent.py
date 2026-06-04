@@ -329,11 +329,11 @@ def _store_assist_failure(
     }
     result = AssistApplyResult(
         status="failed",
-        filled_fields=[],
-        unfilled_fields=[],
-        unfilled_required_fields=[],
-        uploaded_cv=False,
-        submitted=False,
+        filled_fields=list(existing.get("filled_fields") or []),
+        unfilled_fields=list(existing.get("unfilled_fields") or []),
+        unfilled_required_fields=list(existing.get("unfilled_required_fields") or []),
+        uploaded_cv=bool(existing.get("uploaded_cv", False)),
+        submitted=bool(existing.get("submitted", False)),
         warnings=[f"{error}: {message}" if error else message],
         screenshot_path=None,
         final_error=message,
@@ -3715,7 +3715,14 @@ def _run_jobserve_modal(
         _report_stage(progress_callback, "pre_submit_verification", "done", unfilled_required_fields=[], uploaded_cv=uploaded_cv)
         try:
             _report_stage(progress_callback, "final_submit_click", "start", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
-            apply_button.click(timeout=8000)
+            try:
+                apply_button.scroll_into_view_if_needed(timeout=3000)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                apply_button.click(timeout=8000)
+            except Exception:
+                apply_button.evaluate("(element) => element.click()", timeout=3000)
             _report_stage(progress_callback, "final_submit_click", "done", current_url=_safe_url(target_page), page_title=_safe_title(target_page))
         except Exception as exc:  # noqa: BLE001
             _raise_jobserve_stage(debug, target_page, browser, "final_submit_click", "Final JobServe Apply button could not be clicked.", target=target_page, exc=exc, extra={"jobserve_flow_diagnostics": dict(flow)})
@@ -4323,10 +4330,43 @@ def _page_and_frame_contexts(page) -> list[Any]:
 
 
 def _jobserve_apply_button(page):
-    buttons = page.get_by_role("button", name=re.compile(r"^apply$", re.I)).all()
-    if buttons:
-        return buttons[-1]
-    return page.locator("input[type=submit], button[type=submit]").last
+    selectors = [
+        'input[type=submit][value="Apply"]:visible:not(#btn2NoJS)',
+        'button[type=submit]:visible',
+        'input[type=button][value="Apply"]:visible',
+        'button:visible',
+        'input[type=submit]:visible:not(#btn2NoJS)',
+        'input[type=submit]:visible',
+    ]
+    role_buttons = page.get_by_role("button", name=re.compile(r"^apply$", re.I)).all()
+    for button in reversed(role_buttons):
+        try:
+            if button.is_visible(timeout=500):
+                return button
+        except Exception:  # noqa: BLE001
+            continue
+    for selector in selectors:
+        try:
+            candidates = page.locator(selector).all()
+        except Exception:  # noqa: BLE001
+            continue
+        for candidate in reversed(candidates):
+            try:
+                label = " ".join(
+                    [
+                        str(candidate.inner_text(timeout=300) or ""),
+                        str(candidate.get_attribute("value") or ""),
+                        str(candidate.get_attribute("aria-label") or ""),
+                        str(candidate.get_attribute("id") or ""),
+                    ]
+                )
+                if "apply" not in label.lower():
+                    continue
+                if candidate.is_visible(timeout=500):
+                    return candidate
+            except Exception:  # noqa: BLE001
+                continue
+    return page.locator('input[type=submit][value="Apply"], button[type=submit]').first
 
 
 def _wait_for_jobserve_submission_success(page, browser) -> str:

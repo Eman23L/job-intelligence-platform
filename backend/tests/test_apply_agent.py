@@ -345,6 +345,85 @@ def test_exception_during_jobserve_fill_persists_real_error(db_session, monkeypa
     assert any(step["step"] == "email_filled" for step in job.assisted_result["debug_steps"])
 
 
+def test_store_assist_failure_preserves_progress_payload(db_session) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    job.assisted_result = {
+        "status": "running",
+        "filled_fields": ["Email", "CV upload"],
+        "uploaded_cv": True,
+        "debug_steps": [{"step": "final_submit_click", "status": "start"}],
+        "screenshot_paths": ["before_submit.jpg"],
+        "html_snapshot_paths": ["before_submit.html"],
+        "progress": {"current_step": "final_submit_click"},
+    }
+    db_session.commit()
+
+    apply_agent._store_assist_failure(
+        db_session,
+        job,
+        "Final JobServe Apply button could not be clicked.",
+        error="final_submit_click",
+        running_step="final_submit_click",
+    )
+
+    db_session.refresh(job)
+    result = job.assisted_result
+    assert result["status"] == "failed"
+    assert result["filled_fields"] == ["Email", "CV upload"]
+    assert result["uploaded_cv"] is True
+    assert result["running_step"] == "final_submit_click"
+    assert result["progress"]["current_step"] == "final_submit_click"
+    assert result["debug_steps"] == [{"step": "final_submit_click", "status": "start"}]
+
+
+def test_jobserve_apply_button_prefers_visible_apply_over_hidden_nojs() -> None:
+    class FakeButton:
+        def __init__(self, *, text: str = "", value: str = "", visible: bool = True, element_id: str = "") -> None:
+            self.text = text
+            self.value = value
+            self.visible = visible
+            self.element_id = element_id
+
+        def is_visible(self, timeout=None):
+            return self.visible
+
+        def inner_text(self, timeout=None):
+            return self.text
+
+        def get_attribute(self, name):
+            return {"value": self.value, "aria-label": "", "id": self.element_id}.get(name)
+
+    class FakeLocator:
+        def __init__(self, buttons):
+            self._buttons = buttons
+
+        def all(self):
+            return self._buttons
+
+        @property
+        def first(self):
+            return self._buttons[0]
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.hidden_nojs = FakeButton(value="Apply", visible=False, element_id="btn2NoJS")
+            self.visible_apply = FakeButton(value="Apply", visible=True, element_id="btnApply")
+
+        def get_by_role(self, *_args, **_kwargs):
+            return FakeLocator([])
+
+        def locator(self, selector):
+            if selector == 'input[type=submit][value="Apply"]:visible:not(#btn2NoJS)':
+                return FakeLocator([self.visible_apply])
+            if selector == 'input[type=submit]:visible':
+                return FakeLocator([self.hidden_nojs])
+            return FakeLocator([])
+
+    page = FakePage()
+
+    assert apply_agent._jobserve_apply_button(page) is page.visible_apply
+
+
 def test_worker_early_crash_does_not_leave_application_running(monkeypatch) -> None:
     with apply_client(jobserve=True) as (_client, ids):
         monkeypatch.setattr(apply_agent, "SessionLocal", ids["Session"])

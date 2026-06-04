@@ -227,7 +227,7 @@ export default function ApplicationsPage() {
       latestPersisted = persisted;
       const displayedPersisted = workerProgressSeen(persisted) && persisted.status === "queued" ? { ...persisted, status: "running" } : persisted;
       setAssistResult({ jobTitle: current?.title ?? item.title, result: normaliseAssistResult(displayedPersisted) });
-      if (persisted.status !== "queued" && (!expectDebug || persisted.debug_mode || persisted.final_error || persisted.debug_steps?.length)) {
+      if (!["queued", "running"].includes(persisted.status) && (!expectDebug || persisted.debug_mode || persisted.final_error || persisted.debug_steps?.length)) {
         return persisted;
       }
     }
