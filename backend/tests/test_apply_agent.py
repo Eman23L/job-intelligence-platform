@@ -1815,6 +1815,26 @@ def test_jobserve_submit_success_message_detection_from_body_text() -> None:
         assert "Thank you" in apply_agent._wait_for_jobserve_submission_success(page, browser)
 
 
+def test_jobserve_post_submit_state_infers_acceptance_when_form_disappears() -> None:
+    with _playwright_page() as (page, browser):
+        page.set_content("<main><p>Your details have been sent to the advertiser.</p></main>")
+
+        state = apply_agent._jobserve_post_submit_state(page, browser)
+
+        assert state["submission_likely_accepted"] is True
+        assert state["visible_submit_count"] == 0
+
+
+def test_jobserve_post_submit_state_blocks_validation_error() -> None:
+    with _playwright_page() as (page, browser):
+        page.set_content('<form><p>Please upload your CV.</p><input type="file"><input type="submit" value="Apply"></form>')
+
+        state = apply_agent._jobserve_post_submit_state(page, browser)
+
+        assert state["submission_likely_accepted"] is False
+        assert state["failure_text"]
+
+
 def test_jobserve_registration_toggle_unknown_defaults_clicked_off() -> None:
     warnings: list[str] = []
     with _playwright_page() as (page, _browser):
