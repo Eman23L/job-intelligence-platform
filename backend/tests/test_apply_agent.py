@@ -376,6 +376,38 @@ def test_store_assist_failure_preserves_progress_payload(db_session) -> None:
     assert result["debug_steps"] == [{"step": "final_submit_click", "status": "start"}]
 
 
+def test_assist_progress_persists_filled_fields_for_later_failure(db_session) -> None:
+    user, job = _seed_application(db_session, jobserve=True)
+    started = time.perf_counter()
+
+    apply_agent._persist_assist_progress(
+        db_session,
+        job,
+        "after_filling",
+        {
+            "filled_fields": ["Email Address", "CV upload"],
+            "unfilled_fields": [],
+            "unfilled_required_fields": [],
+            "uploaded_cv": True,
+        },
+        started,
+    )
+    apply_agent._store_assist_failure(
+        db_session,
+        job,
+        "JobServe submission success confirmation was not detected.",
+        error="success_confirmation",
+        running_step="success_confirmation_start",
+    )
+
+    db_session.refresh(job)
+    result = job.assisted_result
+    assert result["status"] == "failed"
+    assert result["filled_fields"] == ["Email Address", "CV upload"]
+    assert result["uploaded_cv"] is True
+    assert result["unfilled_required_fields"] == []
+
+
 def test_jobserve_apply_button_prefers_visible_apply_over_hidden_nojs() -> None:
     class FakeButton:
         def __init__(self, *, text: str = "", value: str = "", visible: bool = True, element_id: str = "") -> None:

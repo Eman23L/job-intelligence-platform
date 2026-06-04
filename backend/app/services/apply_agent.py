@@ -620,6 +620,12 @@ def _progress_timeout_code(step: str) -> str:
 
 def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str, Any], started_perf: float) -> None:
     existing = job.assisted_result or {}
+    filled_fields = payload.get("filled_fields") if isinstance(payload.get("filled_fields"), list) else existing.get("filled_fields", [])
+    unfilled_fields = payload.get("unfilled_fields") if isinstance(payload.get("unfilled_fields"), list) else existing.get("unfilled_fields", [])
+    unfilled_required_fields = (
+        payload.get("unfilled_required_fields") if isinstance(payload.get("unfilled_required_fields"), list) else existing.get("unfilled_required_fields", [])
+    )
+    uploaded_cv = bool(payload.get("uploaded_cv")) if "uploaded_cv" in payload else bool(existing.get("uploaded_cv", False))
     progress = {
         "current_step": step,
         "elapsed_ms": int((time.perf_counter() - started_perf) * 1000),
@@ -635,6 +641,10 @@ def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str
             "current_url": payload.get("current_url") or autonomous_result.get("current_url"),
             "page_title": payload.get("page_title") or autonomous_result.get("page_title"),
             "progress": progress,
+            "filled_fields": filled_fields,
+            "unfilled_fields": unfilled_fields,
+            "unfilled_required_fields": unfilled_required_fields,
+            "uploaded_cv": uploaded_cv,
             "detected_buttons": payload.get("detected_buttons") or autonomous_result.get("detected_buttons") or [],
             "detected_fields": payload.get("detected_fields") or autonomous_result.get("detected_fields") or [],
             "detected_selects": payload.get("detected_selects") or autonomous_result.get("detected_selects") or [],
@@ -645,10 +655,10 @@ def _persist_assist_progress(db: Session, job: Job, step: str, payload: dict[str
     job.assisted_result = {
         **existing,
         "status": "running" if existing.get("status") in {None, "queued"} else existing.get("status"),
-        "filled_fields": existing.get("filled_fields", []),
-        "unfilled_fields": existing.get("unfilled_fields", []),
-        "unfilled_required_fields": existing.get("unfilled_required_fields", []),
-        "uploaded_cv": existing.get("uploaded_cv", False),
+        "filled_fields": filled_fields,
+        "unfilled_fields": unfilled_fields,
+        "unfilled_required_fields": unfilled_required_fields,
+        "uploaded_cv": uploaded_cv,
         "submitted": existing.get("submitted", False),
         "warnings": existing.get("warnings", []),
         "screenshot_path": existing.get("screenshot_path"),
