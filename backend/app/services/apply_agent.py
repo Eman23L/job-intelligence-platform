@@ -3744,30 +3744,16 @@ def _run_jobserve_modal(
             _report_stage(progress_callback, "success_confirmation", "done", current_url=_safe_url(target_page), page_title=_safe_title(target_page), confirmation_text=confirmation_text)
         except Exception as exc:  # noqa: BLE001
             post_submit_state = _jobserve_post_submit_state(target_page, browser)
-            if post_submit_state.get("submission_likely_accepted"):
-                confirmation_text = str(post_submit_state.get("matched_text") or "Submission likely accepted after final Apply click.")
-                warnings.append("JobServe did not show a standard confirmation message, but the post-submit form state indicates the application was accepted.")
-                _report_stage(
-                    progress_callback,
-                    "success_confirmation",
-                    "done",
-                    current_url=_safe_url(target_page),
-                    page_title=_safe_title(target_page),
-                    confirmation_text=confirmation_text,
-                    inferred=True,
-                    post_submit_state=post_submit_state,
-                )
-            else:
-                _raise_jobserve_stage(
-                    debug,
-                    target_page,
-                    browser,
-                    "success_confirmation",
-                    "JobServe submission success confirmation was not detected.",
-                    target=target_page,
-                    exc=exc,
-                    extra={"jobserve_flow_diagnostics": dict(flow), "post_submit_state": post_submit_state},
-                )
+            _raise_jobserve_stage(
+                debug,
+                target_page,
+                browser,
+                "success_confirmation",
+                "JobServe submission success confirmation was not detected.",
+                target=target_page,
+                exc=exc,
+                extra={"jobserve_flow_diagnostics": dict(flow), "post_submit_state": post_submit_state},
+            )
         debug.screenshot("after_final_submit")
         debug.html("after_final_submit", target_page)
         flow["confirmation_text"] = confirmation_text
