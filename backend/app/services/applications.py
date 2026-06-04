@@ -23,7 +23,7 @@ TERMINAL_APPLICATION_STATUSES = {"applied", "skipped"}
 ACTIVE_RUN_STATUSES = {"running", "queued"}
 ASSIST_QUEUE_TIMEOUT = timedelta(minutes=2)
 ASSIST_WORKER_STARTED_HANDOFF_TIMEOUT = timedelta(seconds=30)
-ASSIST_WORKER_RUNNING_TIMEOUT = timedelta(minutes=2)
+ASSIST_WORKER_RUNNING_TIMEOUT = timedelta(minutes=15)
 logger = logging.getLogger(__name__)
 
 

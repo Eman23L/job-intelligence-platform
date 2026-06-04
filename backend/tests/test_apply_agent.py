@@ -1808,6 +1808,13 @@ def test_jobserve_submit_success_message_detection() -> None:
         apply_agent._wait_for_jobserve_submission_success(page, browser)
 
 
+def test_jobserve_submit_success_message_detection_from_body_text() -> None:
+    with _playwright_page() as (page, browser):
+        page.set_content("<main><p>Thank you for your application.</p></main>")
+
+        assert "Thank you" in apply_agent._wait_for_jobserve_submission_success(page, browser)
+
+
 def test_jobserve_registration_toggle_unknown_defaults_clicked_off() -> None:
     warnings: list[str] = []
     with _playwright_page() as (page, _browser):

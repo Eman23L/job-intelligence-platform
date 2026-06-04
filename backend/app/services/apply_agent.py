@@ -4373,6 +4373,12 @@ def _wait_for_jobserve_submission_success(page, browser) -> str:
     success_patterns = [
         re.compile(r"your application has been submitted", re.I),
         re.compile(r"application (?:has been )?received", re.I),
+        re.compile(r"application (?:has been )?sent", re.I),
+        re.compile(r"application (?:has been )?successfully", re.I),
+        re.compile(r"successfully applied", re.I),
+        re.compile(r"thank you for (?:your )?application", re.I),
+        re.compile(r"thank you.*(?:applying|application)", re.I | re.S),
+        re.compile(r"your cv (?:has been )?sent", re.I),
         re.compile(r"already applied", re.I),
         re.compile(r"already submitted", re.I),
         re.compile(r"you have applied", re.I),
@@ -4392,6 +4398,16 @@ def _wait_for_jobserve_submission_success(page, browser) -> str:
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
                     continue
+            try:
+                body_text = str(context.locator("body").inner_text(timeout=1000) or "")
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                body_text = ""
+            if body_text:
+                for pattern in success_patterns:
+                    match = pattern.search(body_text)
+                    if match:
+                        return match.group(0)
         page.wait_for_timeout(500)
     raise RuntimeError("JobServe submission confirmation not detected.") from last_exc
 
@@ -4400,7 +4416,7 @@ def _jobserve_confirmation_means_submitted(value: str | None) -> bool:
     return bool(
         value
         and re.search(
-            r"your application has been submitted|application (?:has been )?received|already applied|already submitted|you have applied",
+            r"your application has been submitted|application (?:has been )?(?:received|sent|successfully)|successfully applied|thank you for (?:your )?application|thank you.*(?:applying|application)|your cv (?:has been )?sent|already applied|already submitted|you have applied",
             value,
             flags=re.I,
         )

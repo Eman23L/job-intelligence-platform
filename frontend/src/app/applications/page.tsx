@@ -12,6 +12,8 @@ import { ApiError, api, apiConfig } from "@/lib/api";
 import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyResult, AutonomousRealSubmitRunResult, AutonomousRealSubmitStatus, JobScorecard } from "@/types/api";
 
 const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
+const ASSIST_APPLY_POLL_ATTEMPTS = 450;
+const ASSIST_APPLY_POLL_INTERVAL_MS = 2000;
 
 export default function ApplicationsPage() {
   const [data, setData] = useState<ApplicationsList | null>(null);
@@ -213,8 +215,8 @@ export default function ApplicationsPage() {
 
   const pollAssistResult = async (item: ApplicationItem, fallback: AssistApplyResult, expectDebug: boolean) => {
     let latestPersisted: AssistApplyResult | null = null;
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      await sleep(2000);
+    for (let attempt = 0; attempt < ASSIST_APPLY_POLL_ATTEMPTS; attempt += 1) {
+      await sleep(ASSIST_APPLY_POLL_INTERVAL_MS);
       const latest = await api.applications();
       setData(latest);
       setThreshold(latest.minimum_apply_score);
@@ -238,17 +240,17 @@ export default function ApplicationsPage() {
       ...normaliseAssistResult(fallback),
       status: "failed",
       final_error: "stale_queue_timeout",
-      warnings: [...(fallback.warnings ?? []), "Worker did not pick up the assisted apply job within 2 minutes."],
+      warnings: [...(fallback.warnings ?? []), "Worker did not pick up the assisted apply job within 15 minutes."],
       progress: {
         ...(fallback.progress ?? {}),
         current_step: "stale_queue_timeout",
-        message: "Worker did not pick up the assisted apply job within 2 minutes."
+        message: "Worker did not pick up the assisted apply job within 15 minutes."
       },
       jobserve_flow_diagnostics: {
         ...(fallback.jobserve_flow_diagnostics ?? {}),
         queue_failure: {
           error: "stale_queue_timeout",
-          message: "Worker did not pick up the assisted apply job within 2 minutes."
+          message: "Worker did not pick up the assisted apply job within 15 minutes."
         }
       }
     };
@@ -330,7 +332,7 @@ export default function ApplicationsPage() {
           : displayedResult.status === "queued"
             ? "Assisted apply queued. Waiting for worker diagnostics."
             : displayedResult.final_error === "stale_queue_timeout"
-              ? "Worker did not pick up the assisted apply job within 2 minutes."
+              ? "Worker did not pick up the assisted apply job within 15 minutes."
             : "Assisted apply diagnostics loaded. Review the debug details before taking the next action."
       });
     } catch (err) {
@@ -938,7 +940,16 @@ function workerProgressSeen(result: AssistApplyResult): boolean {
     "working_status_selected",
     "cv_upload_started",
     "cv_uploaded",
+    "pre_submit_verification",
+    "pre_submit_verification_start",
+    "pre_submit_verification_done",
+    "final_submit_click",
+    "final_submit_click_start",
+    "final_submit_click_done",
     "final_apply_clicked",
+    "success_confirmation",
+    "success_confirmation_start",
+    "success_confirmation_done",
     "submitted_message_seen",
     "account_toggle_disabled",
     "modal_closed",
