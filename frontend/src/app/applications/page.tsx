@@ -50,7 +50,8 @@ export default function ApplicationsPage() {
       return;
     }
     let cancelled = false;
-    const poll = async () => {
+    let inFlight = false;
+    const pollOnce = async () => {
       try {
         const status = await api.autonomousRealSubmitStatus();
         if (cancelled) {
@@ -62,6 +63,17 @@ export default function ApplicationsPage() {
         }
       } catch {
         // Keep the current summary visible; the next interval can recover.
+      }
+    };
+    const poll = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await pollOnce();
+      } finally {
+        inFlight = false;
       }
     };
     poll();
@@ -77,7 +89,8 @@ export default function ApplicationsPage() {
       return;
     }
     let cancelled = false;
-    const poll = async () => {
+    let inFlight = false;
+    const pollOnce = async () => {
       try {
         const result = await api.prepareApplicationsRun(prepareRunId);
         if (cancelled) {
@@ -107,6 +120,17 @@ export default function ApplicationsPage() {
             return next;
           });
         }
+      }
+    };
+    const poll = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await pollOnce();
+      } finally {
+        inFlight = false;
       }
     };
     poll();
@@ -797,9 +821,11 @@ function isAvailabilityCheckStale(value: string | null): boolean {
 }
 
 function formatShortDate(value: string): string {
-  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(
-    new Date(value)
-  );
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown";
+  }
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function formatLabel(value: string | null | undefined): string {

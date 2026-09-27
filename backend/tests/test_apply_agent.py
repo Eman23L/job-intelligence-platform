@@ -2469,7 +2469,9 @@ def _playwright_page():
         pytest.skip(f"Playwright unavailable: {exc}")
     try:
         try:
-            browser = playwright.chromium.launch(headless=True)
+            from app.services.browser_automation import chromium_launch_options
+
+            browser = playwright.chromium.launch(**chromium_launch_options(headless=True))
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"Chromium unavailable: {exc}")
         page = browser.new_page()

@@ -81,6 +81,7 @@ def overview(db: Session) -> AnalyticsOverview:
         )
     except SQLAlchemyError:
         logger.exception("analytics.overview failed; returning empty fallback")
+        db.rollback()
         return _empty_overview()
 
 
@@ -106,12 +107,18 @@ def role_fit(db: Session) -> RoleFitAnalytics:
     for analysis in analyses:
         grouped[analysis.role_family].append(analysis)
 
+    job_ids = [analysis.job_id for analysis in analyses]
+    scores_by_job: dict[int, JobScore] = {}
+    if job_ids:
+        for score in db.scalars(select(JobScore).where(JobScore.job_id.in_(job_ids)).order_by(JobScore.id)):
+            scores_by_job.setdefault(score.job_id, score)
+
     items = []
     for role_family, entries in grouped.items():
         scores = []
         tiers: Counter[str] = Counter()
         for analysis in entries:
-            score = db.scalar(select(JobScore).where(JobScore.job_id == analysis.job_id))
+            score = scores_by_job.get(analysis.job_id)
             if score is not None:
                 scores.append(score.total_score)
                 if score.recommendation_tier:

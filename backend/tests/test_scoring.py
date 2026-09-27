@@ -6,11 +6,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.models import Base, Job, JobAnalysis, JobScore, JobSkill, JobSource, MissingSkill, TargetRole, UserSkill
+from app.db.models import Base, Job, JobAnalysis, JobSkill, JobSource, MissingSkill, TargetRole, UserSkill
 from app.db.session import get_db
 from app.main import app
 from app.services.scoring import (
-    generate_explanation,
     recommendation_tier,
     score_job,
     score_role_match,

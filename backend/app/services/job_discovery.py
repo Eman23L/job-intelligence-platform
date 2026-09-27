@@ -220,9 +220,9 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
     if filters.remote_type is not None:
         query = query.where(Job.remote_type == filters.remote_type)
     if filters.location is not None:
-        query = query.where(Job.location.ilike(f"%{filters.location}%"))
+        query = query.where(Job.location.ilike(_contains_pattern(filters.location), escape="\\"))
     if filters.company_name is not None:
-        query = query.where(Job.company_name.ilike(f"%{filters.company_name}%"))
+        query = query.where(Job.company_name.ilike(_contains_pattern(filters.company_name), escape="\\"))
     if filters.salary_min is not None:
         query = query.where(Job.normalized_annual_max.is_not(None), Job.normalized_annual_max >= filters.salary_min)
     if filters.salary_max is not None:
@@ -262,13 +262,19 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
     return query
 
 
+def _contains_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _sort_expressions(sort: str, score_subquery) -> tuple:
+    # PostgreSQL sorts NULLs first on DESC; keep undated/unsalaried jobs at the end.
     if sort == "posted_at_desc":
-        return (desc(Job.posted_at), desc(Job.id))
+        return (nulls_last(desc(Job.posted_at)), desc(Job.id))
     if sort == "salary_max_desc":
-        return (desc(Job.normalized_annual_max), desc(Job.id))
+        return (nulls_last(desc(Job.normalized_annual_max)), desc(Job.id))
     if sort == "salary_min_desc":
-        return (desc(Job.normalized_annual_min), desc(Job.id))
+        return (nulls_last(desc(Job.normalized_annual_min)), desc(Job.id))
     if sort == "company_name_asc":
         return (asc(Job.company_name), asc(Job.id))
     if sort == "title_asc":

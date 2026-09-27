@@ -91,7 +91,8 @@ export default function JobsPage() {
       return;
     }
     let cancelled = false;
-    const poll = async () => {
+    let inFlight = false;
+    const pollOnce = async () => {
       try {
         const result = await api.rescoreRun(rescoreRunId);
         if (cancelled) {
@@ -123,6 +124,17 @@ export default function JobsPage() {
         }
       }
     };
+    const poll = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await pollOnce();
+      } finally {
+        inFlight = false;
+      }
+    };
     poll();
     const intervalId = globalThis.setInterval(poll, 2500);
     return () => {
@@ -136,7 +148,8 @@ export default function JobsPage() {
       return;
     }
     let cancelled = false;
-    const poll = async () => {
+    let inFlight = false;
+    const pollOnce = async () => {
       try {
         const result = await api.availabilityRun(availabilityRunId);
         if (cancelled) {
@@ -168,6 +181,17 @@ export default function JobsPage() {
         }
       }
     };
+    const poll = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await pollOnce();
+      } finally {
+        inFlight = false;
+      }
+    };
     poll();
     const intervalId = globalThis.setInterval(poll, 2500);
     return () => {
@@ -181,7 +205,8 @@ export default function JobsPage() {
       return;
     }
     let cancelled = false;
-    const poll = async () => {
+    let inFlight = false;
+    const pollOnce = async () => {
       try {
         const result = await api.applyStrategyRun(applyStrategyRunId);
         if (cancelled) {
@@ -201,7 +226,20 @@ export default function JobsPage() {
           });
         }
       } catch (err) {
-        setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary apply strategy polling failure" });
+        if (!cancelled) {
+          setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary apply strategy polling failure" });
+        }
+      }
+    };
+    const poll = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await pollOnce();
+      } finally {
+        inFlight = false;
       }
     };
     poll();

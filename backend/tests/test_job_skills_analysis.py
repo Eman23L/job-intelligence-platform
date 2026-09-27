@@ -1,6 +1,6 @@
 from sqlalchemy import select
 
-from app.db.models import ExcludedTechnology, Job, JobAnalysis, JobSkill, JobSource
+from app.db.models import ExcludedTechnology, Job, JobSkill, JobSource
 from app.services.analysis import analyse_job
 from app.services.skills import detect_excluded_technologies, extract_skills
 

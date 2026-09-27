@@ -179,10 +179,17 @@ def _glob_chromium_executable_path() -> Path | None:
     ]
     usable = [candidate for candidate in candidates if candidate.exists() and _is_executable(candidate)]
     if usable:
-        return sorted(usable)[-1]
+        return max(usable, key=_chromium_revision)
     if candidates:
-        return sorted(candidates)[-1]
+        return max(candidates, key=_chromium_revision)
     return None
+
+
+def _chromium_revision(candidate: Path) -> tuple[int, str]:
+    # Compare browser folders by revision number so chromium-1194 beats chromium-999.
+    folder = next((part for part in candidate.parts if part.startswith("chromium-")), "")
+    revision = folder.removeprefix("chromium-")
+    return (int(revision) if revision.isdigit() else -1, str(candidate))
 
 
 def _browser_search_roots() -> list[Path]:
