@@ -570,41 +570,52 @@ function JobToolsMenu({
 }
 
 function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const risks = [...scorecard.gates, ...scorecard.risks];
   return (
-    <div className="modal-backdrop">
-      <div className="modal-panel scorecard-modal">
+    <div className="modal-backdrop" onClick={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="modal-panel scorecard-modal" role="dialog" aria-modal="true" aria-labelledby="scorecard-title">
         <div className="modal-header">
           <div>
-            <h2>Why this score?</h2>
+            <h2 id="scorecard-title">Why this score?</h2>
             <p className="muted-text">{scorecard.why}</p>
           </div>
-          <button type="button" className="secondary-button compact-button" onClick={onClose}>
+          <button type="button" className="secondary-button compact-button" onClick={onClose} autoFocus>
             Close
           </button>
         </div>
         <div className="scorecard-summary">
           <div>
             <span className="muted-text">Score</span>
-            <strong>{Math.round(Number(scorecard.total_score))}</strong>
+            <strong>{Math.round(Number(scorecard.total_score))} / 100</strong>
           </div>
           <div>
-            <span className="muted-text">Tier</span>
+            <span className="muted-text">Match</span>
             <strong>{scorecard.tier}</strong>
           </div>
           <div>
             <span className="muted-text">Recommendation</span>
-            <strong>{scorecard.recommendation}</strong>
+            <strong>{capitalise(scorecard.recommendation)}</strong>
           </div>
           <div>
             <span className="muted-text">Confidence</span>
-            <strong>{Math.round(Number(scorecard.confidence_score))}</strong>
+            <strong>{Math.round(Number(scorecard.confidence_score))}%</strong>
           </div>
         </div>
         <div className="scorecard-grid">
-          <ScorecardList title="Matched skills" items={scorecard.matched_skills} />
-          <ScorecardList title="Missing skills" items={scorecard.missing_skills} />
-          <ScorecardList title="Risks" items={[...scorecard.gates, ...scorecard.risks]} />
-          <ScorecardList title="Evidence" items={scorecard.matched_evidence} />
+          <ScorecardList title="Skills you have" items={scorecard.matched_skills} empty="None matched yet" />
+          <ScorecardList title="Skills you're missing" items={scorecard.missing_skills} empty="None – you cover the key skills" />
+          {risks.length > 0 ? <ScorecardList title="Things to watch" items={risks} empty="" /> : null}
+          <ScorecardList title="Evidence" items={scorecard.matched_evidence} empty="None recorded" />
         </div>
         <section className="scorecard-section">
           <h3>Score breakdown</h3>
@@ -612,7 +623,7 @@ function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClo
             {Object.entries(scorecard.score_breakdown).map(([label, value]) => (
               <div key={label} className="breakdown-row">
                 <span>{label.replaceAll("_", " ")}</span>
-                <strong>{Number(value).toFixed(2)}</strong>
+                <strong>{formatPoints(Number(value))}</strong>
               </div>
             ))}
           </div>
@@ -622,7 +633,7 @@ function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClo
   );
 }
 
-function ScorecardList({ title, items }: { title: string; items: string[] }) {
+function ScorecardList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
   return (
     <section className="scorecard-section">
       <h3>{title}</h3>
@@ -633,10 +644,18 @@ function ScorecardList({ title, items }: { title: string; items: string[] }) {
           ))}
         </ul>
       ) : (
-        <p className="muted-text">None</p>
+        <p className="muted-text">{empty}</p>
       )}
     </section>
   );
+}
+
+function capitalise(value: string): string {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
+
+function formatPoints(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function isTerminalRescoreStatus(status: string): boolean {

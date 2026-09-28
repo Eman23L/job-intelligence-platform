@@ -1497,3 +1497,173 @@ input[type="radio"] {
   box-shadow: none;
   padding: 0;
 }
+
+/* Bar lists (analytics pages) */
+
+.bar-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.bar-row {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.bar-row-text {
+  align-items: baseline;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.bar-label {
+  min-width: 0;
+}
+
+.bar-row-text strong {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.bar-track {
+  background: var(--neutral-soft);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.bar-fill {
+  border-radius: 999px;
+  height: 100%;
+  position: absolute;
+  top: 0;
+}
+
+.bar-fill.accent {
+  background: var(--accent);
+}
+
+.bar-fill.good {
+  background: #16a34a;
+}
+
+.bar-fill.warn {
+  background: #f59e0b;
+}
+
+.bar-fill.danger {
+  background: #ef4444;
+}
+
+.bar-fill.neutral {
+  background: #94a3b8;
+}
+
+/* Give standalone card headings breathing room above their content. */
+.panel > h2:first-child,
+.panel > h3:first-child {
+  margin-bottom: 1rem;
+}
+
+.two-column {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+}
+
+.two-column > * {
+  min-width: 0;
+}
+
+/* Grouped form sections */
+
+.form-section {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0;
+  min-width: 0;
+  padding: 1rem 0 0;
+}
+
+.form-section legend {
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0 0.5rem 0 0;
+}
+
+.form-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  margin-top: 0.5rem;
+}
+
+.form-grid-checkbox {
+  align-self: end;
+  min-height: 38px;
+}
+
+input[type="file"] {
+  cursor: pointer;
+  padding: 0.35rem;
+}
+
+input[type="file"]::file-selector-button {
+  background: var(--accent-soft);
+  border: 0;
+  border-radius: 6px;
+  color: var(--accent-text);
+  cursor: pointer;
+  font-weight: 600;
+  margin-right: 0.75rem;
+  padding: 0.35rem 0.75rem;
+}
+
+.job-title-block {
+  align-items: flex-start;
+  display: flex;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.job-title-block h2 {
+  font-size: 1.3rem;
+}
+
+.job-title-block p {
+  margin: 0.25rem 0 0.6rem;
+}
+
+.subheading {
+  color: var(--text-soft);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+}
+
+.fit-summary {
+  margin: 0;
+}
+
+.detail-grid > .page-stack {
+  align-content: start;
+}
+
+.detail-grid {
+  align-items: start;
+}
+
+.back-link {
+  color: var(--accent);
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: -0.5rem;
+  width: fit-content;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
