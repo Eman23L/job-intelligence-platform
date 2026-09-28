@@ -299,9 +299,14 @@ export default function SourcesPage() {
 
   return (
     <div className="page-stack">
+      {sourceListError ? <div className="notice-banner warning">{sourceListError}</div> : null}
+      {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
       <section className="panel">
         <div className="panel-header">
-          <h2>JobServe search scrape</h2>
+          <div>
+            <h2>Find new jobs on JobServe</h2>
+            <p className="muted-text">Search JobServe and add matching jobs to your list. Quick picks:</p>
+          </div>
           <div className="action-row">
             {quickSearches.map((keyword) => (
               <button
@@ -418,8 +423,8 @@ export default function SourcesPage() {
               </div>
             </div>
             {jobServeResult.diagnostics ? (
-              <div className="debug-panel">
-                <h4>JobServe debug</h4>
+              <details className="debug-panel">
+                <summary>Technical details</summary>
                 <div className="metric-list">
                   <div className="metric-row">
                     <span>Page title</span>
@@ -489,7 +494,7 @@ export default function SourcesPage() {
                     )}
                   </pre>
                 </details>
-              </div>
+              </details>
             ) : null}
             <a className="table-link" href="/jobs">
               View jobs from this source
@@ -497,143 +502,59 @@ export default function SourcesPage() {
           </div>
         ) : null}
       </section>
-
-      <section className="panel">
-        <h2>Add permitted source</h2>
-        <form className="filters-bar" onSubmit={createSource}>
-          <label>
-            Name
-            <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
-          </label>
-          <label>
-            URL
-            <input value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} required />
-          </label>
-          <label>
-            Type
-            <input value={form.source_type} onChange={(event) => setForm({ ...form, source_type: event.target.value })} />
-          </label>
-          <label>
-            Rate/min
-            <input
-              type="number"
-              min="1"
-              value={form.rate_limit_per_minute}
-              onChange={(event) => setForm({ ...form, rate_limit_per_minute: event.target.value })}
-            />
-          </label>
-          <label>
-            Allowed patterns
-            <input
-              value={form.allowed_path_patterns}
-              onChange={(event) => setForm({ ...form, allowed_path_patterns: event.target.value })}
-              placeholder="/careers, /jobs"
-            />
-          </label>
-          <label>
-            Job link patterns
-            <input
-              value={form.job_link_patterns}
-              onChange={(event) => setForm({ ...form, job_link_patterns: event.target.value })}
-              placeholder="/jobs/, /vacancies/"
-            />
-          </label>
-          <label>
-            Permission notes
-            <input
-              value={form.permission_notes}
-              onChange={(event) => setForm({ ...form, permission_notes: event.target.value })}
-              required
-            />
-          </label>
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={form.scraping_allowed}
-              onChange={(event) => setForm({ ...form, scraping_allowed: event.target.checked })}
-            />
-            Scraping allowed
-          </label>
-          <button type="submit" disabled={actionLoading === "create"}>
-            Add source
-          </button>
-        </form>
-      </section>
-
-      {sourceListError ? <div className="notice-banner warning">{sourceListError}</div> : null}
-      {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
-
       <section className="panel">
         <div className="panel-header">
-          <h2>Test and scrape</h2>
-          <div className="action-row">
-            <button type="button" onClick={testSource} disabled={!selectedSourceId || actionLoading !== null}>
-              Test
-            </button>
-            <button type="button" className="secondary-button" onClick={() => scrapeSource(true)} disabled={!selectedSourceId || actionLoading !== null}>
-              Dry run
-            </button>
-            <button type="button" className="secondary-button" onClick={() => scrapeSource(false)} disabled={!selectedSourceId || actionLoading !== null}>
-              Scrape now
-            </button>
-          </div>
+          <h2>Your sources</h2>
         </div>
-        <div className="filters-bar">
-          <label>
-            Source
-            <select value={selectedSourceId ?? ""} onChange={(event) => setSelectedSourceId(Number(event.target.value))}>
-              {sources.map((source) => (
-                <option key={source.id} value={source.id}>
-                  {source.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Optional start URL
-            <input value={form.start_url} onChange={(event) => setForm({ ...form, start_url: event.target.value })} />
-          </label>
-        </div>
-        {error ? <ErrorState message={error} /> : null}
-        {actionLoading ? <LoadingState label={activeScrapeRunId ? `Scrape ${activeScrapeRunId} ${scrapeResult?.status ?? "pending"}` : `Starting ${actionLoading}`} /> : null}
-        {testResult ? <ResultPanel title="Test result" result={testResult} /> : null}
-        {scrapeResult ? <ResultPanel title="Scrape result" result={scrapeResult} /> : null}
-      </section>
-
-      <section className="panel">
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table stack-table">
             <thead>
               <tr>
                 <th>Source</th>
-                <th>Enabled</th>
-                <th>Permission</th>
                 <th>Jobs</th>
-                <th>Last scrape</th>
-                <th>Status</th>
-                <th>Created / updated</th>
-                <th>Errors</th>
-                <th>Actions</th>
+                <th>Last run</th>
+                <th>Result</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               {rows.map(({ source, healthItem }) => (
                 <tr key={source?.id ?? healthItem?.source_id}>
-                  <td>{source?.name ?? healthItem?.source_name ?? "Unknown source"}</td>
-                  <td>
-                    <SkillBadge label={source?.enabled ? "enabled" : "disabled"} tone={source?.enabled ? "good" : "neutral"} />
+                  <td data-label="Source">
+                    <div className="job-cell">
+                      <strong>{source?.name ?? healthItem?.source_name ?? "Unknown source"}</strong>
+                      <div className="badge-list">
+                        {source && !source.enabled ? <SkillBadge label="Disabled" tone="neutral" /> : null}
+                        {source && !source.scraping_allowed ? <SkillBadge label="Permission not confirmed" tone="warn" /> : null}
+                      </div>
+                    </div>
                   </td>
-                  <td>
-                    <SkillBadge label={source?.scraping_allowed ? "allowed" : "not allowed"} tone={source?.scraping_allowed ? "good" : "warn"} />
+                  <td data-label="Jobs">
+                    {source ? (
+                      <a className="table-link" href={`/jobs?source_id=${source.id}`}>
+                        {healthItem?.jobs_count ?? 0}
+                      </a>
+                    ) : (
+                      healthItem?.jobs_count ?? 0
+                    )}
                   </td>
-                  <td>{healthItem?.jobs_count ?? 0}</td>
-                  <td>{formatDate(healthItem?.last_scrape_started_at)}</td>
-                  <td>{healthItem?.scrape_status ?? "No runs"}</td>
-                  <td>
-                    {healthItem?.jobs_created ?? 0} / {healthItem?.jobs_updated ?? 0}
+                  <td data-label="Last run">{healthItem?.last_scrape_started_at ? formatDate(healthItem.last_scrape_started_at) : "Never"}</td>
+                  <td data-label="Result">
+                    <div className="cell-stack">
+                      {healthItem?.scrape_status ? (
+                        <span className={`badge run-status-${healthItem.scrape_status}`}>{capitalise(healthItem.scrape_status)}</span>
+                      ) : (
+                        <span className="muted-text">No runs yet</span>
+                      )}
+                      {healthItem?.scrape_status ? (
+                        <span className="muted-text">
+                          {healthItem.jobs_created ?? 0} new · {healthItem.jobs_updated ?? 0} updated
+                        </span>
+                      ) : null}
+                      {healthItem?.error_message ? <span className="status-note" title={healthItem.error_message}>{healthItem.error_message}</span> : null}
+                    </div>
                   </td>
-                  <td>{healthItem?.error_message ?? ""}</td>
-                  <td>
+                  <td data-label="Actions">
                     {source ? (
                       <button type="button" className="danger-button compact-button" onClick={() => setDeleteCandidate(source)}>
                         Delete
@@ -646,6 +567,111 @@ export default function SourcesPage() {
           </table>
         </div>
       </section>
+      <details className="panel advanced-panel">
+        <summary>
+          <span>
+            <strong>Add or test another job site</strong>
+            <span className="muted-text">For careers pages you have permission to collect jobs from.</span>
+          </span>
+        </summary>
+        <section className="panel">
+          <h2>Add permitted source</h2>
+          <form className="filters-bar" onSubmit={createSource}>
+            <label>
+              Name
+              <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+            </label>
+            <label>
+              URL
+              <input value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} required />
+            </label>
+            <label>
+              Type
+              <input value={form.source_type} onChange={(event) => setForm({ ...form, source_type: event.target.value })} />
+            </label>
+            <label>
+              Rate/min
+              <input
+                type="number"
+                min="1"
+                value={form.rate_limit_per_minute}
+                onChange={(event) => setForm({ ...form, rate_limit_per_minute: event.target.value })}
+              />
+            </label>
+            <label>
+              Allowed patterns
+              <input
+                value={form.allowed_path_patterns}
+                onChange={(event) => setForm({ ...form, allowed_path_patterns: event.target.value })}
+                placeholder="/careers, /jobs"
+              />
+            </label>
+            <label>
+              Job link patterns
+              <input
+                value={form.job_link_patterns}
+                onChange={(event) => setForm({ ...form, job_link_patterns: event.target.value })}
+                placeholder="/jobs/, /vacancies/"
+              />
+            </label>
+            <label>
+              Permission notes
+              <input
+                value={form.permission_notes}
+                onChange={(event) => setForm({ ...form, permission_notes: event.target.value })}
+                required
+              />
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={form.scraping_allowed}
+                onChange={(event) => setForm({ ...form, scraping_allowed: event.target.checked })}
+              />
+              Scraping allowed
+            </label>
+            <button type="submit" disabled={actionLoading === "create"}>
+              Add source
+            </button>
+          </form>
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Test and scrape</h2>
+            <div className="action-row">
+              <button type="button" onClick={testSource} disabled={!selectedSourceId || actionLoading !== null}>
+                Test
+              </button>
+              <button type="button" className="secondary-button" onClick={() => scrapeSource(true)} disabled={!selectedSourceId || actionLoading !== null}>
+                Dry run
+              </button>
+              <button type="button" className="secondary-button" onClick={() => scrapeSource(false)} disabled={!selectedSourceId || actionLoading !== null}>
+                Scrape now
+              </button>
+            </div>
+          </div>
+          <div className="filters-bar">
+            <label>
+              Source
+              <select value={selectedSourceId ?? ""} onChange={(event) => setSelectedSourceId(Number(event.target.value))}>
+                {sources.map((source) => (
+                  <option key={source.id} value={source.id}>
+                    {source.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Optional start URL
+              <input value={form.start_url} onChange={(event) => setForm({ ...form, start_url: event.target.value })} />
+            </label>
+          </div>
+          {error ? <ErrorState message={error} /> : null}
+          {actionLoading ? <LoadingState label={activeScrapeRunId ? `Scrape ${activeScrapeRunId} ${scrapeResult?.status ?? "pending"}` : `Starting ${actionLoading}`} /> : null}
+          {testResult ? <ResultPanel title="Test result" result={testResult} /> : null}
+          {scrapeResult ? <ResultPanel title="Scrape result" result={scrapeResult} /> : null}
+        </section>
+      </details>
       {deleteCandidate ? (
         <div className="modal-backdrop">
           <div className="modal-panel">
@@ -706,4 +732,8 @@ function formatSearchParams(params: Record<string, unknown> | undefined): string
   ]
     .filter(Boolean)
     .join(" | ");
+}
+
+function capitalise(value: string): string {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
 }

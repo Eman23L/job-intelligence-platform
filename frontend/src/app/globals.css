@@ -457,6 +457,7 @@ button:disabled {
 .badge.recommendation-apply,
 .badge.availability-active,
 .badge.run-status-completed,
+.badge.run-status-success,
 .badge.apply-difficulty-easy,
 .skill-badge.good {
   background: var(--good-soft);
@@ -1666,4 +1667,127 @@ input[type="file"]::file-selector-button {
 
 .back-link:hover {
   text-decoration: underline;
+}
+
+/* Tables that turn into labelled cards on phones. */
+@media (max-width: 720px) {
+  .stack-table {
+    min-width: 0;
+  }
+
+  .stack-table thead {
+    display: none;
+  }
+
+  .stack-table,
+  .stack-table tbody,
+  .stack-table tr {
+    display: block;
+  }
+
+  .stack-table tr {
+    border-bottom: 1px solid var(--line);
+    padding: 0.75rem 1rem;
+  }
+
+  .stack-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .stack-table td {
+    align-items: center;
+    border: 0;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    padding: 0.3rem 0 !important;
+    text-align: right;
+  }
+
+  .stack-table td::before {
+    color: var(--muted);
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: left;
+  }
+
+  .stack-table td:first-child {
+    font-size: 1rem;
+    padding-bottom: 0.4rem !important;
+    text-align: left;
+  }
+
+  .stack-table td:first-child::before {
+    display: none;
+  }
+
+  .stack-table td:empty,
+  .stack-table td[data-label="Actions"]:not(:has(button)),
+  .stack-table td[data-label="Error"]:not(:has(*:not(:empty))) {
+    display: none;
+  }
+
+  .stack-table td select {
+    max-width: 60%;
+  }
+
+  .stack-table tbody tr:hover td {
+    background: transparent;
+  }
+}
+
+.advanced-panel > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.advanced-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-panel > summary > span {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.advanced-panel > summary > span::after {
+  color: var(--accent);
+  content: "Show ▾";
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.advanced-panel[open] > summary > span::after {
+  content: "Hide ▴";
+}
+
+.advanced-panel[open] > summary {
+  margin-bottom: 1rem;
+}
+
+.advanced-panel > .panel {
+  box-shadow: none;
+  margin-top: 1rem;
+}
+
+details.debug-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+}
+
+details.debug-panel > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.panel-note {
+  border-top: 1px solid var(--line);
+  margin: 1rem 0 0;
+  padding-top: 0.75rem;
 }

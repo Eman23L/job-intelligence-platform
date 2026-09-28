@@ -1,13 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { AvailabilityBadge } from "@/components/AvailabilityBadge";
-import { RecommendationActionBadge } from "@/components/RecommendationActionBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
-import { ScoreBadge } from "@/components/ScoreBadge";
+import { ScorePill } from "@/components/ScoreBadge";
 import { ApiError, api, apiConfig } from "@/lib/api";
 import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyResult, AutonomousRealSubmitRunResult, AutonomousRealSubmitStatus, JobScorecard } from "@/types/api";
 
@@ -422,11 +422,14 @@ export default function ApplicationsPage() {
             Save debug screenshots
           </label>
         </div>
+        <p className="muted-text panel-note">
+          Autonomous real-submit mode: {autonomousStatus?.enabled ? "on" : "off"} · Max submits per run: {autonomousStatus?.max_submits_per_run ?? 1} · Last result:{" "}
+          {autonomousStatus?.last_result ? String(autonomousStatus.last_result.status ?? "unknown") : "none"}
+        </p>
       </section>
       {autonomousStatus?.enabled ? (
         <div className="notice-banner warning">
-          Automatic submission is on (up to {autonomousStatus.max_submits_per_run ?? 1} per run).
-          {autonomousStatus.last_result ? ` Last result: ${String(autonomousStatus.last_result.status ?? "unknown")}.` : ""}
+          Automatic submission is on. It will submit up to {autonomousStatus.max_submits_per_run ?? 1} application(s) per run.
           <button type="button" className="secondary-button compact-button" disabled={actionLoading !== null} onClick={() => void runAutonomousRealSubmit()}>
             Run canary
           </button>
@@ -449,98 +452,109 @@ export default function ApplicationsPage() {
             <h2>{data.items.length} ready applications</h2>
           </div>
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table stack-table">
               <thead>
                 <tr>
                   <th>Job</th>
-                  <th>Location</th>
-                  <th>Score</th>
-                  <th>Tier</th>
-                  <th>Recommendation</th>
+                  <th>Match</th>
                   <th>Status</th>
-                  <th>Availability</th>
-                  <th>Apply route</th>
-                  <th>Actions</th>
+                  <th aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
-                {data.items.map((item) => (
-                  <tr key={item.job_id}>
-                    <td>
-                      <strong>{item.title}</strong>
-                      <div className="muted-text">{item.company_name ?? "Unknown company"}</div>
-                    </td>
-                    <td>{item.location ?? "Not listed"}</td>
-                    <td>
-                      <ScoreBadge score={item.total_score} />
-                    </td>
-                    <td>
-                      <RecommendationBadge tier={item.recommendation_tier} />
-                    </td>
-                    <td>
-                      <RecommendationActionBadge recommendation={item.recommendation} />
-                    </td>
-                    <td>
-                      {item.application_status.replaceAll("_", " ")}
-                      {isAvailabilityCheckStale(item.last_checked_at) ? <div className="status-note">Availability check needed</div> : null}
-                      {item.assisted_result?.progress?.current_step ? (
-                        <div className="status-note">
-                          {String(item.assisted_result.progress.current_step).replaceAll("_", " ")} · {formatElapsed(item.assisted_result.progress.elapsed_ms)}
+                {data.items.map((item) => {
+                  const busy = actionLoading === item.job_id;
+                  const availabilityProblem = item.availability_status && !["active", "unknown"].includes(item.availability_status);
+                  const progressStep = item.assisted_result?.progress?.current_step;
+                  return (
+                    <tr key={item.job_id}>
+                      <td data-label="Job">
+                        <div className="job-cell">
+                          <Link href={`/jobs/${item.job_id}`} className="table-link">
+                            {item.title}
+                          </Link>
+                          <span className="job-meta">{[item.company_name, item.location].filter(Boolean).join(" · ")}</span>
+                          {applyRouteLabel(item.apply_strategy) ? (
+                            <span className="job-meta" title={item.apply_strategy_reason ?? undefined}>
+                              {applyRouteLabel(item.apply_strategy)}
+                            </span>
+                          ) : null}
                         </div>
-                      ) : null}
-                    </td>
-                    <td>
-                      <AvailabilityBadge status={item.availability_status} />
-                      <div className="muted-text">{item.last_checked_at ? `Checked ${formatShortDate(item.last_checked_at)}` : "Not checked"}</div>
-                      {item.availability_reason ? <div className="muted-text">{item.availability_reason}</div> : null}
-                    </td>
-                    <td>
-                      <span className={`badge apply-difficulty-${item.apply_difficulty} apply-strategy-${item.apply_strategy}`}>
-                        {formatLabel(item.apply_strategy)}
-                      </span>
-                      <div className="status-note">{formatLabel(item.apply_difficulty)}</div>
-                      {item.apply_strategy_reason ? <div className="muted-text">{item.apply_strategy_reason}</div> : null}
-                      {item.apply_readiness_score ? <div className="muted-text">Readiness {Math.round(Number(item.apply_readiness_score))}</div> : null}
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void openApplyLink(item)}>
-                          Open apply page
-                        </button>
-                        <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void assistApply(item, "review_only")}>
-                          Assist fill
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button compact-button"
-                          disabled={actionLoading === item.job_id || item.apply_strategy !== "jobserve_apply_easy"}
-                          onClick={() => void assistApply(item, "submit_with_confirmation")}
-                        >
-                          Submit JobServe application
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button compact-button"
-                          disabled={actionLoading === item.job_id}
-                          onClick={() => void runJobAction(item.job_id, () => api.markApplied(item.job_id), "Application marked applied.")}
-                        >
-                          Mark applied
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button compact-button"
-                          disabled={actionLoading === item.job_id}
-                          onClick={() => void runJobAction(item.job_id, () => api.markSkipped(item.job_id), "Application skipped.")}
-                        >
-                          Skip
-                        </button>
-                        <button type="button" className="secondary-button compact-button" disabled={actionLoading === item.job_id} onClick={() => void viewScorecard(item.job_id)}>
-                          View scorecard
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td data-label="Match">
+                        <div className="action-row">
+                          <ScorePill score={item.total_score} />
+                          <RecommendationBadge tier={item.recommendation_tier} />
+                        </div>
+                      </td>
+                      <td data-label="Status">
+                        <div className="cell-stack">
+                          <span className={`badge ${applicationStatusTone(item.application_status)}`}>{formatStatus(item.application_status)}</span>
+                          {progressStep ? (
+                            <span className="status-note">
+                              {String(progressStep).replaceAll("_", " ")} · {formatElapsed(item.assisted_result?.progress?.elapsed_ms)}
+                            </span>
+                          ) : null}
+                          {availabilityProblem ? (
+                            <span title={item.availability_reason ?? undefined}>
+                              <AvailabilityBadge status={item.availability_status} />
+                            </span>
+                          ) : null}
+                          {!availabilityProblem && isAvailabilityCheckStale(item.last_checked_at) ? (
+                            <span className="status-note">Not checked recently</span>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td data-label="Actions">
+                        <div className="row-actions">
+                          <button type="button" className="compact-button" disabled={busy} onClick={() => void openApplyLink(item)}>
+                            Open apply page
+                          </button>
+                          <button type="button" className="secondary-button compact-button" disabled={busy} onClick={() => void assistApply(item, "review_only")}>
+                            Assist fill
+                          </button>
+                          <details className="menu">
+                            <summary className="icon-button" aria-label={`More actions for ${item.title}`}>
+                              ⋯
+                            </summary>
+                            <div className="menu-panel">
+                              <button
+                                type="button"
+                                disabled={busy || item.apply_strategy !== "jobserve_apply_easy"}
+                                title={item.apply_strategy !== "jobserve_apply_easy" ? "Only available for JobServe easy-apply jobs" : undefined}
+                                onClick={(event) => closeMenuAfter(event, () => void assistApply(item, "submit_with_confirmation"))}
+                              >
+                                Submit JobServe application
+                              </button>
+                              <button type="button" disabled={busy} onClick={(event) => closeMenuAfter(event, () => void viewScorecard(item.job_id))}>
+                                Why this score?
+                              </button>
+                              <hr />
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={(event) =>
+                                  closeMenuAfter(event, () => void runJobAction(item.job_id, () => api.markApplied(item.job_id), "Application marked applied."))
+                                }
+                              >
+                                Mark as applied
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={(event) =>
+                                  closeMenuAfter(event, () => void runJobAction(item.job_id, () => api.markSkipped(item.job_id), "Application skipped."))
+                                }
+                              >
+                                Skip this job
+                              </button>
+                            </div>
+                          </details>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -833,17 +847,39 @@ function isAvailabilityCheckStale(value: string | null): boolean {
   return Date.now() - new Date(value).getTime() > RECENT_CHECK_MS;
 }
 
-function formatShortDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "unknown";
+
+function applyRouteLabel(strategy: string | null | undefined): string | null {
+  switch (strategy) {
+    case "jobserve_apply_easy":
+      return "Easy apply on JobServe";
+    case "jobserve_apply_medium":
+      return "Apply on JobServe";
+    case "external_ats":
+      return "Apply on company site";
+    case "blocked":
+      return "Can't apply automatically";
+    default:
+      return null;
   }
-  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-function formatLabel(value: string | null | undefined): string {
-  return value ? value.replaceAll("_", " ") : "unknown";
+function applicationStatusTone(status: string): string {
+  if (status === "applied") return "good";
+  if (status === "failed") return "poor";
+  if (status === "skipped") return "neutral";
+  return "strong";
 }
+
+function formatStatus(status: string): string {
+  const text = status.replaceAll("_", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function closeMenuAfter(event: React.MouseEvent<HTMLButtonElement>, action: () => void) {
+  event.currentTarget.closest("details")?.removeAttribute("open");
+  action();
+}
+
 
 function emptyPrepareRun(runId: number, status: string): ApplicationPrepareRunStatus {
   return {

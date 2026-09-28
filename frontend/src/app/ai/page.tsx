@@ -91,7 +91,7 @@ export default function AIAdvisorPage() {
           ))}
         </div>
 
-        <div className="chat-window" aria-live="polite">
+        <div className="chat-window" aria-live="polite" style={{ marginTop: "1rem" }}>
           {historyLoading ? <LoadingState label="Loading chat history" /> : null}
           {!historyLoading && messages.length === 0 ? (
             <div className="chat-message assistant">

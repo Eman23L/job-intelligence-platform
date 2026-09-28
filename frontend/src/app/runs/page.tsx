@@ -123,7 +123,7 @@ export default function RunsPage() {
             <span className="muted-text">{data.items.length} shown</span>
           </div>
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table stack-table">
               <thead>
                 <tr>
                   <th>Run</th>
@@ -138,14 +138,14 @@ export default function RunsPage() {
               <tbody>
                 {data.items.map((run) => (
                   <tr key={`${run.type}-${run.id}`}>
-                    <td>
+                    <td data-label="Run">
                       <strong>{formatType(run.type)}</strong>
                       <div className="muted-text">#{run.id}</div>
                     </td>
-                    <td>
+                    <td data-label="Status">
                       <span className={`badge run-status-${run.status}`}>{run.status}</span>
                     </td>
-                    <td>
+                    <td data-label="Progress">
                       <div className="progress-cell">
                         <div className="progress-track">
                           <div className="progress-fill" style={{ width: `${progressPercent(run)}%` }} />
@@ -155,18 +155,18 @@ export default function RunsPage() {
                         </span>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Result">
                       <div className="compact-counts">
                         {[`${run.succeeded} succeeded`, run.failed ? `${run.failed} failed` : null, run.skipped ? `${run.skipped} skipped` : null]
                           .filter(Boolean)
                           .join(" · ")}
                       </div>
                     </td>
-                    <td>{formatDuration(run.duration_seconds)}</td>
-                    <td>
+                    <td data-label="Duration">{formatDuration(run.duration_seconds)}</td>
+                    <td data-label="Error">
                       <span className="muted-text">{run.error ? truncate(run.error) : ""}</span>
                     </td>
-                    <td>
+                    <td data-label="Actions">
                       <div className="row-actions">
                         {(run.status === "failed" || run.status === "stalled") && run.type !== "scrape" ? (
                           <button
