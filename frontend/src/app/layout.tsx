@@ -4,8 +4,8 @@ import { AppShell } from "@/components/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Job Search Intelligence",
-  description: "Frontend dashboard MVP for job discovery and scoring"
+  title: "Job Search",
+  description: "Find, score and track UK tech roles that fit your profile."
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -119,7 +119,7 @@ export default function RunsPage() {
       {!error && data && data.items.length > 0 ? (
         <section className="panel">
           <div className="panel-header">
-            <h2>System Runs</h2>
+            <h2>Recent activity</h2>
             <span className="muted-text">{data.items.length} shown</span>
           </div>
           <div className="table-wrap">
@@ -157,9 +157,9 @@ export default function RunsPage() {
                     </td>
                     <td>
                       <div className="compact-counts">
-                        <span>{run.succeeded} ok</span>
-                        <span>{run.failed} failed</span>
-                        <span>{run.skipped} skipped</span>
+                        {[`${run.succeeded} succeeded`, run.failed ? `${run.failed} failed` : null, run.skipped ? `${run.skipped} skipped` : null]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </div>
                     </td>
                     <td>{formatDuration(run.duration_seconds)}</td>

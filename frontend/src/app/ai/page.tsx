@@ -77,10 +77,7 @@ export default function AIAdvisorPage() {
     <div className="page-stack">
       <section className="panel">
         <div className="panel-header">
-          <div>
-            <h2>AI Advisor</h2>
-            <p className="muted-text">Ask questions about your CV, scraped jobs, and career direction.</p>
-          </div>
+          <p className="muted-text">Try one of these, or ask your own question below.</p>
           <button type="button" className="secondary-button compact-button" onClick={() => void clearChat()} disabled={loading || historyLoading || messages.length === 0}>
             Clear chat
           </button>
@@ -88,7 +85,7 @@ export default function AIAdvisorPage() {
 
         <div className="suggested-prompts">
           {suggestedPrompts.map((prompt) => (
-            <button key={prompt} type="button" className="secondary-button compact-button" onClick={() => sendMessage(prompt)} disabled={loading}>
+            <button key={prompt} type="button" className="secondary-button compact-button prompt-chip" onClick={() => sendMessage(prompt)} disabled={loading}>
               {prompt}
             </button>
           ))}

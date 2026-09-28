@@ -1,9 +1,8 @@
 import Link from "next/link";
 import { AvailabilityBadge } from "@/components/AvailabilityBadge";
 import type { JobListItem } from "@/types/api";
-import { RecommendationActionBadge } from "@/components/RecommendationActionBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
-import { ScoreBadge } from "@/components/ScoreBadge";
+import { ScorePill } from "@/components/ScoreBadge";
 import { PendingScoringBadge } from "@/components/PendingScoringBadge";
 import { formatDate, formatSalary, formatSalaryPeriod } from "@/lib/format";
 
@@ -30,7 +29,7 @@ export function JobsTable({
 
   return (
     <div className="table-wrap">
-      <table className="data-table">
+      <table className="data-table jobs-table">
         <thead>
           <tr>
             <th className="select-cell">
@@ -41,20 +40,12 @@ export function JobsTable({
                 onChange={(event) => onToggleAll(event.target.checked)}
               />
             </th>
-            <th>Title</th>
-            <th>Company</th>
-            <th>Location</th>
-            <th>Remote</th>
+            <th>Job</th>
+            <th>Match</th>
             <th>Salary</th>
             <th>Posted</th>
-            <th>Availability</th>
-            <th>Apply strategy</th>
-            <th>Role family</th>
-            <th>Tier</th>
-            <th>Recommendation</th>
-            <th>Score</th>
-            <th>Skills</th>
-            <th>Actions</th>
+            <th>Status</th>
+            <th aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
@@ -68,65 +59,56 @@ export function JobsTable({
                   onChange={(event) => onToggle(job.id, event.target.checked)}
                 />
               </td>
-              <td>
-                <Link href={`/jobs/${job.id}`} className="table-link">
-                  {job.title}
-                </Link>
-                {job.status === "excluded" ? <span className="status-note">Excluded</span> : null}
-                {job.total_score === null ? <div className="status-note"><PendingScoringBadge /></div> : null}
+              <td className="td-job">
+                <div className="job-cell">
+                  <Link href={`/jobs/${job.id}`} className="table-link">
+                    {job.title}
+                  </Link>
+                  <span className="job-meta">{jobMeta(job)}</span>
+                </div>
               </td>
-              <td>{job.company_name ?? "Unknown"}</td>
-              <td>{job.location ?? "Not listed"}</td>
-              <td>{job.remote_type ?? "Not listed"}</td>
-              <td>
-                <div>{formatSalary(job.normalized_annual_min, job.normalized_annual_max, job.salary_currency)}</div>
-                <span className="muted-text">
-                  Raw: {formatSalary(job.salary_min_raw, job.salary_max_raw, job.salary_currency)}
-                  {formatSalaryPeriod(job.salary_period) ? ` / ${formatSalaryPeriod(job.salary_period)}` : ""}
-                </span>
+              <td className="td-match">
+                {job.total_score === null ? (
+                  <PendingScoringBadge />
+                ) : (
+                  <div className="action-row">
+                    <ScorePill score={job.total_score} />
+                    <div className="cell-stack">
+                      <RecommendationBadge tier={job.recommendation_tier} />
+                      <span className="compact-counts">{skillSummary(job)}</span>
+                    </div>
+                  </div>
+                )}
               </td>
-              <td>{formatDate(job.posted_at)}</td>
-              <td>
-                <AvailabilityBadge status={job.availability_status} />
-                <div className="muted-text">{job.last_checked_at ? `Checked ${formatDate(job.last_checked_at)}` : "Not checked"}</div>
-                {job.availability_reason ? <div className="muted-text">{job.availability_reason}</div> : null}
+              <td className="td-salary">
+                <SalaryCell job={job} />
               </td>
-              <td>
-                <span className={`badge apply-difficulty-${job.apply_difficulty} apply-strategy-${job.apply_strategy}`}>
-                  {formatLabel(job.apply_strategy)}
-                </span>
-                <div className="status-note">{formatLabel(job.apply_difficulty)}</div>
-                {job.apply_strategy_reason ? <div className="muted-text">{job.apply_strategy_reason}</div> : null}
+              <td className="td-posted muted-text">{formatDate(job.posted_at)}</td>
+              <td className="td-status">
+                <StatusCell job={job} />
               </td>
-              <td>{job.role_family ?? "Unanalysed"}</td>
-              <td>
-                {job.total_score === null ? <PendingScoringBadge /> : <RecommendationBadge tier={job.recommendation_tier} />}
-              </td>
-              <td>
-                {job.total_score === null ? <PendingScoringBadge /> : <RecommendationActionBadge recommendation={job.recommendation} />}
-              </td>
-              <td>
-                {job.total_score === null ? <PendingScoringBadge /> : <ScoreBadge score={job.total_score} />}
-              </td>
-              <td>
-                <span className="compact-counts">
-                  {job.matched_skills_count} matched / {job.missing_skills_count} missing
-                </span>
-              </td>
-              <td>
+              <td className="td-actions">
                 <div className="row-actions">
                   <button type="button" className="secondary-button compact-button" onClick={() => onScorecard(job.id)}>
-                    Scorecard
+                    Why this score?
                   </button>
-                  <button type="button" className="secondary-button compact-button" onClick={() => void onCheckAvailability(job.id)}>
-                    Check availability
-                  </button>
-                  <button type="button" className="secondary-button compact-button" onClick={() => onExclude(job.id)}>
-                    Exclude
-                  </button>
-                  <button type="button" className="danger-button compact-button" onClick={() => onDelete(job.id)}>
-                    Delete
-                  </button>
+                  <details className="menu">
+                    <summary className="icon-button" aria-label={`More actions for ${job.title}`}>
+                      ⋯
+                    </summary>
+                    <div className="menu-panel">
+                      <button type="button" onClick={(event) => closeMenuAfter(event, () => void onCheckAvailability(job.id))}>
+                        Check it&apos;s still open
+                      </button>
+                      <button type="button" onClick={(event) => closeMenuAfter(event, () => onExclude(job.id))}>
+                        Hide from results
+                      </button>
+                      <hr />
+                      <button type="button" className="danger" onClick={(event) => closeMenuAfter(event, () => onDelete(job.id))}>
+                        Delete job
+                      </button>
+                    </div>
+                  </details>
                 </div>
               </td>
             </tr>
@@ -137,6 +119,63 @@ export function JobsTable({
   );
 }
 
-function formatLabel(value: string | null | undefined): string {
-  return value ? value.replaceAll("_", " ") : "unknown";
+function jobMeta(job: JobListItem): string {
+  const remote = job.remote_type ? job.remote_type.charAt(0).toUpperCase() + job.remote_type.slice(1) : null;
+  const locationSaysRemote = job.location?.toLowerCase().includes("remote") && job.remote_type === "remote";
+  return [job.company_name, job.location, locationSaysRemote ? null : remote].filter(Boolean).join(" · ");
+}
+
+function skillSummary(job: JobListItem): string {
+  if (job.missing_skills_count === 0) {
+    return job.matched_skills_count > 0 ? "All key skills matched" : "";
+  }
+  return `${job.missing_skills_count} skill${job.missing_skills_count === 1 ? "" : "s"} missing`;
+}
+
+function SalaryCell({ job }: { job: JobListItem }) {
+  const annual = formatSalary(job.normalized_annual_min, job.normalized_annual_max, job.salary_currency);
+  const period = formatSalaryPeriod(job.salary_period);
+  // Only show the advertised rate when it differs from the annualised figure (day and hourly rates).
+  const showRaw = period && period !== "year" && (job.salary_min_raw || job.salary_max_raw);
+  if (annual === "Not listed") {
+    return <span className="muted-text">Not listed</span>;
+  }
+  return (
+    <div className="cell-stack">
+      <span>{annual}</span>
+      {showRaw ? (
+        <span className="muted-text">
+          {formatSalary(job.salary_min_raw, job.salary_max_raw, job.salary_currency)} / {period}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function StatusCell({ job }: { job: JobListItem }) {
+  if (job.status === "excluded") {
+    return <span className="badge excluded">Hidden</span>;
+  }
+  if (job.application_status && job.application_status !== "not_started") {
+    return <span className="badge strong">{formatLabel(job.application_status)}</span>;
+  }
+  // "Active" and "unknown" are the normal state, so only surface availability when something is wrong.
+  if (job.availability_status && !["active", "unknown"].includes(job.availability_status)) {
+    return (
+      <span title={job.availability_reason ?? undefined}>
+        <AvailabilityBadge status={job.availability_status} />
+      </span>
+    );
+  }
+  return <span className="muted-text">Open</span>;
+}
+
+function formatLabel(value: string): string {
+  const text = value.replaceAll("_", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function closeMenuAfter(event: React.MouseEvent<HTMLButtonElement>, action: () => void) {
+  event.currentTarget.closest("details")?.removeAttribute("open");
+  action();
 }

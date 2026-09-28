@@ -3,18 +3,33 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/jobs", label: "Jobs" },
-  { href: "/applications", label: "Applications" },
-  { href: "/ai", label: "AI Advisor" },
-  { href: "/profile", label: "Profile" },
-  { href: "/saved", label: "Saved" },
-  { href: "/missing-skills", label: "Missing skills" },
-  { href: "/role-fit", label: "Role fit" },
-  { href: "/salary", label: "Salary" },
-  { href: "/sources", label: "Sources" },
-  { href: "/runs", label: "System Runs" }
+const navGroups = [
+  {
+    label: "Job search",
+    items: [
+      { href: "/dashboard", label: "Overview" },
+      { href: "/jobs", label: "Jobs" },
+      { href: "/saved", label: "Saved" },
+      { href: "/applications", label: "Applications" }
+    ]
+  },
+  {
+    label: "Insights",
+    items: [
+      { href: "/ai", label: "AI Advisor" },
+      { href: "/missing-skills", label: "Skill gaps" },
+      { href: "/role-fit", label: "Role fit" },
+      { href: "/salary", label: "Salary" }
+    ]
+  },
+  {
+    label: "Settings",
+    items: [
+      { href: "/profile", label: "Profile" },
+      { href: "/sources", label: "Sources" },
+      { href: "/runs", label: "Activity" }
+    ]
+  }
 ];
 
 export function Sidebar() {
@@ -22,22 +37,32 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <Link href="/dashboard" className="brand">
+      <Link href="/dashboard" className="brand" aria-label="Job Search home">
         <span className="brand-mark">JS</span>
         <span>
           <strong>Job Search</strong>
-          <small>Intelligence</small>
+          <small>Find roles that fit you</small>
         </span>
       </Link>
-      <nav className="nav-list">
-        {navItems.map((item) => {
-          const active = pathname === item.href || (item.href === "/jobs" && pathname.startsWith("/jobs/"));
-          return (
-            <Link key={item.href} href={item.href} className={active ? "nav-item active" : "nav-item"}>
-              {item.label}
-            </Link>
-          );
-        })}
+      <nav className="nav-list" aria-label="Main">
+        {navGroups.map((group) => (
+          <div key={group.label} className="nav-group">
+            <span className="nav-group-label">{group.label}</span>
+            {group.items.map((item) => {
+              const active = pathname === item.href || (item.href === "/jobs" && pathname.startsWith("/jobs/"));
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={active ? "nav-item active" : "nav-item"}
+                  aria-current={active ? "page" : undefined}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>
+        ))}
       </nav>
     </aside>
   );

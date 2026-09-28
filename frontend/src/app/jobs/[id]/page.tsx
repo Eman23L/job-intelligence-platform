@@ -58,12 +58,12 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
           <div>
             <h2>{data.job.title}</h2>
             <p className="muted">
-              {data.job.company_name ?? "Unknown company"} / {data.job.location ?? "No location"} /{" "}
-              {formatSalary(data.job.normalized_annual_min, data.job.normalized_annual_max, data.job.salary_currency)}
-              {" annual"}
-              {" / Raw "}
-              {formatSalary(data.job.salary_min_raw, data.job.salary_max_raw, data.job.salary_currency)}
-              {formatSalaryPeriod(data.job.salary_period) ? ` per ${formatSalaryPeriod(data.job.salary_period)}` : ""}
+              {[data.job.company_name, data.job.location, formatSalary(data.job.normalized_annual_min, data.job.normalized_annual_max, data.job.salary_currency)]
+                .filter((part) => part && part !== "Not listed")
+                .join(" · ")}
+              {formatSalaryPeriod(data.job.salary_period) && formatSalaryPeriod(data.job.salary_period) !== "year" && (data.job.salary_min_raw || data.job.salary_max_raw)
+                ? ` (${formatSalary(data.job.salary_min_raw, data.job.salary_max_raw, data.job.salary_currency)} per ${formatSalaryPeriod(data.job.salary_period)})`
+                : ""}
             </p>
           </div>
           <div className="action-row">
@@ -76,14 +76,19 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
             <button type="button" className="secondary-button" onClick={() => runAction("applied")}>
               Mark applied
             </button>
+            {data.job.canonical_url ? (
+              <a href={data.job.canonical_url} target="_blank" rel="noreferrer" className="button-link secondary">
+                View listing ↗
+              </a>
+            ) : null}
           </div>
         </div>
         {actionMessage ? <p className="muted">{actionMessage}</p> : null}
         <div className="badge-list">
           <RecommendationBadge tier={data.score?.recommendation_tier} />
           <ScoreBadge score={data.score?.total_score} />
-          <SkillBadge label={`Saved status: ${data.saved_status ?? "none"}`} />
-          <SkillBadge label={`Posted: ${formatDate(data.job.posted_at)}`} />
+          {data.saved_status ? <SkillBadge label={`Status: ${data.saved_status}`} /> : null}
+          <SkillBadge label={`Posted ${formatDate(data.job.posted_at)}`} />
         </div>
       </section>
 

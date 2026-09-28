@@ -389,38 +389,51 @@ export default function ApplicationsPage() {
 
   return (
     <div className="page-stack">
-      <div className="action-row">
-        <label>
-          Only prepare/apply for jobs scoring at least
-          <select value={threshold} onChange={(event) => void saveThreshold(Number(event.target.value))}>
-            <option value={60}>60+</option>
-            <option value={70}>70+</option>
-            <option value={80}>80+</option>
-            <option value={85}>85+</option>
-            <option value={90}>90+</option>
-          </select>
-        </label>
-        <button type="button" className="primary-button" disabled={actionLoading === "prepare"} onClick={() => void prepareApplications()}>
-          {actionLoading === "prepare" ? <span className="spinner" aria-hidden="true" /> : null}
-          {actionLoading === "prepare" ? "Preparing..." : "Prepare applications"}
-        </button>
-        <label className="inline-toggle">
-          <input type="checkbox" checked={assistDebugMode} onChange={(event) => setAssistDebugMode(event.target.checked)} />
-          Enable debug mode
-        </label>
-      </div>
-      <div className={`notice-banner ${autonomousStatus?.enabled ? "warning" : "info"}`}>
-        Autonomous real-submit mode: {autonomousStatus?.enabled ? "enabled" : "disabled"}. Max submits per run: {autonomousStatus?.max_submits_per_run ?? 1}.
-        {autonomousStatus?.last_result ? ` Last result: ${String(autonomousStatus.last_result.status ?? "unknown")}` : " Last result: none."}
-        {autonomousStatus?.enabled ? (
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>Prepare applications</h2>
+            <p className="muted-text">Queue your best-scoring jobs so they are ready to review and apply to.</p>
+          </div>
+        </div>
+        <div className="action-row">
+          <label>
+            Minimum match score
+            <select value={threshold} onChange={(event) => void saveThreshold(Number(event.target.value))}>
+              <option value={60}>60+</option>
+              <option value={70}>70+</option>
+              <option value={80}>80+</option>
+              <option value={85}>85+</option>
+              <option value={90}>90+</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="primary-button"
+            style={{ alignSelf: "flex-end" }}
+            disabled={actionLoading === "prepare"}
+            onClick={() => void prepareApplications()}
+          >
+            {actionLoading === "prepare" ? <span className="spinner" aria-hidden="true" /> : null}
+            {actionLoading === "prepare" ? "Preparing..." : "Prepare applications"}
+          </button>
+          <label className="inline-toggle" style={{ alignSelf: "flex-end", marginBottom: "0.55rem" }}>
+            <input type="checkbox" checked={assistDebugMode} onChange={(event) => setAssistDebugMode(event.target.checked)} />
+            Save debug screenshots
+          </label>
+        </div>
+      </section>
+      {autonomousStatus?.enabled ? (
+        <div className="notice-banner warning">
+          Automatic submission is on (up to {autonomousStatus.max_submits_per_run ?? 1} per run).
+          {autonomousStatus.last_result ? ` Last result: ${String(autonomousStatus.last_result.status ?? "unknown")}.` : ""}
           <button type="button" className="secondary-button compact-button" disabled={actionLoading !== null} onClick={() => void runAutonomousRealSubmit()}>
             Run canary
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
       {autonomousResult ? <AutonomousOrchestrationSummary result={autonomousResult} /> : null}
-      <div className="notice-banner info">Current apply threshold: {threshold}+.</div>
       {prepareRunId && prepareRun ? (
         <div className="notice-banner info">
           Preparing applications... {prepareRun.processed} / {prepareRun.total} processed, {prepareRun.queued} queued, {prepareRun.failed} failed.
