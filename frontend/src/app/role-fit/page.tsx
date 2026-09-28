@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BarList } from "@/components/BarList";
+import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
-import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { api } from "@/lib/api";
-import { formatNumber } from "@/lib/format";
 import type { RoleFitAnalytics } from "@/types/api";
 
 export default function RoleFitPage() {
@@ -25,39 +25,38 @@ export default function RoleFitPage() {
   if (!data) {
     return <LoadingState label="Loading role fit" />;
   }
+  if (data.items.length === 0) {
+    return <EmptyState title="No roles analysed yet" message="Once jobs are collected and analysed, you'll see how well you fit each type of role." />;
+  }
+
+  const items = [...data.items].sort((a, b) => Number(b.average_score ?? -1) - Number(a.average_score ?? -1));
 
   return (
     <section className="panel">
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Role family</th>
-              <th>Jobs</th>
-              <th>Average score</th>
-              <th>Recommendation tiers</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.items.map((item) => (
-              <tr key={item.role_family ?? "unknown"}>
-                <td>{item.role_family ?? "Unknown"}</td>
-                <td>{item.count}</td>
-                <td>{formatNumber(item.average_score)}</td>
-                <td>
-                  <div className="badge-list">
-                    {Object.entries(item.recommendation_tiers).map(([tier, count]) => (
-                      <span key={tier}>
-                        <RecommendationBadge tier={tier} /> <span className="muted">{count}</span>
-                      </span>
-                    ))}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="panel-header">
+        <div>
+          <h2>Average match score by role</h2>
+          <p className="muted-text">Higher scores mean your CV lines up better with what these roles ask for.</p>
+        </div>
       </div>
+      <BarList
+        items={items.map((item) => {
+          const score = item.average_score === null ? null : Number(item.average_score);
+          return {
+            key: item.role_family ?? "unknown",
+            label: item.role_family ?? "Unknown",
+            detail: `· ${item.count} ${item.count === 1 ? "job" : "jobs"}${tierSummary(item.recommendation_tiers)}`,
+            value: score === null ? "Not scored" : Math.round(score),
+            fraction: (score ?? 0) / 100,
+            tone: score === null ? "neutral" : score >= 85 ? "good" : score >= 70 ? "accent" : score >= 40 ? "warn" : "danger"
+          };
+        })}
+      />
     </section>
   );
+}
+
+function tierSummary(tiers: Record<string, number>): string {
+  const good = (tiers["Excellent match"] ?? 0) + (tiers["Strong match"] ?? 0);
+  return good > 0 ? ` · ${good} good ${good === 1 ? "match" : "matches"}` : "";
 }

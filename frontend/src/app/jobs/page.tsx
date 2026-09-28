@@ -18,7 +18,7 @@ const initialFilters: JobFiltersState = {
   company_name: "",
   min_score: "",
   max_score: "",
-  exclude_excluded: false,
+  exclude_excluded: true,
   availability_status: "",
   apply_difficulty: "",
   source_id: "",
@@ -91,7 +91,8 @@ export default function JobsPage() {
       return;
     }
     let cancelled = false;
-    const poll = async () => {
+    let inFlight = false;
+    const pollOnce = async () => {
       try {
         const result = await api.rescoreRun(rescoreRunId);
         if (cancelled) {
@@ -123,6 +124,17 @@ export default function JobsPage() {
         }
       }
     };
+    const poll = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await pollOnce();
+      } finally {
+        inFlight = false;
+      }
+    };
     poll();
     const intervalId = globalThis.setInterval(poll, 2500);
     return () => {
@@ -136,7 +148,8 @@ export default function JobsPage() {
       return;
     }
     let cancelled = false;
-    const poll = async () => {
+    let inFlight = false;
+    const pollOnce = async () => {
       try {
         const result = await api.availabilityRun(availabilityRunId);
         if (cancelled) {
@@ -168,6 +181,17 @@ export default function JobsPage() {
         }
       }
     };
+    const poll = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await pollOnce();
+      } finally {
+        inFlight = false;
+      }
+    };
     poll();
     const intervalId = globalThis.setInterval(poll, 2500);
     return () => {
@@ -181,7 +205,8 @@ export default function JobsPage() {
       return;
     }
     let cancelled = false;
-    const poll = async () => {
+    let inFlight = false;
+    const pollOnce = async () => {
       try {
         const result = await api.applyStrategyRun(applyStrategyRunId);
         if (cancelled) {
@@ -201,7 +226,20 @@ export default function JobsPage() {
           });
         }
       } catch (err) {
-        setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary apply strategy polling failure" });
+        if (!cancelled) {
+          setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary apply strategy polling failure" });
+        }
+      }
+    };
+    const poll = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await pollOnce();
+      } finally {
+        inFlight = false;
       }
     };
     poll();
@@ -367,20 +405,6 @@ export default function JobsPage() {
           setPage(1);
         }}
       />
-      <div className="action-row">
-        <button type="button" className="primary-button" disabled={rescoring} onClick={() => void rescoreJobs()}>
-          {rescoring ? <span className="spinner" aria-hidden="true" /> : null}
-          {rescoring ? "Rescoring..." : "Rescore jobs"}
-        </button>
-        <button type="button" className="secondary-button" disabled={checkingAvailability} onClick={() => void checkAvailability()}>
-          {checkingAvailability ? <span className="spinner" aria-hidden="true" /> : null}
-          {checkingAvailability ? "Checking..." : selectedCount > 0 ? "Check selected availability" : "Check availability"}
-        </button>
-        <button type="button" className="secondary-button" disabled={classifyingApply} onClick={() => void classifyApplyStrategies()}>
-          {classifyingApply ? <span className="spinner" aria-hidden="true" /> : null}
-          {classifyingApply ? "Classifying..." : selectedCount > 0 ? "Classify selected apply strategy" : "Classify apply strategy"}
-        </button>
-      </div>
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
       {rescoring ? (
         <div className="notice-banner info">
@@ -419,16 +443,32 @@ export default function JobsPage() {
       {!loading && !error && data && data.items.length > 0 ? (
         <section className="panel">
           <div className="panel-header">
-            <h2>{data.total_count} jobs</h2>
+            <div>
+              <h2>
+                {data.total_count} {data.total_count === 1 ? "job" : "jobs"}
+              </h2>
+              {selectedCount > 0 ? <p className="muted-text">{selectedCount} selected</p> : null}
+            </div>
             <div className="panel-actions">
-              <span className="muted-text">{selectedCount} selected</span>
-              <button type="button" className="secondary-button" disabled={selectedCount === 0 || actionLoading} onClick={() => excludeJobs(selectedJobIds)}>
-                Exclude selected
-              </button>
-              <button type="button" className="danger-button" disabled={selectedCount === 0 || actionLoading} onClick={() => deleteJobs(selectedJobIds)}>
-                Delete selected
-              </button>
-              <PaginationControls page={data.page} totalPages={data.total_pages} onPageChange={setPage} />
+              {selectedCount > 0 ? (
+                <>
+                  <button type="button" className="secondary-button compact-button" disabled={actionLoading} onClick={() => excludeJobs(selectedJobIds)}>
+                    Hide selected
+                  </button>
+                  <button type="button" className="danger-button compact-button" disabled={actionLoading} onClick={() => deleteJobs(selectedJobIds)}>
+                    Delete selected
+                  </button>
+                </>
+              ) : null}
+              <JobToolsMenu
+                selectedCount={selectedCount}
+                rescoring={rescoring}
+                checkingAvailability={checkingAvailability}
+                classifyingApply={classifyingApply}
+                onRescore={() => void rescoreJobs()}
+                onCheckAvailability={() => void checkAvailability()}
+                onClassify={() => void classifyApplyStrategies()}
+              />
             </div>
           </div>
           <JobsTable
@@ -466,7 +506,11 @@ export default function JobsPage() {
               await refresh();
             }}
           />
-          <PaginationControls page={data.page} totalPages={data.total_pages} onPageChange={setPage} />
+          {data.total_pages > 1 ? (
+            <div className="panel-footer">
+              <PaginationControls page={data.page} totalPages={data.total_pages} onPageChange={setPage} />
+            </div>
+          ) : null}
         </section>
       ) : null}
       {scorecardLoading ? (
@@ -481,42 +525,97 @@ export default function JobsPage() {
   );
 }
 
-function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClose: () => void }) {
+function JobToolsMenu({
+  selectedCount,
+  rescoring,
+  checkingAvailability,
+  classifyingApply,
+  onRescore,
+  onCheckAvailability,
+  onClassify
+}: {
+  selectedCount: number;
+  rescoring: boolean;
+  checkingAvailability: boolean;
+  classifyingApply: boolean;
+  onRescore: () => void;
+  onCheckAvailability: () => void;
+  onClassify: () => void;
+}) {
+  const busy = rescoring || checkingAvailability || classifyingApply;
+  const scope = selectedCount > 0 ? "selected jobs" : "all jobs";
+  const run = (event: React.MouseEvent<HTMLButtonElement>, action: () => void) => {
+    event.currentTarget.closest("details")?.removeAttribute("open");
+    action();
+  };
   return (
-    <div className="modal-backdrop">
-      <div className="modal-panel scorecard-modal">
+    <details className="menu">
+      <summary className="button-link secondary compact-button">
+        {busy ? <span className="spinner" aria-hidden="true" /> : null}
+        Tools ▾
+      </summary>
+      <div className="menu-panel">
+        <button type="button" disabled={rescoring} onClick={(event) => run(event, onRescore)}>
+          Rescore all jobs
+        </button>
+        <button type="button" disabled={checkingAvailability} onClick={(event) => run(event, onCheckAvailability)}>
+          Check {scope} are still open
+        </button>
+        <button type="button" disabled={classifyingApply} onClick={(event) => run(event, onClassify)}>
+          Work out how to apply ({scope})
+        </button>
+      </div>
+    </details>
+  );
+}
+
+function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const risks = [...scorecard.gates, ...scorecard.risks];
+  return (
+    <div className="modal-backdrop" onClick={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="modal-panel scorecard-modal" role="dialog" aria-modal="true" aria-labelledby="scorecard-title">
         <div className="modal-header">
           <div>
-            <h2>Scorecard</h2>
+            <h2 id="scorecard-title">Why this score?</h2>
             <p className="muted-text">{scorecard.why}</p>
           </div>
-          <button type="button" className="secondary-button compact-button" onClick={onClose}>
+          <button type="button" className="secondary-button compact-button" onClick={onClose} autoFocus>
             Close
           </button>
         </div>
         <div className="scorecard-summary">
           <div>
             <span className="muted-text">Score</span>
-            <strong>{Math.round(Number(scorecard.total_score))}</strong>
+            <strong>{Math.round(Number(scorecard.total_score))} / 100</strong>
           </div>
           <div>
-            <span className="muted-text">Tier</span>
+            <span className="muted-text">Match</span>
             <strong>{scorecard.tier}</strong>
           </div>
           <div>
             <span className="muted-text">Recommendation</span>
-            <strong>{scorecard.recommendation}</strong>
+            <strong>{capitalise(scorecard.recommendation)}</strong>
           </div>
           <div>
             <span className="muted-text">Confidence</span>
-            <strong>{Math.round(Number(scorecard.confidence_score))}</strong>
+            <strong>{Math.round(Number(scorecard.confidence_score))}%</strong>
           </div>
         </div>
         <div className="scorecard-grid">
-          <ScorecardList title="Matched skills" items={scorecard.matched_skills} />
-          <ScorecardList title="Missing skills" items={scorecard.missing_skills} />
-          <ScorecardList title="Risks" items={[...scorecard.gates, ...scorecard.risks]} />
-          <ScorecardList title="Evidence" items={scorecard.matched_evidence} />
+          <ScorecardList title="Skills you have" items={scorecard.matched_skills} empty="None matched yet" />
+          <ScorecardList title="Skills you're missing" items={scorecard.missing_skills} empty="None – you cover the key skills" />
+          {risks.length > 0 ? <ScorecardList title="Things to watch" items={risks} empty="" /> : null}
+          <ScorecardList title="Evidence" items={scorecard.matched_evidence} empty="None recorded" />
         </div>
         <section className="scorecard-section">
           <h3>Score breakdown</h3>
@@ -524,7 +623,7 @@ function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClo
             {Object.entries(scorecard.score_breakdown).map(([label, value]) => (
               <div key={label} className="breakdown-row">
                 <span>{label.replaceAll("_", " ")}</span>
-                <strong>{Number(value).toFixed(2)}</strong>
+                <strong>{formatPoints(Number(value))}</strong>
               </div>
             ))}
           </div>
@@ -534,7 +633,7 @@ function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClo
   );
 }
 
-function ScorecardList({ title, items }: { title: string; items: string[] }) {
+function ScorecardList({ title, items, empty }: { title: string; items: string[]; empty: string }) {
   return (
     <section className="scorecard-section">
       <h3>{title}</h3>
@@ -545,10 +644,18 @@ function ScorecardList({ title, items }: { title: string; items: string[] }) {
           ))}
         </ul>
       ) : (
-        <p className="muted-text">None</p>
+        <p className="muted-text">{empty}</p>
       )}
     </section>
   );
+}
+
+function capitalise(value: string): string {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
+
+function formatPoints(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function isTerminalRescoreStatus(status: string): boolean {

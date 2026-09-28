@@ -1,10 +1,8 @@
-export function Header({ title }: { title: string }) {
+export function Header({ title, description }: { title: string; description?: string }) {
   return (
     <header className="header">
-      <div>
-        <h1>{title}</h1>
-        <p>Backend dashboard MVP</p>
-      </div>
+      <h1>{title}</h1>
+      {description ? <p>{description}</p> : null}
     </header>
   );
 }

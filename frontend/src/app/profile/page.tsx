@@ -91,25 +91,33 @@ export default function ProfilePage() {
 
       <section className="panel">
         <div className="panel-header">
-          <h2>CV text</h2>
+          <div>
+            <h2>Your CV</h2>
+            <p className="muted-text">Every job is scored against this, so keep it up to date.</p>
+          </div>
           <span className="muted-text">
-            {profile?.updated_at ? `Updated ${formatDate(profile.updated_at)}` : "No CV saved"}
+            {profile?.updated_at ? `Updated ${formatDate(profile.updated_at)}` : "No CV saved yet"}
           </span>
         </div>
         <form className="profile-form" onSubmit={saveCv}>
           <label>
-            Paste CV
+            CV file (used when applying)
+            <input type="file" accept=".pdf,.doc,.docx" disabled={fileUploading} onChange={(event) => void uploadCvFile(event.target.files?.[0] ?? null)} />
+            <span className="muted-text">{profile?.cv_file_name ? `Current file: ${profile.cv_file_name}` : "PDF or Word document"}</span>
+          </label>
+          <label>
+            CV text (used for scoring)
             <textarea
               className="cv-textarea"
               value={cvText}
               onChange={(event) => setCvText(event.target.value)}
-              placeholder="Paste CV text here"
+              placeholder="Paste the text of your CV here"
               required
             />
           </label>
           <div className="action-row">
             <button type="submit" disabled={saving || !cvText.trim()}>
-              {saving ? "Saving" : "Save CV"}
+              {saving ? "Saving..." : "Save CV"}
             </button>
           </div>
         </form>
@@ -117,74 +125,76 @@ export default function ProfilePage() {
 
       <section className="panel">
         <div className="panel-header">
-          <h2>Application details</h2>
-          <span className="muted-text">{profile?.cv_file_name ? `CV file: ${profile.cv_file_name}` : "No CV file uploaded"}</span>
+          <div>
+            <h2>Application details</h2>
+            <p className="muted-text">Used to fill in application forms for you.</p>
+          </div>
         </div>
         <form className="profile-form" onSubmit={saveApplicationProfile}>
-          <div className="profile-summary-grid">
-            <ProfileInput label="Email" value={profile?.email ?? ""} onChange={(value) => setProfileField("email", value)} />
-            <ProfileInput label="First name" value={profile?.first_name ?? ""} onChange={(value) => setProfileField("first_name", value)} />
-            <ProfileInput label="Last name" value={profile?.last_name ?? ""} onChange={(value) => setProfileField("last_name", value)} />
-            <ProfileInput label="Phone" value={profile?.phone ?? ""} onChange={(value) => setProfileField("phone", value)} />
-            <ProfileInput label="Address" value={profile?.address ?? ""} onChange={(value) => setProfileField("address", value)} />
-            <ProfileInput label="Country" value={profile?.country ?? ""} onChange={(value) => setProfileField("country", value)} />
-            <ProfileInput label="UK work status" value={profile?.work_status_uk ?? ""} onChange={(value) => setProfileField("work_status_uk", value)} />
-            <ProfileInput label="Salary expectation" value={profile?.salary_expectation ?? ""} onChange={(value) => setProfileField("salary_expectation", value)} />
-            <ProfileInput label="Travel distance" value={profile?.travel_distance ?? ""} onChange={(value) => setProfileField("travel_distance", value)} />
-            <ProfileSelect
-              label="Availability notice"
-              value={profile?.availability_notice ?? ""}
-              options={["Immediate", "1 Week", "2 Weeks", "3 Weeks", "1 Month", "3 Months", ">3 Months"]}
-              onChange={(value) => setProfileField("availability_notice", value)}
-            />
-            <ProfileSelect
-              label="Salary expectation GBP"
-              value={String(profile?.salary_expectation_gbp ?? "")}
-              options={["15000", "20000", "25000", "30000", "40000", "50000", "65000", "90000", "100001"]}
-              optionLabels={{
-                "15000": "0 - £15,000",
-                "20000": "£15,000 - £20,000",
-                "25000": "£20,000 - £25,000",
-                "30000": "£25,000 - £30,000",
-                "40000": "£30,000 - £40,000",
-                "50000": "£40,000 - £50,000",
-                "65000": "£50,000 - £75,000",
-                "90000": "£75,000 - £100,000",
-                "100001": "Above £100,000"
-              }}
-              onChange={(value) => setProfileField("salary_expectation_gbp", value ? Number(value) : null)}
-            />
-            <ProfileSelect
-              label="Travel distance miles"
-              value={String(profile?.travel_distance_miles ?? "")}
-              options={["5", "15", "30", "50", "51"]}
-              optionLabels={{ "5": "0 to 5", "15": "6 to 15", "30": "16 to 30", "50": "31 to 50", "51": "50+" }}
-              onChange={(value) => setProfileField("travel_distance_miles", value ? Number(value) : null)}
-            />
-            <ProfileSelect
-              label="Minimum apply score"
-              value={String(profile?.minimum_apply_score ?? 80)}
-              options={["60", "70", "80", "85", "90"]}
-              optionLabels={{ "60": "60+", "70": "70+", "80": "80+", "85": "85+", "90": "90+" }}
-              onChange={(value) => setProfileField("minimum_apply_score", Number(value))}
-            />
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={profile?.sponsorship_required ?? false}
-                onChange={(event) => setProfileField("sponsorship_required", event.target.checked)}
+          <fieldset className="form-section">
+            <legend>Contact</legend>
+            <div className="form-grid">
+              <ProfileInput label="First name" value={profile?.first_name ?? ""} onChange={(value) => setProfileField("first_name", value)} />
+              <ProfileInput label="Last name" value={profile?.last_name ?? ""} onChange={(value) => setProfileField("last_name", value)} />
+              <ProfileInput label="Email" value={profile?.email ?? ""} onChange={(value) => setProfileField("email", value)} />
+              <ProfileInput label="Phone" value={profile?.phone ?? ""} onChange={(value) => setProfileField("phone", value)} />
+              <ProfileInput label="Address" value={profile?.address ?? ""} onChange={(value) => setProfileField("address", value)} />
+              <ProfileInput label="Country" value={profile?.country ?? ""} onChange={(value) => setProfileField("country", value)} />
+            </div>
+          </fieldset>
+          <fieldset className="form-section">
+            <legend>Job preferences</legend>
+            <div className="form-grid">
+              <ProfileInput label="UK work status" value={profile?.work_status_uk ?? ""} onChange={(value) => setProfileField("work_status_uk", value)} />
+              <ProfileSelect
+                label="Notice period"
+                value={profile?.availability_notice ?? ""}
+                options={["Immediate", "1 Week", "2 Weeks", "3 Weeks", "1 Month", "3 Months", ">3 Months"]}
+                onChange={(value) => setProfileField("availability_notice", value)}
               />
-              Sponsorship required
-            </label>
-          </div>
-          <label>
-            CV file
-            <input type="file" accept=".pdf,.doc,.docx" disabled={fileUploading} onChange={(event) => void uploadCvFile(event.target.files?.[0] ?? null)} />
-          </label>
+              <ProfileSelect
+                label="Salary expectation"
+                value={String(profile?.salary_expectation_gbp ?? "")}
+                options={Object.keys(SALARY_BANDS)}
+                optionLabels={SALARY_BANDS}
+                onChange={(value) => {
+                  setProfileField("salary_expectation_gbp", value ? Number(value) : null);
+                  // Free-text forms read salary_expectation, so keep it in step with the band.
+                  setProfileField("salary_expectation", value ? SALARY_BANDS[value] : "");
+                }}
+              />
+              <ProfileSelect
+                label="Willing to travel"
+                value={String(profile?.travel_distance_miles ?? "")}
+                options={Object.keys(TRAVEL_BANDS)}
+                optionLabels={TRAVEL_BANDS}
+                onChange={(value) => {
+                  setProfileField("travel_distance_miles", value ? Number(value) : null);
+                  setProfileField("travel_distance", value ? TRAVEL_BANDS[value] : "");
+                }}
+              />
+              <ProfileSelect
+                label="Only apply to jobs scoring"
+                value={String(profile?.minimum_apply_score ?? 80)}
+                options={["60", "70", "80", "85", "90"]}
+                optionLabels={{ "60": "60 or more", "70": "70 or more", "80": "80 or more", "85": "85 or more", "90": "90 or more" }}
+                onChange={(value) => setProfileField("minimum_apply_score", Number(value))}
+              />
+              <label className="checkbox-label form-grid-checkbox">
+                <input
+                  type="checkbox"
+                  checked={profile?.sponsorship_required ?? false}
+                  onChange={(event) => setProfileField("sponsorship_required", event.target.checked)}
+                />
+                I need visa sponsorship
+              </label>
+            </div>
+          </fieldset>
           <div className="action-row">
             <button type="submit" disabled={saving || !profile}>
-              {saving ? "Saving" : "Save application details"}
+              {saving ? "Saving..." : "Save details"}
             </button>
+            {!profile ? <span className="muted-text">Save your CV first.</span> : null}
           </div>
         </form>
       </section>
@@ -238,6 +248,26 @@ export default function ProfilePage() {
     setProfile((current) => (current ? { ...current, [key]: value } : current));
   }
 }
+
+const SALARY_BANDS: Record<string, string> = {
+  "15000": "Up to £15,000",
+  "20000": "£15,000 – £20,000",
+  "25000": "£20,000 – £25,000",
+  "30000": "£25,000 – £30,000",
+  "40000": "£30,000 – £40,000",
+  "50000": "£40,000 – £50,000",
+  "65000": "£50,000 – £75,000",
+  "90000": "£75,000 – £100,000",
+  "100001": "Over £100,000"
+};
+
+const TRAVEL_BANDS: Record<string, string> = {
+  "5": "Up to 5 miles",
+  "15": "6 – 15 miles",
+  "30": "16 – 30 miles",
+  "50": "31 – 50 miles",
+  "51": "More than 50 miles"
+};
 
 function ProfileInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (

@@ -1873,7 +1873,7 @@ def test_jobserve_registration_toggle_unknown_defaults_clicked_off() -> None:
         page.set_content(
             """
             <div role="checkbox" aria-label="I would like to register a Job Seeker account"
-                 onclick="window.clicked = true"></div>
+                 style="width: 16px; height: 16px" onclick="window.clicked = true"></div>
             """
         )
 
@@ -2282,7 +2282,7 @@ def test_jobserve_remote_checkbox_styled_fallback_clicks_box() -> None:
         page.set_content(
             """
             <div role="checkbox" aria-checked="true" aria-label="Only show jobs with remote working"
-                 onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); window.clicked = true">
+                 style="width: 16px; height: 16px" onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); window.clicked = true">
             </div>
             """
         )
@@ -2375,7 +2375,7 @@ def test_confirmation_detection_and_account_toggle_off() -> None:
         disabled = apply_agent._disable_jobserve_account_options(page, warnings)
         closed = apply_agent._close_modal(page)
 
-    assert disabled == ["register a Job Seeker account"]
+    assert disabled == ["I would like to register a Job Seeker account"]
     assert closed is True
 
 
@@ -2469,7 +2469,9 @@ def _playwright_page():
         pytest.skip(f"Playwright unavailable: {exc}")
     try:
         try:
-            browser = playwright.chromium.launch(headless=True)
+            from app.services.browser_automation import chromium_launch_options
+
+            browser = playwright.chromium.launch(**chromium_launch_options(headless=True))
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"Chromium unavailable: {exc}")
         page = browser.new_page()
@@ -2489,7 +2491,7 @@ class _FakeControl:
     def is_checked(self):
         return self.checked
 
-    def uncheck(self):
+    def uncheck(self, timeout=None):
         self.unchecked = True
 
 
@@ -2588,3 +2590,70 @@ def test_jobserve_already_applied_confirmation_counts_as_submitted() -> None:
     assert apply_agent._jobserve_confirmation_means_submitted("You have already applied for this job") is True
     assert apply_agent._jobserve_confirmation_means_submitted("Your application has been submitted.") is True
     assert apply_agent._jobserve_confirmation_means_submitted("Validation error") is False
+
+
+def test_page_level_inventories_do_not_pass_evaluate_timeout() -> None:
+    class StrictEvaluatePage:
+        # Mirrors Playwright's Page.evaluate(expression, arg=None): no timeout keyword.
+        def evaluate(self, expression, arg=None):
+            return [{"name": "selRad", "value": "Search"}]
+
+    page = StrictEvaluatePage()
+
+    assert apply_agent._jobserve_detect_selects(page)[0]["name"] == "selRad"
+    assert apply_agent._input_submit_inventory(page)[0]["value"] == "Search"
+    assert apply_agent._visible_button_inventory(page)
+    assert apply_agent._search_link_inventory(page)
+
+
+def test_checkbox_click_ticks_when_checking() -> None:
+    class Control:
+        def __init__(self):
+            self.calls = []
+
+        def check(self, timeout=None):
+            self.calls.append("check")
+
+        def uncheck(self, timeout=None):
+            self.calls.append("uncheck")
+
+    control = Control()
+    apply_agent._click_checkbox_box(control, True)
+    apply_agent._click_checkbox_box(control, False)
+
+    assert control.calls == ["check", "uncheck"]
+
+
+def test_jobserve_search_button_pattern_matches_plain_label(monkeypatch) -> None:
+    patterns: list = []
+
+    class Locator:
+        first = last = property(lambda self: self)
+
+    class Page:
+        url = "about:blank"
+
+        def title(self):
+            return ""
+
+        def evaluate(self, expression, arg=None):
+            return []
+
+        def get_by_role(self, role, name=None):
+            patterns.append(name)
+            return Locator()
+
+        def get_by_text(self, text):
+            patterns.append(text)
+            return Locator()
+
+        def locator(self, selector):
+            return Locator()
+
+    monkeypatch.setattr(apply_agent, "_click_jobserve_search_candidate", lambda page, locator: (False, {}))
+    monkeypatch.setattr(apply_agent, "_press_enter_to_submit_jobserve_search", lambda page: (False, "no input"))
+
+    apply_agent._click_jobserve_search(Page(), {})
+
+    assert len(patterns) == 2
+    assert all(pattern.match(" Search ") for pattern in patterns)

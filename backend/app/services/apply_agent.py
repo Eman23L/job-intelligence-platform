@@ -2326,7 +2326,6 @@ def _jobserve_detect_selects(page_or_frame) -> list[dict[str, Any]]:
                     options: Array.from(select.options || []).map((option) => (option.label || option.textContent || '').trim()).slice(0, 20)
                 };
             })""",
-            timeout=1000,
         )
     except Exception:  # noqa: BLE001
         return []
@@ -2488,7 +2487,7 @@ def _set_checkbox_by_label(page, labels: list[str], *, checked: bool, diagnostic
                 if current is None:
                     if click_unknown:
                         details["checkbox_found"] = True
-                        _click_checkbox_box(control)
+                        _click_checkbox_box(control, None)
                         details["clicked"] = True
                         details["result"] = "unknown_clicked_once"
                         details["final_checked"] = _checkbox_checked_state(control)
@@ -2505,7 +2504,7 @@ def _set_checkbox_by_label(page, labels: list[str], *, checked: bool, diagnostic
                     if diagnostic is not None:
                         diagnostic.update(details)
                     return True
-                _click_checkbox_box(control)
+                _click_checkbox_box(control, checked)
                 details["clicked"] = True
                 final = _checkbox_checked_state(control)
                 details["final_checked"] = final
@@ -2580,12 +2579,17 @@ def _checkbox_checked_state(locator) -> bool | None:
         return None
 
 
-def _click_checkbox_box(locator) -> None:
-    try:
-        locator.uncheck()
-        return
-    except Exception:  # noqa: BLE001
-        pass
+def _click_checkbox_box(locator, checked: bool | None) -> None:
+    # Prefer Playwright's state-aware check/uncheck; None means the state is unknown, so toggle once by clicking.
+    if checked is not None:
+        try:
+            if checked:
+                locator.check(timeout=1000)
+            else:
+                locator.uncheck(timeout=1000)
+            return
+        except Exception:  # noqa: BLE001
+            pass
     try:
         box = locator.locator("input[type=checkbox]").first
         box.click(timeout=1000, position={"x": 6, "y": 6})
@@ -2631,12 +2635,12 @@ def _click_jobserve_search(page, diagnostics: dict[str, Any] | None = None) -> b
     }
     start_url = _safe_url(page)
     candidates = [
-        ("role_button_search", page.get_by_role("button", name=re.compile(r"^\\s*search\\s*$", re.I)).first),
+        ("role_button_search", page.get_by_role("button", name=re.compile(r"^\s*search\s*$", re.I)).first),
         ("input_submit_value_search", page.locator('input[type="submit" i][value="Search" i], input[type="button" i][value="Search" i]').first),
         ("button_text_search", page.locator('button:has-text("Search"), input:has-text("Search")').first),
         ("search_button_near_reset", page.locator('form:has-text("Reset") button:has-text("Search"), form:has-text("Reset") input[value="Search" i]').first),
         ("blue_search_button", page.locator('form button[class*="blue" i], form input[class*="blue" i], form .btn-primary, form [class*="search" i]').first),
-        ("text_search", page.get_by_text(re.compile(r"^\\s*search\\s*$", re.I)).last),
+        ("text_search", page.get_by_text(re.compile(r"^\s*search\s*$", re.I)).last),
     ]
     errors: list[str] = []
     for name, locator in candidates:
@@ -2761,7 +2765,7 @@ def _wait_for_jobserve_results(page, start_url: str | None, diagnostics: dict[st
     checks["jobsearch_url"] = bool(current_url and re.search(r"JobSearch|Job-Search|shid=", current_url, re.I))
     try:
         body_text = page.locator("body").inner_text(timeout=1500)
-        checks["result_count_text"] = bool(re.search(r"\\b\\d+\\s+(jobs?|results?)\\b|jobs? found|results? found", body_text, re.I))
+        checks["result_count_text"] = bool(re.search(r"\b\d+\s+(jobs?|results?)\b|jobs? found|results? found", body_text, re.I))
     except Exception as exc:  # noqa: BLE001
         diagnostics["body_text_error"] = str(exc)
     try:
@@ -2789,7 +2793,6 @@ def _visible_button_inventory(page) -> list[dict[str, Any]]:
                 })
                 .map((el, index) => ({ index, tag: el.tagName, text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim(), id: el.id || '', name: el.getAttribute('name') || '', type: el.getAttribute('type') || '', className: String(el.className || ''), rect: (() => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })() }))
                 .slice(0, 60)""",
-            timeout=1000,
         )
     except Exception:  # noqa: BLE001
         return []
@@ -2801,7 +2804,6 @@ def _input_submit_inventory(page) -> list[dict[str, Any]]:
             """() => Array.from(document.querySelectorAll('input[type=submit], input[type=button]'))
                 .map((el, index) => ({ index, value: el.value || '', id: el.id || '', name: el.name || '', className: String(el.className || ''), disabled: Boolean(el.disabled) }))
                 .slice(0, 40)""",
-            timeout=1000,
         )
     except Exception:  # noqa: BLE001
         return []
@@ -2814,7 +2816,6 @@ def _search_link_inventory(page) -> list[dict[str, Any]]:
                 .filter((el) => /search/i.test((el.innerText || el.textContent || '').trim()))
                 .map((el, index) => ({ index, text: (el.innerText || el.textContent || '').trim(), href: el.href || '', id: el.id || '', className: String(el.className || '') }))
                 .slice(0, 30)""",
-            timeout=1000,
         )
     except Exception:  # noqa: BLE001
         return []
@@ -2922,7 +2923,6 @@ def _jobserve_detail_panel_identity(page) -> dict[str, Any] | None:
                     salary: salaryMatch ? salaryMatch[0].trim() : ''
                 };
             }""",
-            timeout=1500,
         )
         return identity if identity and any(identity.get(key) for key in ["text", "title", "href", "reference"]) else None
     except Exception:  # noqa: BLE001
