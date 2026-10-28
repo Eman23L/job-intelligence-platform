@@ -21,7 +21,6 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.main import app
-from app.services import applications
 from app.services import rescore_runs
 from scripts.seed_data import seed_database
 
@@ -44,14 +43,11 @@ def phase6_client() -> Generator[tuple[TestClient, dict[str, int]], None, None]:
 
     app.dependency_overrides[get_db] = override_get_db
     original_rescore_session_local = rescore_runs.SessionLocal
-    original_applications_session_local = applications.SessionLocal
     rescore_runs.SessionLocal = TestingSession
-    applications.SessionLocal = TestingSession
     try:
         yield TestClient(app), ids
     finally:
         rescore_runs.SessionLocal = original_rescore_session_local
-        applications.SessionLocal = original_applications_session_local
         app.dependency_overrides.clear()
 
 
@@ -340,32 +336,20 @@ def test_analytics_overview_empty_database() -> None:
     }
 
 
-def test_prepare_applications_queues_high_scoring_non_excluded_jobs_once(monkeypatch) -> None:
-    def mark_active(db, job):
-        job.availability_status = "active"
-        job.availability_reason = "Fixture availability check"
-        db.commit()
-
-    monkeypatch.setattr(applications, "check_job_availability", mark_active)
+def test_prepare_applications_queues_high_scoring_non_excluded_jobs_once() -> None:
     with phase6_client() as (client, ids):
         first = client.post("/applications/prepare")
-        listed = client.get("/applications")
         second = client.post("/applications/prepare")
+        listed = client.get("/applications")
 
         assert first.status_code == 200
-        first_status = client.get(f"/applications/prepare-runs/{first.json()['run_id']}")
-        assert first_status.status_code == 200
-        assert first_status.json()["status"] == "completed"
-        assert first_status.json()["queued"] == 1
-        assert second.status_code == 200
-        second_status = client.get(f"/applications/prepare-runs/{second.json()['run_id']}")
-        assert second_status.status_code == 200
-        assert second_status.json()["queued"] == 0
-        assert listed.status_code == 200
+        assert first.json() == {"added": 1, "minimum_apply_score": 80}
+        assert second.json()["added"] == 0
         items = listed.json()["items"]
-        assert {item["job_id"] for item in items} == {ids["excellent"]}
-        assert {item["application_status"] for item in items} == {"ready_to_apply"}
-        assert all(item["apply_url"].startswith("https://example.invalid/jobs/") for item in items)
+        assert [item["job_id"] for item in items] == [ids["excellent"]]
+        assert items[0]["status"] == "to_apply"
+        assert items[0]["url"].startswith("https://example.invalid/jobs/")
+        assert items[0]["recommendation_tier"] == "Excellent match"
 
 
 def test_rescore_endpoint_returns_run_id_and_status_progress() -> None:
@@ -394,28 +378,26 @@ def test_rescore_endpoint_returns_run_id_and_status_progress() -> None:
         assert status_body["total_jobs"] >= status_body["completed_jobs"]
 
 
-def test_application_status_endpoints_and_excluded_protection() -> None:
+def test_job_application_endpoints_track_per_person() -> None:
     with phase6_client() as (client, ids):
-        ready = client.post(f"/jobs/{ids['excellent']}/mark-ready-to-apply")
-        opened = client.post(f"/jobs/{ids['excellent']}/mark-opened")
+        queued = client.post(f"/jobs/{ids['excellent']}/add-to-apply-list")
         applied = client.post(f"/jobs/{ids['excellent']}/mark-applied")
         skipped = client.post(f"/jobs/{ids['strong']}/mark-skipped")
-        excluded_ready = client.post(f"/jobs/{ids['excluded']}/mark-ready-to-apply")
-        excluded_applied = client.post(f"/jobs/{ids['excluded']}/mark-applied")
-        listed = client.get("/applications")
+        listed = client.get("/applications").json()["items"]
+        detail = client.get(f"/jobs/{ids['excellent']}").json()
+        jobs = {item["id"]: item for item in client.get("/jobs?page_size=100").json()["items"]}
 
-        assert ready.status_code == 200
-        assert ready.json()["job"]["application_status"] == "ready_to_apply"
-        assert opened.status_code == 200
-        assert opened.json()["job"]["application_status"] == "opened"
-        assert applied.status_code == 200
+        assert queued.json()["status"] == "to_apply"
         assert applied.json()["status"] == "applied"
-        assert skipped.status_code == 200
-        assert skipped.json()["job"]["application_status"] == "skipped"
-        assert excluded_ready.status_code == 400
-        assert excluded_applied.status_code == 400
-        assert listed.status_code == 200
-        assert listed.json()["items"] == []
+        assert applied.json()["id"] == queued.json()["id"]
+        assert applied.json()["applied_at"] is not None
+        assert skipped.json()["status"] == "skipped"
+        assert {item["job_id"]: item["status"] for item in listed} == {ids["excellent"]: "applied", ids["strong"]: "skipped"}
+        assert detail["application_status"] == "applied"
+        assert detail["application_id"] == applied.json()["id"]
+        assert jobs[ids["excellent"]]["application_status"] == "applied"
+        assert jobs[ids["stretch"]]["application_status"] is None
+        assert client.get("/analytics/overview").json()["applied_jobs"] == 1
 
 
 def test_role_fit_analytics() -> None:

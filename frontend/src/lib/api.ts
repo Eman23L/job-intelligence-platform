@@ -1,14 +1,12 @@
 import type {
   AIChatResponse,
   AIHistoryMessage,
-  ApplicationPrepareRunStart,
-  ApplicationPrepareRunStatus,
+  Application,
+  ApplicationCreatePayload,
+  ApplicationStatus,
   ApplicationsList,
-  AssistApplyDiagnosticRun,
-  AssistApplyResult,
+  ApplyPack,
   AnalyticsOverview,
-  AutonomousRealSubmitRunResult,
-  AutonomousRealSubmitStatus,
   JobDetail,
   JobAvailabilityResult,
   JobAvailabilityRunStart,
@@ -142,10 +140,32 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
   }
 }
 
-function logAssistApplyPayload(context: string, payload: unknown) {
-  if (typeof window !== "undefined") {
-    console.info(`Assist apply ${context}`, payload);
+// Fetch a file with the signed-in token and hand it to the browser as a download.
+async function downloadFile(path: string): Promise<string> {
+  const token = getToken();
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    let detail = `Download failed with status ${response.status}`;
+    try {
+      const body = await response.json();
+      detail = typeof body.detail === "string" ? body.detail : detail;
+    } catch {
+      // Keep the generic message.
+    }
+    throw new ApiError(detail, response.status);
   }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? "cv";
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return filename;
 }
 
 export interface Account {
@@ -181,27 +201,18 @@ export const authApi = {
 export const api = {
   overview: () => request<AnalyticsOverview>("/analytics/overview", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
   applications: () => request<ApplicationsList>("/applications"),
-  prepareApplications: () => request<ApplicationPrepareRunStart>("/applications/prepare", { method: "POST" }),
-  prepareApplicationsRun: (id: number) => request<ApplicationPrepareRunStatus>(`/applications/prepare-runs/${id}`),
-  assistApply: (id: number, mode: "review_only" | "submit_with_confirmation" = "review_only", debugMode = false) =>
-    request<AssistApplyResult>(`/applications/${id}/assist-apply`, {
-      method: "POST",
-      timeoutMs: 30000,
-      body: JSON.stringify({ mode, debug_mode: debugMode })
-    }).then((payload) => {
-      logAssistApplyPayload("POST response", payload);
-      return payload;
-    }),
-  startAssistApplyDiagnostic: (id: number) =>
-    request<AssistApplyDiagnosticRun>(`/applications/${id}/assist-apply/diagnostics`, {
-      method: "POST",
-      timeoutMs: 30000
-    }),
-  assistApplyDiagnosticRun: (id: number, runId: string) =>
-    request<AssistApplyDiagnosticRun>(`/applications/${id}/assist-apply/diagnostics/${runId}`, { timeoutMs: 30000 }),
-  autonomousRealSubmitStatus: () => request<AutonomousRealSubmitStatus>("/applications/autonomous-real-submit"),
-  runAutonomousRealSubmit: () =>
-    request<AutonomousRealSubmitRunResult>("/applications/autonomous-real-submit", { method: "POST", timeoutMs: 30000 }),
+  prepareApplications: (minimumScore?: number) =>
+    request<{ added: number; minimum_apply_score: number }>(
+      `/applications/prepare${minimumScore !== undefined ? `?minimum_score=${minimumScore}` : ""}`,
+      { method: "POST", timeoutMs: JOBS_REQUEST_TIMEOUT_MS }
+    ),
+  createApplication: (body: ApplicationCreatePayload) =>
+    request<Application>("/applications", { method: "POST", body: JSON.stringify(body) }),
+  updateApplication: (id: number, body: { status?: ApplicationStatus; notes?: string }) =>
+    request<Application>(`/applications/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteApplication: (id: number) => request<void>(`/applications/${id}`, { method: "DELETE" }),
+  applyPack: (id: number | string) => request<ApplyPack>(`/applications/${id}/pack`),
+  downloadCv: () => downloadFile("/profile/cv-file"),
   jobs: (params: URLSearchParams) => request<PaginatedJobs>(`/jobs?${params.toString()}`, { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
   jobDetail: (id: string | number) => request<JobDetail>(`/jobs/${id}`),
   rescoreJobs: () => request<JobRescoreRunStart>("/jobs/rescore", { method: "POST" }),
@@ -238,10 +249,9 @@ export const api = {
   applyStrategyRun: (id: number) => request<JobApplyStrategyRunStatus>(`/jobs/apply-strategy-runs/${id}`),
   saveJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/save`, { method: "POST" }),
   rejectJob: (id: string | number) => request<SavedJob>(`/jobs/${id}/reject`, { method: "POST" }),
-  markReadyToApply: (id: string | number) => request<JobDetail>(`/jobs/${id}/mark-ready-to-apply`, { method: "POST" }),
-  markOpened: (id: string | number) => request<JobDetail>(`/jobs/${id}/mark-opened`, { method: "POST" }),
-  markApplied: (id: string | number) => request<SavedJob>(`/jobs/${id}/mark-applied`, { method: "POST" }),
-  markSkipped: (id: string | number) => request<JobDetail>(`/jobs/${id}/mark-skipped`, { method: "POST" }),
+  addToApplyList: (id: string | number) => request<Application>(`/jobs/${id}/add-to-apply-list`, { method: "POST" }),
+  markApplied: (id: string | number) => request<Application>(`/jobs/${id}/mark-applied`, { method: "POST" }),
+  markSkipped: (id: string | number) => request<Application>(`/jobs/${id}/mark-skipped`, { method: "POST" }),
   savedJobs: () => request<SavedJob[]>("/saved-jobs"),
   updateSavedJob: (id: number, body: { status?: string; notes?: string | null }) =>
     request<SavedJob>(`/saved-jobs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

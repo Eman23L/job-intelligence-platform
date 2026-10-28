@@ -47,18 +47,10 @@ class Settings(BaseSettings):
     page_navigation_timeout_ms: int = Field(default=60000, alias="PAGE_NAVIGATION_TIMEOUT_MS")
     playwright_enabled: bool = Field(default=False, alias="PLAYWRIGHT_ENABLED")
     service_type: str = Field(default="web", alias="SERVICE_TYPE")
-    diagnostic_admin_token: str = Field(default="", alias="DIAGNOSTIC_ADMIN_TOKEN")
     # One-time code that lets the owner claim the existing data and set a password.
     owner_setup_code: str = Field(default="", alias="OWNER_SETUP_CODE")
     session_days: int = Field(default=30, alias="SESSION_DAYS")
     invite_days: int = Field(default=14, alias="INVITE_DAYS")
-    autonomous_real_submit_enabled: bool = Field(default=False, alias="AUTONOMOUS_REAL_SUBMIT_ENABLED")
-    max_autonomous_real_submits_per_run: int = Field(default=1, alias="MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN")
-    max_autonomous_fix_attempts_per_application: int = Field(default=3, alias="MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_APPLICATION")
-    github_token: str = Field(default="", alias="GITHUB_TOKEN")
-    github_repository: str = Field(default="", alias="GITHUB_REPOSITORY")
-    codex_mention: str = Field(default="@codex", alias="CODEX_MENTION")
-    max_autonomous_fix_attempts_per_issue: int = Field(default=5, alias="MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE")
 
     @field_validator("database_url", mode="before")
     @classmethod

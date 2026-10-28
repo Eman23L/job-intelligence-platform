@@ -12,7 +12,11 @@ const pages: Record<string, { title: string; description: string }> = {
   "/dashboard": { title: "Overview", description: "Your job search at a glance." },
   "/jobs": { title: "Jobs", description: "Every role we've found, ranked by how well it fits your profile." },
   "/saved": { title: "Saved jobs", description: "Roles you've shortlisted and where each one stands." },
-  "/applications": { title: "Applications", description: "Prepare and track applications for your best matches." },
+  "/applications": { title: "Applications", description: "Jobs to apply for, and how each application is going." },
+  "/linkedin-indeed": {
+    title: "Apply on LinkedIn and Indeed",
+    description: "Claude applies in your own browser, one job at a time, while you watch."
+  },
   "/ai": { title: "AI Advisor", description: "Ask questions about your matches, skills and next steps." },
   "/missing-skills": { title: "Skill gaps", description: "Skills employers ask for that aren't on your profile yet." },
   "/role-fit": { title: "Role fit", description: "How well you match each type of role." },
@@ -74,7 +78,9 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const page = pathname.startsWith("/jobs/")
     ? { title: "Job details", description: "" }
-    : pages[pathname] ?? pages["/dashboard"];
+    : pathname.startsWith("/apply/")
+      ? { title: "Apply with Claude", description: "Everything Claude needs to fill in this application for you." }
+      : pages[pathname] ?? pages["/dashboard"];
 
   if (publicPage) {
     return <main className="auth-page">{children}</main>;

@@ -9,7 +9,7 @@ from sqlalchemy import Select, asc, case, desc, func, nulls_last, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.db.models import Job, JobAnalysis, JobScore, JobSkill, MissingSkill, SavedJob, User
+from app.db.models import Application, Job, JobAnalysis, JobScore, JobSkill, MissingSkill, SavedJob, User
 from app.schemas.database import JobDetail, JobListItem, PaginatedJobs
 from app.services.job_scoring import recommendation_from_score
 
@@ -167,6 +167,12 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
     if user is not None:
         score_query = score_query.where(JobScore.user_id == user.id)
     score_subquery = score_query.subquery()
+    application_query = select(Application.job_id.label("job_id"), Application.status.label("status")).where(
+        Application.job_id.is_not(None)
+    )
+    # Without a signed-in person there is no application status to show.
+    application_query = application_query.where(Application.user_id == (user.id if user is not None else -1))
+    application_subquery = application_query.subquery()
     if timings is not None:
         timings["score_application_data_query_build_ms"] = int((perf_counter() - base_started) * 1000)
 
@@ -188,7 +194,7 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
             Job.normalized_annual_max,
             Job.posted_at,
             Job.status,
-            Job.application_status,
+            application_subquery.c.status.label("application_status"),
             Job.availability_status,
             Job.last_checked_at,
             Job.availability_reason,
@@ -208,6 +214,7 @@ def _job_list_query(filters: JobFilters, sort: str, user: User | None, timings: 
         .outerjoin(score_subquery, score_subquery.c.job_id == Job.id)
         .outerjoin(skills_count, skills_count.c.job_id == Job.id)
         .outerjoin(missing_count, missing_count.c.job_id == Job.id)
+        .outerjoin(application_subquery, application_subquery.c.job_id == Job.id)
     )
     if timings is not None:
         timings["base_query_build_ms"] = int((perf_counter() - base_select_started) * 1000)
@@ -290,6 +297,7 @@ def job_detail(db: Session, job: Job, user: User | None = None) -> JobDetail:
     skills = db.scalars(select(JobSkill).where(JobSkill.job_id == job.id).order_by(JobSkill.skill_name)).all()
     matched = [skill for skill in skills if skill.skill_name not in missing_names]
     saved = _saved_for_job(db, job.id, user)
+    application = _application_for_job(db, job.id, user)
     return JobDetail(
         job=job,
         analysis=analysis,
@@ -298,6 +306,8 @@ def job_detail(db: Session, job: Job, user: User | None = None) -> JobDetail:
         missing_skills=missing,
         red_flags=(analysis.red_flags if analysis and analysis.red_flags else []),
         saved_status=saved.status if saved else None,
+        application_id=application.id if application else None,
+        application_status=application.status if application else None,
     )
 
 
@@ -328,7 +338,7 @@ def _job_row(db: Session, job: Job, user: User | None) -> dict:
         matched_skills_count=max(0, skills_count - missing_count),
         missing_skills_count=missing_count,
         status=job.status,
-        application_status=job.application_status,
+        application_status=(app.status if (app := _application_for_job(db, job.id, user)) else None),
         availability_status=job.availability_status,
         last_checked_at=job.last_checked_at,
         availability_reason=job.availability_reason,
@@ -408,6 +418,12 @@ def _missing_for_job(db: Session, job_id: int, user: User | None) -> list[Missin
     if user is not None:
         query = query.where(MissingSkill.user_id == user.id)
     return list(db.scalars(query).all())
+
+
+def _application_for_job(db: Session, job_id: int, user: User | None) -> Application | None:
+    if user is None:
+        return None
+    return db.scalar(select(Application).where(Application.job_id == job_id, Application.user_id == user.id))
 
 
 def _saved_for_job(db: Session, job_id: int, user: User | None) -> SavedJob | None:

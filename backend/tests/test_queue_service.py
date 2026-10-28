@@ -43,9 +43,9 @@ def test_enqueue_uses_apply_timeout_for_browser_jobs(monkeypatch) -> None:
     monkeypatch.setattr(queue, "queue_enabled", lambda: True)
     monkeypatch.setattr(queue, "rq_queue", lambda: fake_queue)
 
-    from app.services.apply_agent import run_assist_apply_background
+    from app.services.apply_strategy import run_apply_strategy_background
 
-    queue.enqueue_or_background(BackgroundTasks(), run_assist_apply_background, 1, 1, job_id="apply")
+    queue.enqueue_or_background(BackgroundTasks(), run_apply_strategy_background, 1, None, job_id="apply")
 
     assert fake_queue.calls[0]["timeout"] == queue.settings.apply_timeout_seconds
 

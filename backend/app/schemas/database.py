@@ -436,7 +436,8 @@ class JobListItem(BaseModel):
     matched_skills_count: int
     missing_skills_count: int
     status: str
-    application_status: str
+    # The signed-in person's application status for this job, if it's on their list.
+    application_status: str | None = None
     availability_status: str
     last_checked_at: datetime | None = None
     availability_reason: str | None = None
@@ -681,130 +682,86 @@ class JobDetail(BaseModel):
     missing_skills: list[MissingSkillRead]
     red_flags: list[str]
     saved_status: str | None = None
+    application_id: int | None = None
+    application_status: str | None = None
 
 
-class ApplicationItem(BaseModel):
-    job_id: int
+class ApplicationRead(ORMModel):
+    id: int
+    job_id: int | None = None
+    source: str
     title: str
-    company_name: str | None = None
+    company: str | None = None
     location: str | None = None
-    apply_url: str
-    application_status: str
-    availability_status: str
-    last_checked_at: datetime | None = None
-    availability_reason: str | None = None
-    apply_strategy: str
-    apply_difficulty: str
-    apply_strategy_reason: str | None = None
-    apply_readiness_score: Decimal | None = None
-    assisted_started_at: datetime | None = None
-    assisted_result: dict[str, Any] | None = None
-    assisted_warnings: list[str] | None = None
-    last_apply_attempt_at: datetime | None = None
+    url: str | None = None
+    status: str
+    notes: str | None = None
+    applied_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    # Filled in for jobs the app found, from the signed-in person's score.
     total_score: Decimal | None = None
     recommendation_tier: str | None = None
-    recommendation: str | None = None
+    availability_status: str | None = None
 
 
 class ApplicationsList(BaseModel):
-    items: list[ApplicationItem]
+    items: list[ApplicationRead]
     minimum_apply_score: int = 80
-    warning: str | None = None
 
 
-class AssistApplyResult(BaseModel):
-    status: str
-    filled_fields: list[str] = Field(default_factory=list)
-    unfilled_fields: list[str] = Field(default_factory=list)
-    unfilled_required_fields: list[str] = Field(default_factory=list)
-    uploaded_cv: bool = False
-    submitted: bool = False
-    warnings: list[str] = Field(default_factory=list)
-    screenshot_path: str | None = None
-    screenshot_paths: list[str] = Field(default_factory=list)
-    screenshot_urls: list[str] = Field(default_factory=list)
-    html_snapshot_paths: list[str] = Field(default_factory=list)
-    html_snapshot_urls: list[str] = Field(default_factory=list)
-    detected_buttons: list[dict[str, Any]] = Field(default_factory=list)
-    detected_fields: list[dict[str, Any]] = Field(default_factory=list)
-    detected_selects: list[dict[str, Any]] = Field(default_factory=list)
-    detected_iframes: list[dict[str, Any]] = Field(default_factory=list)
-    debug_steps: list[dict[str, Any]] = Field(default_factory=list)
-    final_url: str | None = None
-    final_error: str | None = None
-    running_step: str | None = None
-    debug_mode: bool = False
-    timing_diagnostics: dict[str, Any] = Field(default_factory=dict)
-    progress: dict[str, Any] = Field(default_factory=dict)
-    profile_diagnostics: dict[str, Any] = Field(default_factory=dict)
-    jobserve_flow_diagnostics: dict[str, Any] = Field(default_factory=dict)
-    upload_diagnostics: dict[str, Any] = Field(default_factory=dict)
-    select_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
-    exceptions: list[dict[str, Any]] = Field(default_factory=list)
-    submitted_job_title: str | None = None
-    submitted_job_company: str | None = None
-    submitted_job_reference: str | None = None
-    submitted_job_external_id: str | None = None
-    applied_at: datetime | None = None
-    confirmation_text: str | None = None
-    registration_toggle_disabled: bool = False
-    modal_closed: bool = False
+class ApplicationCreate(BaseModel):
+    # Either a job the app found, or the details of one found elsewhere (LinkedIn, Indeed...).
+    job_id: int | None = None
+    title: str | None = None
+    company: str | None = None
+    location: str | None = None
+    url: str | None = None
+    source: str = "other"
+    status: str = "to_apply"
+    notes: str | None = None
 
 
-class AssistApplyRequest(BaseModel):
-    mode: str = "review_only"
-    debug_mode: bool = False
+class ApplicationUpdate(BaseModel):
+    status: str | None = None
+    notes: str | None = None
 
 
-class AssistApplyDiagnosticRun(BaseModel):
-    run_id: str
-    status: str
-    latest_progress: dict[str, Any] = Field(default_factory=dict)
-    final_report: dict[str, Any] | None = None
-    markdown_summary: str | None = None
-    artifact_links: list[str] = Field(default_factory=list)
+class PrepareApplicationsResult(BaseModel):
+    added: int
+    minimum_apply_score: int
 
 
-class AutonomousRealSubmitStatus(BaseModel):
-    enabled: bool
-    max_submits_per_run: int
-    eligible_application_ids: list[int] = Field(default_factory=list)
-    last_result: dict[str, Any] | None = None
+class ApplyPackJob(BaseModel):
+    title: str
+    company: str | None = None
+    location: str | None = None
+    url: str | None = None
+    salary: str | None = None
+    posted_at: datetime | None = None
+    description: str | None = None
 
 
-class AutonomousRealSubmitRunResult(BaseModel):
-    status: str
-    application_id: int | None = None
-    submitted: bool = False
-    failed_phase: str | None = None
-    exact_error: str | None = None
-    recommended_fix: str
-    diagnostic_run_id: str | None = None
-    codex_handoff_status: str | None = None
-    github_issue_url: str | None = None
-    codex_handoff_error: str | None = None
-    codex_handoff_attempt_count: int | None = None
-    focused_application_id: int | None = None
-    attempt_number: int = 0
-    max_attempts: int = 3
-    waiting_for_fix_deploy: bool = False
-    will_retry_same_application: bool = False
-    will_move_to_next_application: bool = False
-    orchestration_steps: list[dict[str, Any]] = Field(default_factory=list)
-    current_url: str | None = None
-    page_title: str | None = None
-    screenshot_paths: list[str] = Field(default_factory=list)
-    screenshot_urls: list[str] = Field(default_factory=list)
-    html_snapshot_paths: list[str] = Field(default_factory=list)
-    html_snapshot_urls: list[str] = Field(default_factory=list)
-    detected_buttons: list[dict[str, Any]] = Field(default_factory=list)
-    detected_fields: list[dict[str, Any]] = Field(default_factory=list)
-    detected_selects: list[dict[str, Any]] = Field(default_factory=list)
-    select_diagnostics: list[dict[str, Any]] = Field(default_factory=list)
-    last_known_stage: str | None = None
-    artifact_links: list[str] = Field(default_factory=list)
-    traceback: str | None = None
-    created_at: str
+class ApplyPackCandidate(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    country: str | None = None
+    work_status_uk: str | None = None
+    sponsorship_required: bool = False
+    availability_notice: str | None = None
+    salary_expectation: str | None = None
+    travel_distance: str | None = None
+    cv_file_name: str | None = None
+    cv_text: str | None = None
+
+
+class ApplyPack(BaseModel):
+    application: ApplicationRead
+    job: ApplyPackJob
+    candidate: ApplyPackCandidate
 
 
 class BrowserStatus(BaseModel):
@@ -818,30 +775,6 @@ class BrowserStatus(BaseModel):
     chromium_file_exists: bool = False
     chromium_file_executable: bool = False
     worker_running: bool
-
-
-class ApplicationsPrepareResult(BaseModel):
-    queued: int
-    job_ids: list[int]
-
-
-class ApplicationPrepareRunStart(BaseModel):
-    run_id: int
-    status: str
-
-
-class ApplicationPrepareRunStatus(BaseModel):
-    run_id: int
-    status: str
-    total: int = 0
-    processed: int = 0
-    queued: int = 0
-    skipped: int = 0
-    failed: int = 0
-    error: str | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    last_heartbeat_at: datetime | None = None
 
 
 class AnalyticsOverview(BaseModel):

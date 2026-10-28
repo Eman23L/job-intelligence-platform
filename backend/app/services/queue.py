@@ -110,7 +110,7 @@ def rq_job_failure(rq_job_id: str) -> dict[str, Any] | None:
 
 def timeout_for_function(func: Callable[..., Any]) -> int:
     dotted = _dotted_path(func)
-    if "assist_apply" in dotted or "apply" in dotted:
+    if "apply" in dotted:
         return settings.apply_timeout_seconds
     if "scrape" in dotted or "playwright" in dotted:
         return settings.scrape_timeout_seconds

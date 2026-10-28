@@ -1,1067 +1,382 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
-import { AvailabilityBadge } from "@/components/AvailabilityBadge";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScorePill } from "@/components/ScoreBadge";
-import { ApiError, api, apiConfig } from "@/lib/api";
-import type { ApplicationItem, ApplicationPrepareRunStatus, ApplicationsList, AssistApplyDiagnosticRun, AssistApplyResult, AutonomousRealSubmitRunResult, AutonomousRealSubmitStatus, JobScorecard } from "@/types/api";
+import { api } from "@/lib/api";
+import { SOURCE_LABELS } from "@/lib/applications";
+import { formatDate } from "@/lib/format";
+import type { Application, ApplicationSource, ApplicationStatus, ApplicationsList } from "@/types/api";
 
-const RECENT_CHECK_MS = 24 * 60 * 60 * 1000;
-const ASSIST_APPLY_POLL_ATTEMPTS = 450;
-const ASSIST_APPLY_POLL_INTERVAL_MS = 2000;
+type Tab = "to_apply" | "applied" | "skipped";
+
+const SUBMITTED: ApplicationStatus[] = ["applied", "interviewing", "offer", "rejected"];
+
+const PROGRESS_LABELS: Record<string, string> = {
+  applied: "Applied",
+  interviewing: "Interviewing",
+  offer: "Offer",
+  rejected: "Not successful"
+};
 
 export default function ApplicationsPage() {
   const [data, setData] = useState<ApplicationsList | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState<number | "prepare" | null>(null);
-  const [prepareRunId, setPrepareRunId] = useState<number | null>(null);
-  const [prepareRun, setPrepareRun] = useState<ApplicationPrepareRunStatus | null>(null);
-  const [preparePollFailures, setPreparePollFailures] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ type: "info" | "success" | "warning" | "error"; message: string } | null>(null);
-  const [scorecard, setScorecard] = useState<JobScorecard | null>(null);
-  const [assistResult, setAssistResult] = useState<{ jobTitle: string; result: AssistApplyResult; diagnostic?: AssistApplyDiagnosticRun | null } | null>(null);
-  const [assistDebugMode, setAssistDebugMode] = useState(true);
-  const [autonomousStatus, setAutonomousStatus] = useState<AutonomousRealSubmitStatus | null>(null);
-  const [autonomousResult, setAutonomousResult] = useState<AutonomousRealSubmitRunResult | null>(null);
+  const [notice, setNotice] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
+  const [tab, setTab] = useState<Tab>("to_apply");
   const [threshold, setThreshold] = useState(80);
+  const [adding, setAdding] = useState(false);
+  const [showLogForm, setShowLogForm] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     const result = await api.applications();
     setData(result);
-    setThreshold(result.minimum_apply_score);
-    api.autonomousRealSubmitStatus().then(setAutonomousStatus).catch(() => setAutonomousStatus(null));
+    return result;
   }, []);
 
   useEffect(() => {
-    setLoading(true);
     refresh()
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
+      .then((result) => setThreshold(result.minimum_apply_score))
+      .catch((err: Error) => setError(err.message));
   }, [refresh]);
 
-  useEffect(() => {
-    if (!autonomousResult || !["queued", "running"].includes(autonomousResult.status)) {
-      return;
-    }
-    let cancelled = false;
-    let inFlight = false;
-    const pollOnce = async () => {
-      try {
-        const status = await api.autonomousRealSubmitStatus();
-        if (cancelled) {
-          return;
-        }
-        setAutonomousStatus(status);
-        if (status.last_result) {
-          setAutonomousResult(normaliseAutonomousResult(status.last_result, autonomousResult));
-        }
-      } catch {
-        // Keep the current summary visible; the next interval can recover.
-      }
-    };
-    const poll = async () => {
-      if (inFlight) {
-        return;
-      }
-      inFlight = true;
-      try {
-        await pollOnce();
-      } finally {
-        inFlight = false;
-      }
-    };
-    poll();
-    const intervalId = globalThis.setInterval(poll, 3000);
-    return () => {
-      cancelled = true;
-      globalThis.clearInterval(intervalId);
-    };
-  }, [autonomousResult]);
-
-  useEffect(() => {
-    if (!prepareRunId) {
-      return;
-    }
-    let cancelled = false;
-    let inFlight = false;
-    const pollOnce = async () => {
-      try {
-        const result = await api.prepareApplicationsRun(prepareRunId);
-        if (cancelled) {
-          return;
-        }
-        setPrepareRun(result);
-        setPreparePollFailures(0);
-        if (result.status === "completed" || result.status === "failed") {
-          setPrepareRunId(null);
-          setActionLoading(null);
-          await refresh();
-          setNotice({
-            type: result.status === "completed" ? "success" : "error",
-            message:
-              result.status === "completed"
-                ? `Prepare complete: ${result.queued} queued, ${result.skipped} skipped, ${result.failed} failed.`
-                : result.error ?? "Prepare applications failed"
-          });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setPreparePollFailures((current) => {
-            const next = current + 1;
-            if (next >= 3) {
-              setNotice({ type: "warning", message: err instanceof Error ? err.message : "Temporary prepare status polling failure" });
-            }
-            return next;
-          });
-        }
-      }
-    };
-    const poll = async () => {
-      if (inFlight) {
-        return;
-      }
-      inFlight = true;
-      try {
-        await pollOnce();
-      } finally {
-        inFlight = false;
-      }
-    };
-    poll();
-    const intervalId = globalThis.setInterval(poll, 2500);
-    return () => {
-      cancelled = true;
-      globalThis.clearInterval(intervalId);
-    };
-  }, [prepareRunId, refresh]);
-
-  const prepareApplications = async () => {
-    setActionLoading("prepare");
-    setError(null);
-    setNotice({ type: "info", message: "Preparing applications..." });
-    setPrepareRun(null);
-    setPreparePollFailures(0);
-    try {
-      const started = await api.prepareApplications();
-      setPrepareRunId(started.run_id);
-      setPrepareRun(emptyPrepareRun(started.run_id, started.status));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to prepare applications");
-      setActionLoading(null);
-    }
-  };
-
-  const saveThreshold = async (value: number) => {
-    setThreshold(value);
-    setError(null);
-    try {
-      await api.saveApplicationProfile({ minimum_apply_score: value });
-      await refresh();
-      setNotice({ type: "success", message: `Apply threshold set to ${value}+. Queue refreshed.` });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to save apply threshold");
-    }
-  };
-
-  const runJobAction = async (jobId: number, action: () => Promise<unknown>, successMessage: string) => {
-    setActionLoading(jobId);
-    setError(null);
-    try {
-      await action();
-      await refresh();
-      setNotice({ type: "success", message: successMessage });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Application action failed");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const openApplyLink = async (item: ApplicationItem) => {
-    setActionLoading(item.job_id);
-    setError(null);
-    try {
-      const checked = await api.checkJobAvailability(item.job_id);
-      await refresh();
-      if (checked.availability_status !== "active") {
-        setNotice({
-          type: "warning",
-          message: `Application blocked because the job is ${checked.availability_status}. ${checked.availability_reason ?? ""}`.trim()
-        });
-        return;
-      }
-      window.open(item.apply_url, "_blank", "noopener,noreferrer");
-      await api.markOpened(item.job_id);
-      await refresh();
-      setNotice({ type: "success", message: "Application link opened." });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to open apply link");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const viewScorecard = async (jobId: number) => {
-    setActionLoading(jobId);
-    setError(null);
-    try {
-      setScorecard(await api.jobScorecard(jobId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load scorecard");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const runAutonomousRealSubmit = async () => {
-    setActionLoading("prepare");
-    setError(null);
-    try {
-      const result = await api.runAutonomousRealSubmit();
-      setAutonomousResult(result);
-      await refresh();
-      setNotice({
-        type: result.submitted ? "success" : "warning",
-        message: result.submitted ? "Autonomous real-submit canary submitted one application." : result.exact_error ?? result.recommended_fix
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to run autonomous real-submit canary");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const pollAssistResult = async (item: ApplicationItem, fallback: AssistApplyResult, expectDebug: boolean) => {
-    let latestPersisted: AssistApplyResult | null = null;
-    for (let attempt = 0; attempt < ASSIST_APPLY_POLL_ATTEMPTS; attempt += 1) {
-      await sleep(ASSIST_APPLY_POLL_INTERVAL_MS);
-      const latest = await api.applications();
-      setData(latest);
-      setThreshold(latest.minimum_apply_score);
-      const current = latest.items.find((candidate) => candidate.job_id === item.job_id);
-      const persisted = current?.assisted_result;
-      console.info("Assist apply applications poll payload", { attempt, jobId: item.job_id, assisted_result: persisted });
-      if (!persisted) {
-        continue;
-      }
-      latestPersisted = persisted;
-      const displayedPersisted = workerProgressSeen(persisted) && persisted.status === "queued" ? { ...persisted, status: "running" } : persisted;
-      setAssistResult({ jobTitle: current?.title ?? item.title, result: normaliseAssistResult(displayedPersisted) });
-      if (!["queued", "running"].includes(persisted.status) && (!expectDebug || persisted.debug_mode || persisted.final_error || persisted.debug_steps?.length)) {
-        return persisted;
-      }
-    }
-    if (latestPersisted && workerProgressSeen(latestPersisted)) {
-      return latestPersisted.status === "queued" ? { ...latestPersisted, status: "running" } : latestPersisted;
-    }
+  const groups = useMemo(() => {
+    const items = data?.items ?? [];
     return {
-      ...normaliseAssistResult(fallback),
-      status: "failed",
-      final_error: "stale_queue_timeout",
-      warnings: [...(fallback.warnings ?? []), "Worker did not pick up the assisted apply job within 15 minutes."],
-      progress: {
-        ...(fallback.progress ?? {}),
-        current_step: "stale_queue_timeout",
-        message: "Worker did not pick up the assisted apply job within 15 minutes."
-      },
-      jobserve_flow_diagnostics: {
-        ...(fallback.jobserve_flow_diagnostics ?? {}),
-        queue_failure: {
-          error: "stale_queue_timeout",
-          message: "Worker did not pick up the assisted apply job within 15 minutes."
-        }
-      }
+      // Best matches first; jobs logged from other sites (no score) go last.
+      to_apply: items
+        .filter((item) => item.status === "to_apply")
+        .sort((a, b) => Number(b.total_score ?? -1) - Number(a.total_score ?? -1)),
+      applied: items.filter((item) => SUBMITTED.includes(item.status)),
+      skipped: items.filter((item) => item.status === "skipped")
     };
-  };
+  }, [data]);
 
-  const pollAssistDiagnostic = async (item: ApplicationItem, started: AssistApplyDiagnosticRun) => {
-    let latestRun = started;
-    setAssistResult((current) => (current ? { ...current, diagnostic: latestRun } : current));
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      if (latestRun.status === "passed" || latestRun.status === "failed") {
-        return latestRun;
-      }
-      await sleep(3000);
-      latestRun = await api.assistApplyDiagnosticRun(item.job_id, latestRun.run_id);
-      setAssistResult((current) => (current ? { ...current, diagnostic: latestRun } : current));
-    }
-    return latestRun;
-  };
-
-  const triggerSubmitFailureDiagnostic = async (item: ApplicationItem, failedResult: AssistApplyResult) => {
+  const addTopMatches = async () => {
+    setAdding(true);
+    setNotice(null);
     try {
-      const started = await api.startAssistApplyDiagnostic(item.job_id);
-      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(failedResult), diagnostic: started });
-      const completed = await pollAssistDiagnostic(item, started);
-      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(failedResult), diagnostic: completed });
-      const orchestration = await api.runAutonomousRealSubmit();
-      setAutonomousResult(orchestration);
-      return completed;
-    } catch (err) {
-      const diagnostic: AssistApplyDiagnosticRun = {
-        run_id: "unavailable",
-        status: "failed",
-        latest_progress: { phase: "diagnostic_trigger_failed" },
-        final_report: {
-          failed_phase: "diagnostic_trigger_failed",
-          exact_error: err instanceof Error ? err.message : "Unable to start safe diagnostic",
-          recommended_fix: "Check backend diagnostic endpoint and worker queue health."
-        },
-        markdown_summary: null,
-        artifact_links: []
-      };
-      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(failedResult), diagnostic });
-      return diagnostic;
-    }
-  };
-
-  const assistApply = async (item: ApplicationItem, mode: "review_only" | "submit_with_confirmation") => {
-    if (mode === "submit_with_confirmation") {
-      const confirmed = window.confirm("This will submit the application on JobServe using your saved CV. Continue?");
-      if (!confirmed) {
-        return;
-      }
-    }
-    setActionLoading(item.job_id);
-    setError(null);
-    setAssistResult(null);
-    try {
-      const effectiveDebugMode = assistDebugMode || item.apply_strategy.startsWith("jobserve");
-      console.info("Assist apply request", { jobId: item.job_id, mode, debug_mode: effectiveDebugMode, apply_strategy: item.apply_strategy });
-      const result = await api.assistApply(item.job_id, mode, effectiveDebugMode);
-      let displayedResult = result;
-      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(result), diagnostic: null });
-      if (result.status === "queued") {
-        displayedResult = await pollAssistResult(item, result, effectiveDebugMode);
-      } else {
-        await refresh();
-      }
-      setAssistResult({ jobTitle: item.title, result: normaliseAssistResult(displayedResult), diagnostic: null });
-      let diagnostic: AssistApplyDiagnosticRun | null = null;
-      if (mode === "submit_with_confirmation" && submitFailed(displayedResult)) {
-        diagnostic = await triggerSubmitFailureDiagnostic(item, displayedResult);
-      }
+      const result = await api.prepareApplications(threshold);
+      await refresh();
+      setTab("to_apply");
       setNotice({
-        type: displayedResult.submitted ? "success" : diagnostic ? "error" : "warning",
-        message: displayedResult.submitted
-          ? "JobServe application submitted."
-          : diagnostic?.status === "passed"
-            ? "Safe diagnostic passed. The failure is likely in the final form-fill/submit stage, not job lookup/browser/worker startup."
-          : displayedResult.status === "queued"
-            ? "Assisted apply queued. Waiting for worker diagnostics."
-            : displayedResult.final_error === "stale_queue_timeout"
-              ? "Worker did not pick up the assisted apply job within 15 minutes."
-            : "Assisted apply diagnostics loaded. Review the debug details before taking the next action."
+        type: result.added ? "success" : "info",
+        message: result.added
+          ? `Added ${result.added} ${result.added === 1 ? "job" : "jobs"} scoring ${result.minimum_apply_score} or more.`
+          : `No new jobs scoring ${result.minimum_apply_score} or more. Try a lower score, or find more jobs on the Sources page.`
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to assist apply";
-      if (mode === "submit_with_confirmation") {
-        const failedResult = buildFailedAssistResult(message);
-        const diagnostic = await triggerSubmitFailureDiagnostic(item, failedResult);
-        setNotice({
-          type: "error",
-          message:
-            diagnostic.status === "passed"
-              ? "Safe diagnostic passed. The failure is likely in the final form-fill/submit stage, not job lookup/browser/worker startup."
-              : "Submit failed. Safe diagnostic started."
-        });
-      } else {
-        if (err instanceof ApiError && err.code === "worker_unavailable") {
-          setNotice({ type: "error", message: "Browser automation worker is offline" });
-        } else {
-          setError(message);
-        }
-      }
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't add jobs." });
     } finally {
-      setActionLoading(null);
+      setAdding(false);
     }
   };
 
-  if (loading) {
-    return <LoadingState label="Loading applications" />;
+  const update = async (item: Application, status: ApplicationStatus, message: string) => {
+    setBusyId(item.id);
+    setNotice(null);
+    try {
+      await api.updateApplication(item.id, { status });
+      await refresh();
+      setNotice({ type: "success", message });
+    } catch (err) {
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't update that application." });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (item: Application) => {
+    if (!window.confirm(`Remove "${item.title}" from your list?`)) {
+      return;
+    }
+    setBusyId(item.id);
+    try {
+      await api.deleteApplication(item.id);
+      await refresh();
+    } catch (err) {
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't remove that application." });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (error) {
+    return <ErrorState message={error} />;
   }
+  if (!data) {
+    return <LoadingState label="Loading your applications" />;
+  }
+
+  const rows = groups[tab];
 
   return (
     <div className="page-stack">
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>Prepare applications</h2>
-            <p className="muted-text">Queue your best-scoring jobs so they are ready to review and apply to.</p>
+            <h2>Your apply list</h2>
+            <p className="muted-text">
+              Open a job and choose <strong>Apply with Claude</strong>. Claude fills in the form in your own browser, and you check it and press
+              Submit.
+            </p>
           </div>
         </div>
         <div className="action-row">
           <label>
-            Minimum match score
-            <select value={threshold} onChange={(event) => void saveThreshold(Number(event.target.value))}>
-              <option value={60}>60+</option>
-              <option value={70}>70+</option>
-              <option value={80}>80+</option>
-              <option value={85}>85+</option>
-              <option value={90}>90+</option>
+            Add my matches scoring
+            <select value={threshold} onChange={(event) => setThreshold(Number(event.target.value))}>
+              {[60, 70, 80, 85, 90].map((value) => (
+                <option key={value} value={value}>
+                  {value} or more
+                </option>
+              ))}
             </select>
           </label>
-          <button
-            type="button"
-            className="primary-button"
-            style={{ alignSelf: "flex-end" }}
-            disabled={actionLoading === "prepare"}
-            onClick={() => void prepareApplications()}
-          >
-            {actionLoading === "prepare" ? <span className="spinner" aria-hidden="true" /> : null}
-            {actionLoading === "prepare" ? "Preparing..." : "Prepare applications"}
+          <button type="button" className="align-end" disabled={adding} onClick={() => void addTopMatches()}>
+            {adding ? <span className="spinner" aria-hidden="true" /> : null}
+            {adding ? "Adding..." : "Add top matches"}
           </button>
-          <label className="inline-toggle" style={{ alignSelf: "flex-end", marginBottom: "0.55rem" }}>
-            <input type="checkbox" checked={assistDebugMode} onChange={(event) => setAssistDebugMode(event.target.checked)} />
-            Save debug screenshots
-          </label>
+          <button type="button" className="secondary-button align-end" onClick={() => setShowLogForm((open) => !open)}>
+            {showLogForm ? "Close" : "Add a job from LinkedIn, Indeed..."}
+          </button>
         </div>
-        <p className="muted-text panel-note">
-          Autonomous real-submit mode: {autonomousStatus?.enabled ? "on" : "off"} · Max submits per run: {autonomousStatus?.max_submits_per_run ?? 1} · Last result:{" "}
-          {autonomousStatus?.last_result ? String(autonomousStatus.last_result.status ?? "unknown") : "none"}
-        </p>
+        {showLogForm ? (
+          <LogApplicationForm
+            onSaved={async (status) => {
+              setShowLogForm(false);
+              await refresh();
+              setTab(status === "applied" ? "applied" : "to_apply");
+              setNotice({ type: "success", message: status === "applied" ? "Application logged." : "Added to your apply list." });
+            }}
+          />
+        ) : null}
       </section>
-      {autonomousStatus?.enabled ? (
-        <div className="notice-banner warning">
-          Automatic submission is on. It will submit up to {autonomousStatus.max_submits_per_run ?? 1} application(s) per run.
-          <button type="button" className="secondary-button compact-button" disabled={actionLoading !== null} onClick={() => void runAutonomousRealSubmit()}>
-            Run canary
-          </button>
-        </div>
-      ) : null}
+
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
-      {autonomousResult ? <AutonomousOrchestrationSummary result={autonomousResult} /> : null}
-      {prepareRunId && prepareRun ? (
-        <div className="notice-banner info">
-          Preparing applications... {prepareRun.processed} / {prepareRun.total} processed, {prepareRun.queued} queued, {prepareRun.failed} failed.
-        </div>
-      ) : null}
-      {error ? <ErrorState message={error} /> : null}
-      {!error && data?.items.length === 0 ? (
-        <EmptyState title="No applications queued" message="Prepare applications to queue high-scoring jobs for manual submission." />
-      ) : null}
-      {!error && data && data.items.length > 0 ? (
+
+      <div className="tab-row" role="tablist" aria-label="Application status">
+        {(
+          [
+            ["to_apply", "To apply"],
+            ["applied", "Applied"],
+            ["skipped", "Skipped"]
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            className={tab === key ? "tab active" : "tab"}
+            onClick={() => setTab(key)}
+          >
+            {label} <span className="tab-count">{groups[key].length}</span>
+          </button>
+        ))}
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState
+          title={tab === "to_apply" ? "Nothing to apply for yet" : tab === "applied" ? "No applications yet" : "Nothing skipped"}
+          message={
+            tab === "to_apply"
+              ? "Add your top matches above, or pick jobs from the Jobs page."
+              : tab === "applied"
+                ? "Jobs you apply for, here or on other sites, will show up here."
+                : "Jobs you skip are kept here in case you change your mind."
+          }
+        />
+      ) : (
         <section className="panel">
-          <div className="panel-header">
-            <h2>{data.items.length} ready applications</h2>
-          </div>
           <div className="table-wrap">
             <table className="data-table stack-table">
               <thead>
                 <tr>
                   <th>Job</th>
-                  <th>Match</th>
-                  <th>Status</th>
+                  <th>{tab === "applied" ? "Applied" : "Match"}</th>
+                  <th>{tab === "applied" ? "Progress" : "Where"}</th>
                   <th aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
-                {data.items.map((item) => {
-                  const busy = actionLoading === item.job_id;
-                  const availabilityProblem = item.availability_status && !["active", "unknown"].includes(item.availability_status);
-                  const progressStep = item.assisted_result?.progress?.current_step;
-                  return (
-                    <tr key={item.job_id}>
-                      <td data-label="Job">
-                        <div className="job-cell">
+                {rows.map((item) => (
+                  <tr key={item.id}>
+                    <td data-label="Job">
+                      <div className="job-cell">
+                        {item.job_id ? (
                           <Link href={`/jobs/${item.job_id}`} className="table-link">
                             {item.title}
                           </Link>
-                          <span className="job-meta">{[item.company_name, item.location].filter(Boolean).join(" · ")}</span>
-                          {applyRouteLabel(item.apply_strategy) ? (
-                            <span className="job-meta" title={item.apply_strategy_reason ?? undefined}>
-                              {applyRouteLabel(item.apply_strategy)}
-                            </span>
-                          ) : null}
-                        </div>
+                        ) : item.url ? (
+                          <a href={item.url} target="_blank" rel="noreferrer" className="table-link">
+                            {item.title} ↗
+                          </a>
+                        ) : (
+                          <strong>{item.title}</strong>
+                        )}
+                        <span className="job-meta">{[item.company, item.location].filter(Boolean).join(" · ")}</span>
+                        {item.notes ? <span className="status-note">{item.notes}</span> : null}
+                      </div>
+                    </td>
+                    {tab === "applied" ? (
+                      <td data-label="Applied" className="muted-text">
+                        {formatDate(item.applied_at)}
                       </td>
+                    ) : (
                       <td data-label="Match">
-                        <div className="action-row">
-                          <ScorePill score={item.total_score} />
-                          <RecommendationBadge tier={item.recommendation_tier} />
-                        </div>
+                        {item.total_score !== null ? (
+                          <div className="action-row">
+                            <ScorePill score={item.total_score} />
+                            <RecommendationBadge tier={item.recommendation_tier} />
+                          </div>
+                        ) : (
+                          <span className="muted-text">Not scored</span>
+                        )}
                       </td>
-                      <td data-label="Status">
-                        <div className="cell-stack">
-                          <span className={`badge ${applicationStatusTone(item.application_status)}`}>{formatStatus(item.application_status)}</span>
-                          {progressStep ? (
-                            <span className="status-note">
-                              {String(progressStep).replaceAll("_", " ")} · {formatElapsed(item.assisted_result?.progress?.elapsed_ms)}
-                            </span>
-                          ) : null}
-                          {availabilityProblem ? (
-                            <span title={item.availability_reason ?? undefined}>
-                              <AvailabilityBadge status={item.availability_status} />
-                            </span>
-                          ) : null}
-                          {!availabilityProblem && isAvailabilityCheckStale(item.last_checked_at) ? (
-                            <span className="status-note">Not checked recently</span>
-                          ) : null}
-                        </div>
+                    )}
+                    {tab === "applied" ? (
+                      <td data-label="Progress">
+                        <select
+                          aria-label={`Progress for ${item.title}`}
+                          value={item.status}
+                          disabled={busyId === item.id}
+                          onChange={(event) => void update(item, event.target.value as ApplicationStatus, "Progress updated.")}
+                        >
+                          {Object.entries(PROGRESS_LABELS).map(([value, label]) => (
+                            <option key={value} value={value}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
                       </td>
-                      <td data-label="Actions">
-                        <div className="row-actions">
-                          <button type="button" className="compact-button" disabled={busy} onClick={() => void openApplyLink(item)}>
-                            Open apply page
-                          </button>
-                          <button type="button" className="secondary-button compact-button" disabled={busy} onClick={() => void assistApply(item, "review_only")}>
-                            Assist fill
-                          </button>
-                          <details className="menu">
-                            <summary className="icon-button" aria-label={`More actions for ${item.title}`}>
-                              ⋯
-                            </summary>
-                            <div className="menu-panel">
+                    ) : (
+                      <td data-label="Where" className="muted-text">
+                        {SOURCE_LABELS[item.source] ?? item.source}
+                        {item.availability_status && ["expired", "unavailable"].includes(item.availability_status) ? (
+                          <span className="status-note">Listing may have closed</span>
+                        ) : null}
+                      </td>
+                    )}
+                    <td data-label="Actions">
+                      <div className="row-actions">
+                        {tab === "to_apply" ? (
+                          <Link href={`/apply/${item.id}`} className="button-link compact-button">
+                            Apply with Claude
+                          </Link>
+                        ) : null}
+                        <details className="menu">
+                          <summary className="icon-button" aria-label={`More actions for ${item.title}`}>
+                            ⋯
+                          </summary>
+                          <div className="menu-panel">
+                            {tab === "to_apply" ? (
+                              <>
+                                <button type="button" onClick={(event) => closeMenuAfter(event, () => void update(item, "applied", "Marked as applied."))}>
+                                  Mark as applied
+                                </button>
+                                <button type="button" onClick={(event) => closeMenuAfter(event, () => void update(item, "skipped", "Skipped."))}>
+                                  Skip this job
+                                </button>
+                              </>
+                            ) : (
                               <button
                                 type="button"
-                                disabled={busy || item.apply_strategy !== "jobserve_apply_easy"}
-                                title={item.apply_strategy !== "jobserve_apply_easy" ? "Only available for JobServe easy-apply jobs" : undefined}
-                                onClick={(event) => closeMenuAfter(event, () => void assistApply(item, "submit_with_confirmation"))}
+                                onClick={(event) => closeMenuAfter(event, () => void update(item, "to_apply", "Moved back to your apply list."))}
                               >
-                                Submit JobServe application
+                                Move back to apply list
                               </button>
-                              <button type="button" disabled={busy} onClick={(event) => closeMenuAfter(event, () => void viewScorecard(item.job_id))}>
-                                Why this score?
-                              </button>
-                              <hr />
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={(event) =>
-                                  closeMenuAfter(event, () => void runJobAction(item.job_id, () => api.markApplied(item.job_id), "Application marked applied."))
-                                }
-                              >
-                                Mark as applied
-                              </button>
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={(event) =>
-                                  closeMenuAfter(event, () => void runJobAction(item.job_id, () => api.markSkipped(item.job_id), "Application skipped."))
-                                }
-                              >
-                                Skip this job
-                              </button>
-                            </div>
-                          </details>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                            )}
+                            <hr />
+                            <button type="button" className="danger" onClick={(event) => closeMenuAfter(event, () => void remove(item))}>
+                              Remove from list
+                            </button>
+                          </div>
+                        </details>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         </section>
-      ) : null}
-      {scorecard ? <ScorecardModal scorecard={scorecard} onClose={() => setScorecard(null)} /> : null}
-      {assistResult ? <AssistApplyModal data={assistResult} onClose={() => setAssistResult(null)} /> : null}
+      )}
     </div>
   );
 }
 
-function AssistApplyModal({ data, onClose }: { data: { jobTitle: string; result: AssistApplyResult; diagnostic?: AssistApplyDiagnosticRun | null }; onClose: () => void }) {
-  const result = normaliseAssistResult(data.result);
-  const diagnostic = data.diagnostic ?? null;
-  const diagnosticReport = diagnostic?.final_report ?? null;
-  const lastStep = result.debug_steps.at(-1) ?? {};
-  const iframeCount = typeof lastStep.iframe_count === "number" ? lastStep.iframe_count : result.detected_iframes.length;
-  const popupCount = typeof lastStep.popup_window_count === "number" ? lastStep.popup_window_count : null;
+function LogApplicationForm({ onSaved }: { onSaved: (status: ApplicationStatus) => Promise<void> }) {
+  const [title, setTitle] = useState("");
+  const [company, setCompany] = useState("");
+  const [url, setUrl] = useState("");
+  const [source, setSource] = useState<ApplicationSource>("linkedin");
+  const [status, setStatus] = useState<ApplicationStatus>("applied");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await api.createApplication({ title, company: company || undefined, url: url || undefined, source, status });
+      await onSaved(status);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save that application.");
+      setSaving(false);
+    }
+  };
+
   return (
-    <div className="modal-backdrop">
-      <div className="modal-panel scorecard-modal">
-        <div className="modal-header">
-          <div>
-            <h2>Assist apply</h2>
-            <p className="muted-text">{data.jobTitle}</p>
-          </div>
-          <button type="button" className="secondary-button compact-button" onClick={onClose}>
-            Close
-          </button>
-        </div>
-        <div className="notice-banner warning">Review manually in the browser. The assistant did not submit the application.</div>
-        {result.jobserve_flow_diagnostics?.mode === "search_to_apply" ? (
-          <div className="notice-banner info">Search-to-apply flow</div>
-        ) : null}
-        <section className="scorecard-section">
-          <h3>Filled fields</h3>
-          <FieldList items={result.filled_fields} empty="No fields filled" />
-        </section>
-        <section className="scorecard-section">
-          <h3>Unfilled fields</h3>
-          <FieldList items={result.unfilled_fields} empty="No unfilled fields detected" />
-        </section>
-        <section className="scorecard-section">
-          <h3>Required fields not filled</h3>
-          <FieldList items={result.unfilled_required_fields} empty="No missing required fields reported" />
-        </section>
-        <section className="scorecard-section">
-          <h3>Result</h3>
-          <div className="metric-list">
-            <Metric label="Status" value={result.status} />
-            <Metric label="Running step" value={String(result.progress?.current_step ?? "Not reported")} />
-            <Metric label="Elapsed" value={formatElapsed(result.progress?.elapsed_ms ?? result.timing_diagnostics?.total_runtime_ms)} />
-            <Metric label="Browser startup" value={formatElapsed(result.timing_diagnostics?.browser_startup_ms)} />
-            <Metric label="Waiting on JobServe" value={formatElapsed(result.timing_diagnostics?.search_page_load_ms)} />
-            <Metric label="Uploading CV" value={formatElapsed(result.timing_diagnostics?.cv_upload_ms)} />
-            <Metric label="Submitting application" value={formatElapsed(result.timing_diagnostics?.submit_wait_ms)} />
-            <Metric label="CV uploaded" value={result.uploaded_cv ? "Yes" : "No"} />
-            <Metric label="Submitted" value={result.submitted ? "Yes" : "No"} />
-          </div>
-        </section>
-        <section className="scorecard-section">
-          <h3>Warnings</h3>
-          <FieldList items={result.warnings} empty="No warnings" />
-        </section>
-        {diagnostic ? (
-          <section className="scorecard-section">
-            <h3>Safe diagnostic</h3>
-            {diagnostic.status === "passed" ? (
-              <div className="notice-banner info">Safe diagnostic passed. The failure is likely in the final form-fill/submit stage, not job lookup/browser/worker startup.</div>
-            ) : null}
-            <div className="metric-list">
-              <Metric label="Diagnostic status" value={diagnostic.status} />
-              <Metric label="Latest progress" value={String(diagnostic.latest_progress?.phase ?? diagnostic.latest_progress?.current_step ?? "Not reported")} />
-              <Metric label="Failed phase" value={String(diagnosticReport?.failed_phase ?? "None")} />
-              <Metric label="Exact error" value={String(diagnosticReport?.exact_error ?? "None")} />
-              <Metric label="Recommended fix" value={String(diagnosticReport?.recommended_fix ?? "None")} />
-            </div>
-            <DiagnosticArtifacts links={diagnostic.artifact_links} />
-            <DebugJsonList title="Diagnostic report" items={diagnosticReport ? [diagnosticReport] : []} empty="No final diagnostic report yet" />
-          </section>
-        ) : null}
-        <section className="scorecard-section">
-          <h3>Debug diagnostics</h3>
-          <div className="metric-list">
-            <Metric label="Debug mode" value={result.debug_mode ? "Enabled" : "Disabled"} />
-            <Metric label="Final URL" value={result.final_url ?? "Not reported"} />
-            <Metric label="Final error" value={result.final_error ?? "None"} />
-            <Metric label="Iframes" value={String(iframeCount)} />
-            <Metric label="Popups/windows" value={popupCount === null ? "Not reported" : String(popupCount)} />
-          </div>
-          <ArtifactLinks title="Screenshots" urls={result.screenshot_urls} paths={result.screenshot_paths} image />
-          <ArtifactLinks title="HTML snapshots" urls={result.html_snapshot_urls} paths={result.html_snapshot_paths} />
-          <DebugJsonList title="Step timeline" items={result.debug_steps} empty="No debug steps returned" />
-          <DebugJsonList title="Progress" items={objectToList(result.progress)} empty="No progress returned" />
-          <DebugJsonList title="Timing diagnostics" items={objectToList(result.timing_diagnostics)} empty="No timing diagnostics returned" />
-          <DebugJsonList title="JobServe flow" items={objectToList(result.jobserve_flow_diagnostics)} empty="No JobServe flow diagnostics returned" />
-          <DebugJsonList title="Profile hydration" items={objectToList(result.profile_diagnostics)} empty="No profile diagnostics returned" />
-          <DebugJsonList title="Upload diagnostics" items={objectToList(result.upload_diagnostics)} empty="No upload diagnostics returned" />
-          <DebugJsonList title="Select diagnostics" items={result.select_diagnostics ?? []} empty="No select diagnostics returned" />
-          <DebugJsonList title="Exceptions" items={result.exceptions ?? []} empty="No structured exceptions returned" />
-          <DebugJsonList title="Detected buttons/links" items={result.detected_buttons} empty="No buttons or links returned" />
-          <DebugJsonList title="Detected fields" items={result.detected_fields} empty="No fields returned" />
-          <DebugJsonList title="Detected selects/dropdowns" items={result.detected_selects} empty="No selects returned" />
-          <DebugJsonList title="Detected iframes" items={result.detected_iframes} empty="No iframe details returned" />
-        </section>
+    <form className="profile-form log-form" onSubmit={submit}>
+      <div className="form-grid">
+        <label>
+          Job title
+          <input value={title} onChange={(event) => setTitle(event.target.value)} required />
+        </label>
+        <label>
+          Company
+          <input value={company} onChange={(event) => setCompany(event.target.value)} />
+        </label>
+        <label>
+          Link to the job
+          <input type="url" placeholder="https://" value={url} onChange={(event) => setUrl(event.target.value)} />
+        </label>
+        <label>
+          Found on
+          <select value={source} onChange={(event) => setSource(event.target.value as ApplicationSource)}>
+            {Object.entries(SOURCE_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Status
+          <select value={status} onChange={(event) => setStatus(event.target.value as ApplicationStatus)}>
+            <option value="applied">I&apos;ve applied</option>
+            <option value="to_apply">I want to apply</option>
+          </select>
+        </label>
       </div>
-    </div>
-  );
-}
-
-function AutonomousOrchestrationSummary({ result }: { result: AutonomousRealSubmitRunResult }) {
-  return (
-    <section className="panel">
-      <div className="panel-header">
-        <h2>Autonomous orchestration summary</h2>
+      {error ? <div className="notice-banner error">{error}</div> : null}
+      <div className="action-row">
+        <button type="submit" disabled={saving}>
+          {saving ? "Saving..." : "Save"}
+        </button>
       </div>
-      <div className="metric-list">
-        <Metric label="Final outcome" value={result.status} />
-        <Metric label="Failed phase" value={result.failed_phase ?? "None"} />
-        <Metric label="Exact error" value={result.exact_error ?? "None"} />
-        <Metric label="Recommended fix" value={result.recommended_fix} />
-        <Metric label="Focused application" value={result.focused_application_id == null ? "Not reported" : String(result.focused_application_id)} />
-        <Metric label="Attempt" value={`${result.attempt_number ?? 0} / ${result.max_attempts ?? 3}`} />
-        <Metric label="Codex handoff" value={result.codex_handoff_status ?? "Not created"} />
-        <Metric label="GitHub issue URL" value={result.github_issue_url ?? "None"} />
-        <Metric label="Last known stage" value={result.last_known_stage ?? "Not captured"} />
-        <Metric label="Current URL" value={result.current_url ?? "Not captured"} />
-        <Metric label="Page title" value={result.page_title ?? "Not captured"} />
-        <Metric label="Loop attempt" value={result.codex_handoff_attempt_count == null ? "Not reported" : String(result.codex_handoff_attempt_count)} />
-        <Metric label="Waiting for fix/deploy" value={result.waiting_for_fix_deploy ? "Yes" : "No"} />
-        <Metric label="Retry plan" value={result.will_retry_same_application ? "Retry same application after deploy" : result.will_move_to_next_application ? "Move to next eligible application" : "No retry planned"} />
-      </div>
-      {result.github_issue_url ? (
-        <a className="artifact-link" href={result.github_issue_url} target="_blank" rel="noreferrer">
-          <span>Open Codex handoff issue</span>
-        </a>
-      ) : null}
-      <ArtifactLinks title="Canary screenshots" urls={result.screenshot_urls ?? []} paths={result.screenshot_paths ?? []} image />
-      <ArtifactLinks title="Canary HTML snapshots" urls={result.html_snapshot_urls ?? []} paths={result.html_snapshot_paths ?? []} />
-      <DiagnosticArtifacts links={result.artifact_links ?? []} />
-      <DebugJsonList title="Detected buttons" items={result.detected_buttons ?? []} empty="No button inventory returned" />
-      <DebugJsonList title="Detected fields" items={result.detected_fields ?? []} empty="No field inventory returned" />
-      <DebugJsonList title="Detected selects" items={result.detected_selects ?? []} empty="No select inventory returned" />
-      <DebugJsonList title="Select diagnostics" items={result.select_diagnostics ?? []} empty="No select diagnostics returned" />
-      {result.traceback ? (
-        <div className="debug-block">
-          <h4>Traceback</h4>
-          <pre>{result.traceback}</pre>
-        </div>
-      ) : null}
-      <DebugJsonList title="Orchestration steps" items={result.orchestration_steps ?? []} empty="No orchestration steps returned" />
-    </section>
+    </form>
   );
-}
-
-function DiagnosticArtifacts({ links }: { links: string[] }) {
-  if (links.length === 0) {
-    return (
-      <div className="debug-block">
-        <h4>Diagnostic artifacts</h4>
-        <p className="muted-text">None returned</p>
-      </div>
-    );
-  }
-  return (
-    <div className="debug-block">
-      <h4>Diagnostic artifacts</h4>
-      <div className="artifact-grid">
-        {links.map((item, index) => {
-          const isLink = item.startsWith("http") || item.startsWith("/");
-          const href = item.startsWith("/") ? `${apiConfig.baseUrl}${item}` : item;
-          return isLink ? (
-            <a key={`${item}-${index}`} href={href} target="_blank" rel="noreferrer" className="artifact-link">
-              <span>{item}</span>
-            </a>
-          ) : (
-            <div key={`${item}-${index}`} className="artifact-link">
-              <span>{item}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ArtifactLinks({ title, urls, paths, image = false }: { title: string; urls: string[]; paths: string[]; image?: boolean }) {
-  const items = urls.length > 0 ? urls : paths;
-  if (items.length === 0) {
-    return (
-      <div className="debug-block">
-        <h4>{title}</h4>
-        <p className="muted-text">None returned</p>
-      </div>
-    );
-  }
-  return (
-    <div className="debug-block">
-      <h4>{title}</h4>
-      <div className="artifact-grid">
-        {items.map((item, index) => {
-          const href = item.startsWith("/") ? `${apiConfig.baseUrl}${item}` : item;
-          return (
-            <a key={`${item}-${index}`} href={href} target="_blank" rel="noreferrer" className="artifact-link">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              {image ? <img src={href} alt={`${title} ${index + 1}`} /> : null}
-              <span>{paths[index] ?? item}</span>
-            </a>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function DebugJsonList({ title, items, empty }: { title: string; items: Array<Record<string, unknown>>; empty: string }) {
-  return (
-    <div className="debug-block">
-      <h4>{title}</h4>
-      {items.length === 0 ? <p className="muted-text">{empty}</p> : null}
-      {items.length > 0 ? (
-        <div className="debug-json-list">
-          {items.map((item, index) => (
-            <pre key={index}>{JSON.stringify(item, null, 2)}</pre>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function FieldList({ items, empty }: { items: string[]; empty: string }) {
-  if (items.length === 0) {
-    return <p className="muted-text">{empty}</p>;
-  }
-  return (
-    <ul>
-      {items.map((item) => (
-        <li key={item}>{item}</li>
-      ))}
-    </ul>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="metric-row">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function ScorecardModal({ scorecard, onClose }: { scorecard: JobScorecard; onClose: () => void }) {
-  return (
-    <div className="modal-backdrop">
-      <div className="modal-panel scorecard-modal">
-        <div className="modal-header">
-          <div>
-            <h2>Scorecard</h2>
-            <p className="muted-text">{scorecard.why}</p>
-          </div>
-          <button type="button" className="secondary-button compact-button" onClick={onClose}>
-            Close
-          </button>
-        </div>
-        <div className="scorecard-summary">
-          <div>
-            <span className="muted-text">Score</span>
-            <strong>{Math.round(Number(scorecard.total_score))}</strong>
-          </div>
-          <div>
-            <span className="muted-text">Tier</span>
-            <strong>{scorecard.tier}</strong>
-          </div>
-          <div>
-            <span className="muted-text">Recommendation</span>
-            <strong>{scorecard.recommendation}</strong>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function isAvailabilityCheckStale(value: string | null): boolean {
-  if (!value) {
-    return true;
-  }
-  return Date.now() - new Date(value).getTime() > RECENT_CHECK_MS;
-}
-
-
-function applyRouteLabel(strategy: string | null | undefined): string | null {
-  switch (strategy) {
-    case "jobserve_apply_easy":
-      return "Easy apply on JobServe";
-    case "jobserve_apply_medium":
-      return "Apply on JobServe";
-    case "external_ats":
-      return "Apply on company site";
-    case "blocked":
-      return "Can't apply automatically";
-    default:
-      return null;
-  }
-}
-
-function applicationStatusTone(status: string): string {
-  if (status === "applied") return "good";
-  if (status === "failed") return "poor";
-  if (status === "skipped") return "neutral";
-  return "strong";
-}
-
-function formatStatus(status: string): string {
-  const text = status.replaceAll("_", " ");
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function closeMenuAfter(event: React.MouseEvent<HTMLButtonElement>, action: () => void) {
   event.currentTarget.closest("details")?.removeAttribute("open");
   action();
-}
-
-
-function emptyPrepareRun(runId: number, status: string): ApplicationPrepareRunStatus {
-  return {
-    run_id: runId,
-    status,
-    total: 0,
-    processed: 0,
-    queued: 0,
-    skipped: 0,
-    failed: 0,
-    error: null,
-    started_at: null,
-    finished_at: null,
-    last_heartbeat_at: null
-  };
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
-}
-
-function normaliseAssistResult(result: AssistApplyResult): AssistApplyResult {
-  return {
-    ...result,
-    filled_fields: result.filled_fields ?? [],
-    unfilled_fields: result.unfilled_fields ?? [],
-    unfilled_required_fields: result.unfilled_required_fields ?? [],
-    warnings: result.warnings ?? [],
-    screenshot_paths: result.screenshot_paths ?? [],
-    screenshot_urls: result.screenshot_urls ?? [],
-    html_snapshot_paths: result.html_snapshot_paths ?? [],
-    html_snapshot_urls: result.html_snapshot_urls ?? [],
-    detected_buttons: result.detected_buttons ?? [],
-    detected_fields: result.detected_fields ?? [],
-    detected_selects: result.detected_selects ?? [],
-    detected_iframes: result.detected_iframes ?? [],
-    debug_steps: result.debug_steps ?? [],
-    final_url: result.final_url ?? null,
-    final_error: result.final_error ?? null,
-    debug_mode: result.debug_mode ?? false,
-    timing_diagnostics: result.timing_diagnostics ?? {},
-    progress: result.progress ?? {},
-    profile_diagnostics: result.profile_diagnostics ?? {},
-    jobserve_flow_diagnostics: result.jobserve_flow_diagnostics ?? {},
-    upload_diagnostics: result.upload_diagnostics ?? {},
-    select_diagnostics: result.select_diagnostics ?? [],
-    exceptions: result.exceptions ?? []
-  };
-}
-
-function normaliseAutonomousResult(value: Record<string, unknown>, fallback: AutonomousRealSubmitRunResult): AutonomousRealSubmitRunResult {
-  return {
-    ...fallback,
-    ...(value as Partial<AutonomousRealSubmitRunResult>),
-    submitted: Boolean(value.submitted ?? fallback.submitted),
-    recommended_fix: String(value.recommended_fix ?? fallback.recommended_fix),
-    orchestration_steps: Array.isArray(value.orchestration_steps) ? (value.orchestration_steps as Array<Record<string, unknown>>) : fallback.orchestration_steps ?? [],
-    screenshot_paths: Array.isArray(value.screenshot_paths) ? (value.screenshot_paths as string[]) : fallback.screenshot_paths ?? [],
-    screenshot_urls: Array.isArray(value.screenshot_urls) ? (value.screenshot_urls as string[]) : fallback.screenshot_urls ?? [],
-    html_snapshot_paths: Array.isArray(value.html_snapshot_paths) ? (value.html_snapshot_paths as string[]) : fallback.html_snapshot_paths ?? [],
-    html_snapshot_urls: Array.isArray(value.html_snapshot_urls) ? (value.html_snapshot_urls as string[]) : fallback.html_snapshot_urls ?? [],
-    detected_buttons: Array.isArray(value.detected_buttons) ? (value.detected_buttons as Array<Record<string, unknown>>) : fallback.detected_buttons ?? [],
-    detected_fields: Array.isArray(value.detected_fields) ? (value.detected_fields as Array<Record<string, unknown>>) : fallback.detected_fields ?? [],
-    detected_selects: Array.isArray(value.detected_selects) ? (value.detected_selects as Array<Record<string, unknown>>) : fallback.detected_selects ?? [],
-    select_diagnostics: Array.isArray(value.select_diagnostics) ? (value.select_diagnostics as Array<Record<string, unknown>>) : fallback.select_diagnostics ?? [],
-    artifact_links: Array.isArray(value.artifact_links) ? (value.artifact_links as string[]) : fallback.artifact_links ?? [],
-    created_at: String(value.created_at ?? fallback.created_at)
-  };
-}
-
-function buildFailedAssistResult(message: string): AssistApplyResult {
-  return normaliseAssistResult({
-    status: "failed",
-    filled_fields: [],
-    unfilled_fields: [],
-    unfilled_required_fields: [],
-    uploaded_cv: false,
-    submitted: false,
-    warnings: [message],
-    screenshot_path: null,
-    screenshot_paths: [],
-    screenshot_urls: [],
-    html_snapshot_paths: [],
-    html_snapshot_urls: [],
-    detected_buttons: [],
-    detected_fields: [],
-    detected_selects: [],
-    detected_iframes: [],
-    debug_steps: [],
-    final_url: null,
-    final_error: message,
-    debug_mode: false,
-    progress: { current_step: "submit_request_failed", message }
-  });
-}
-
-function submitFailed(result: AssistApplyResult): boolean {
-  if (result.submitted) {
-    return false;
-  }
-  if (result.status === "queued" || result.status === "running") {
-    return false;
-  }
-  return result.status === "failed" || Boolean(result.final_error) || result.progress?.current_step === "stale_queue_timeout";
-}
-
-function workerProgressSeen(result: AssistApplyResult): boolean {
-  const progressStep = typeof result.progress?.current_step === "string" ? result.progress.current_step : "";
-  if (progressStep && progressStep !== "queued") {
-    return true;
-  }
-  const workerSteps = new Set([
-    "worker_started",
-    "loading_application",
-    "application_loaded",
-    "loading_job",
-    "job_loaded",
-    "loading_profile",
-    "profile_loaded",
-    "resolving_job_url",
-    "job_url_resolved",
-    "browser_launch_start",
-    "browser_launch_success",
-    "worker_handoff_entered",
-    "db_session_create_start",
-    "db_session_create_done",
-    "assist_apply_application_entered",
-    "apply_button_clicked",
-    "modal_wait_complete",
-    "before_filling",
-    "email_filled",
-    "confirmation_checked",
-    "working_status_selected",
-    "cv_upload_started",
-    "cv_uploaded",
-    "pre_submit_verification",
-    "pre_submit_verification_start",
-    "pre_submit_verification_done",
-    "final_submit_click",
-    "final_submit_click_start",
-    "final_submit_click_done",
-    "final_apply_clicked",
-    "success_confirmation",
-    "success_confirmation_start",
-    "success_confirmation_done",
-    "submitted_message_seen",
-    "account_toggle_disabled",
-    "modal_closed",
-    "jobserve_apply_button_clicked",
-    "jobserve_apply_modal_wait_complete",
-    "jobserve_apply_email_filled",
-    "jobserve_apply_cv_uploaded"
-  ]);
-  if ((result.debug_steps ?? []).some((step) => {
-    const value = typeof step.step === "string" ? step.step : "";
-    return workerSteps.has(value) || value.startsWith("jobserve_");
-  })) {
-    return true;
-  }
-  const diagnostics = result.jobserve_flow_diagnostics ?? {};
-  return Boolean(
-    diagnostics.apply_button_clicked ||
-    diagnostics.job_application_modal_found ||
-    diagnostics.cv_upload_input_detected ||
-    diagnostics.email_filled ||
-    diagnostics.cv_uploaded
-  );
-}
-
-function objectToList(value: Record<string, unknown> | undefined): Array<Record<string, unknown>> {
-  if (!value || Object.keys(value).length === 0) {
-    return [];
-  }
-  return [value];
-}
-
-function formatElapsed(value: unknown): string {
-  if (typeof value !== "number") {
-    return "Not reported";
-  }
-  if (value < 1000) {
-    return `${value} ms`;
-  }
-  return `${Math.round(value / 100) / 10}s`;
 }

@@ -455,6 +455,34 @@ class SavedJob(Base):
     __table_args__ = (UniqueConstraint("user_id", "job_id", name="uq_saved_jobs_user_job"),)
 
 
+class Application(Base):
+    """One person's application to one job: queued, applied, or how it went."""
+
+    __tablename__ = "applications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Set for jobs found by the app; empty for jobs logged from LinkedIn, Indeed and elsewhere.
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), index=True)
+    source: Mapped[str] = mapped_column(String(40), default="jobserve", server_default="jobserve", nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    company: Mapped[str | None] = mapped_column(String(255))
+    location: Mapped[str | None] = mapped_column(String(255))
+    url: Mapped[str | None] = mapped_column(String(2000))
+    status: Mapped[str] = mapped_column(String(40), default="to_apply", server_default="to_apply", nullable=False, index=True)
+    notes: Mapped[str | None] = mapped_column(Text)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (UniqueConstraint("user_id", "job_id", name="uq_applications_user_job"),)
+
+
 class JobEvent(Base):
     __tablename__ = "job_events"
 

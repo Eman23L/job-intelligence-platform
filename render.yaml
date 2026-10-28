@@ -16,24 +16,8 @@ services:
         value: INFO
       - key: SERVICE_TYPE
         value: web
-      - key: DIAGNOSTIC_ADMIN_TOKEN
-        sync: false
       - key: OWNER_SETUP_CODE
         sync: false
-      - key: AUTONOMOUS_REAL_SUBMIT_ENABLED
-        value: "false"
-      - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN
-        value: "1"
-      - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_APPLICATION
-        value: "3"
-      - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE
-        value: "5"
-      - key: GITHUB_TOKEN
-        sync: false
-      - key: GITHUB_REPOSITORY
-        value: Eman23L/job-intelligence-platform
-      - key: CODEX_MENTION
-        value: "@codex"
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGINS
@@ -86,22 +70,6 @@ services:
         value: INFO
       - key: SERVICE_TYPE
         value: worker
-      - key: DIAGNOSTIC_ADMIN_TOKEN
-        sync: false
-      - key: AUTONOMOUS_REAL_SUBMIT_ENABLED
-        value: "false"
-      - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN
-        value: "1"
-      - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_APPLICATION
-        value: "3"
-      - key: MAX_AUTONOMOUS_FIX_ATTEMPTS_PER_ISSUE
-        value: "5"
-      - key: GITHUB_TOKEN
-        sync: false
-      - key: GITHUB_REPOSITORY
-        value: Eman23L/job-intelligence-platform
-      - key: CODEX_MENTION
-        value: "@codex"
       - key: DATABASE_URL
         sync: false
       - key: AI_PROVIDER
