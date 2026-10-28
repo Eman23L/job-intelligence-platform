@@ -4,9 +4,9 @@ import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.config import settings
 from app.db.models import Job, User
 from app.db.session import get_db
@@ -29,19 +29,11 @@ DEBUG_ARTIFACT_ROOT = Path("backend/runtime/apply_debug").resolve()
 _APPLICATIONS_CACHE: ApplicationsList | None = None
 
 
-def _default_user(db: Session) -> User:
-    user = db.scalar(select(User).order_by(User.id))
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No seeded user found")
-    return user
-
-
 @router.get("", response_model=ApplicationsList)
-def get_applications(db: Session = Depends(get_db)):
+def get_applications(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     global _APPLICATIONS_CACHE
     started = time.perf_counter()
     path = "/applications"
-    user = _default_user(db)
     try:
         threshold_started = time.perf_counter()
         threshold = minimum_apply_score(db, user)
@@ -73,8 +65,7 @@ def get_applications(db: Session = Depends(get_db)):
 
 
 @router.post("/prepare", response_model=ApplicationPrepareRunStart)
-def prepare_application_queue(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    user = _default_user(db)
+def prepare_application_queue(background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     started, created = start_prepare_applications_run(db, user)
     if created:
         enqueue_or_background(background_tasks, run_prepare_applications_background, started.run_id, user.id, job_id=f"application-prepare-{started.run_id}")
@@ -102,11 +93,10 @@ def get_apply_debug_artifact(artifact_path: str):
 
 
 @router.post("/{application_id}/assist-apply", response_model=AssistApplyResult)
-def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload: AssistApplyRequest | None = None, db: Session = Depends(get_db)):
+def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload: AssistApplyRequest | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = db.get(Job, application_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
-    user = _default_user(db)
     mode = payload.mode if payload else "review_only"
     debug_mode = bool(payload.debug_mode) if payload else False
     queue_is_enabled = queue_enabled()
@@ -200,11 +190,10 @@ def assist_apply(application_id: int, background_tasks: BackgroundTasks, payload
 
 
 @router.post("/{application_id}/assist-apply/diagnostics", response_model=AssistApplyDiagnosticRun)
-def start_failed_submit_diagnostic(application_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def start_failed_submit_diagnostic(application_id: int, background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = db.get(Job, application_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
-    user = _default_user(db)
     run_id = new_run_id()
     write_run_status(
         run_id,
@@ -262,14 +251,12 @@ def _diagnostic_response(run_id: str, state: dict) -> AssistApplyDiagnosticRun:
 
 
 @router.get("/autonomous-real-submit", response_model=AutonomousRealSubmitStatus)
-def get_autonomous_real_submit_status(db: Session = Depends(get_db)):
-    user = _default_user(db)
+def get_autonomous_real_submit_status(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return AutonomousRealSubmitStatus(**autonomous_submit_status(db, user))
 
 
 @router.post("/autonomous-real-submit", response_model=AutonomousRealSubmitRunResult)
-def run_autonomous_real_submit(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    user = _default_user(db)
+def run_autonomous_real_submit(background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if queue_enabled():
         rq_job_id = enqueue_or_background(
             background_tasks,

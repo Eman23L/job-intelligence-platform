@@ -1,7 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status as http_status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.database import UnifiedRun, UnifiedRunList
@@ -16,13 +16,6 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 RUN_TYPES = {"all", "scrape", "rescore", "availability", "application_prepare", "apply_strategy"}
 RUN_STATUSES = {"all", "queued", "running", "completed", "failed", "stalled", "canceled", "pending"}
-
-
-def _default_user(db: Session) -> User:
-    user = db.scalar(select(User).order_by(User.id))
-    if user is None:
-        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="No seeded user found")
-    return user
 
 
 @router.get("", response_model=UnifiedRunList)
@@ -40,10 +33,9 @@ def get_runs(
 
 
 @router.post("/{run_type}/{run_id}/retry", response_model=UnifiedRun)
-def retry_system_run(run_type: str, run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def retry_system_run(run_type: str, run_id: int, background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if run_type not in RUN_TYPES - {"all"}:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="Invalid run type")
-    user = _default_user(db)
     result, created = retry_run(db, run_type, run_id, user)
     if result is None:
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Run not found or cannot be retried")

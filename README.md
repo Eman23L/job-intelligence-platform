@@ -200,6 +200,16 @@ docker compose up --build
 
 Review `.env` before using Docker. Do not use production database credentials for local development.
 
+## Accounts
+
+The app is invite-only. Every page and API route except `/health` and `/auth/*` requires a signed-in user, and each person's CV, scores, saved jobs and AI chat are private to them. Job listings and sources are shared; only the owner can add, delete or hide them.
+
+1. Set `OWNER_SETUP_CODE` on the backend to a long random value.
+2. Open the site, choose **Set up the owner account**, and enter that code with your name, email and password. This claims the existing data (CV, saved jobs, scores) and makes you the owner.
+3. To add someone, go to **Account → Invite someone** and send them the link. Each link works once and expires after `INVITE_DAYS` (default 14).
+
+Sign-in sessions last `SESSION_DAYS` (default 30). Passwords are hashed with scrypt; session tokens and invite codes are stored only as SHA-256 hashes.
+
 ## Security Notes
 
 - `.env` and generated exports are ignored.

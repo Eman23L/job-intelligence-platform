@@ -957,9 +957,9 @@ def test_applications_endpoint_returns_cached_data_on_list_failure(db_session, m
     user, _job = _seed_application(db_session, jobserve=True)
     applications_api._APPLICATIONS_CACHE = None
 
-    first = applications_api.get_applications(db_session)
+    first = applications_api.get_applications(user=user, db=db_session)
     monkeypatch.setattr(applications_api, "list_applications", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("slow query timeout")))
-    second = applications_api.get_applications(db_session)
+    second = applications_api.get_applications(user=user, db=db_session)
 
     assert first.items
     assert second.items
@@ -975,7 +975,7 @@ def test_autonomous_canary_endpoint_queues_background_work(db_session, monkeypat
     monkeypatch.setattr(applications_api, "queue_enabled", lambda: True)
     monkeypatch.setattr(applications_api, "enqueue_or_background", lambda background_tasks, func, *args, **kwargs: enqueued.append((func, args, kwargs)) or "rq-canary")
 
-    result = applications_api.run_autonomous_real_submit(BackgroundTasks(), db_session)
+    result = applications_api.run_autonomous_real_submit(BackgroundTasks(), user=user, db=db_session)
 
     assert result.status == "queued"
     assert result.recommended_fix == "Autonomous canary queued. Background run still processing."

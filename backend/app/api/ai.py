@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.models import AIConversationMessage, Job, JobAnalysis, JobScore, User
 from app.db.session import get_db
 from app.services.ai_provider import AIProviderError, get_ai_provider
@@ -55,8 +56,7 @@ def test_ai_provider(payload: AITestRequest):
 
 
 @router.post("/chat", response_model=AIChatResponse)
-def chat_with_advisor(payload: AIChatRequest, db: Session = Depends(get_db)):
-    user = _default_user(db)
+def chat_with_advisor(payload: AIChatRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     user_message = _save_message(db, user, "user", payload.message, {"source": "ai_advisor"})
     db.flush()
     provider = get_ai_provider()
@@ -82,8 +82,7 @@ def chat_with_advisor(payload: AIChatRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/history", response_model=list[AIHistoryMessage])
-def get_ai_history(limit: int = 50, db: Session = Depends(get_db)):
-    user = _default_user(db)
+def get_ai_history(limit: int = 50, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     messages = db.scalars(
         select(AIConversationMessage)
         .where(AIConversationMessage.user_id == user.id)
@@ -94,8 +93,7 @@ def get_ai_history(limit: int = 50, db: Session = Depends(get_db)):
 
 
 @router.delete("/history")
-def clear_ai_history(db: Session = Depends(get_db)):
-    user = _default_user(db)
+def clear_ai_history(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     deleted = (
         db.query(AIConversationMessage)
         .filter(AIConversationMessage.user_id == user.id)
@@ -221,15 +219,6 @@ def _history_message(message: AIConversationMessage) -> AIHistoryMessage:
         metadata=message.metadata_json,
         created_at=message.created_at.isoformat(),
     )
-
-
-def _default_user(db: Session) -> User:
-    user = db.scalar(select(User).order_by(User.id))
-    if user is None:
-        user = User(email="advisor@example.invalid")
-        db.add(user)
-        db.flush()
-    return user
 
 
 def _salary_text(min_value: Decimal | None, max_value: Decimal | None, currency: str | None) -> str:

@@ -4,6 +4,7 @@ import type { JobListItem } from "@/types/api";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScorePill } from "@/components/ScoreBadge";
 import { PendingScoringBadge } from "@/components/PendingScoringBadge";
+import { useIsOwner } from "@/lib/account-context";
 import { formatDate, formatSalary, formatSalaryPeriod } from "@/lib/format";
 
 export function JobsTable({
@@ -26,6 +27,7 @@ export function JobsTable({
   onCheckAvailability: (jobId: number) => Promise<void>;
 }) {
   const allSelected = jobs.length > 0 && jobs.every((job) => selectedIds.has(job.id));
+  const isOwner = useIsOwner();
 
   return (
     <div className="table-wrap">
@@ -100,13 +102,17 @@ export function JobsTable({
                       <button type="button" onClick={(event) => closeMenuAfter(event, () => void onCheckAvailability(job.id))}>
                         Check it&apos;s still open
                       </button>
-                      <button type="button" onClick={(event) => closeMenuAfter(event, () => onExclude(job.id))}>
-                        Hide from results
-                      </button>
-                      <hr />
-                      <button type="button" className="danger" onClick={(event) => closeMenuAfter(event, () => onDelete(job.id))}>
-                        Delete job
-                      </button>
+                      {isOwner ? (
+                        <>
+                          <button type="button" onClick={(event) => closeMenuAfter(event, () => onExclude(job.id))}>
+                            Hide from results
+                          </button>
+                          <hr />
+                          <button type="button" className="danger" onClick={(event) => closeMenuAfter(event, () => onDelete(job.id))}>
+                            Delete job
+                          </button>
+                        </>
+                      ) : null}
                     </div>
                   </details>
                 </div>

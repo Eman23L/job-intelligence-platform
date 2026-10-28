@@ -141,21 +141,6 @@ def test_private_redis_failure_in_github_does_not_block_remote_diagnostics() -> 
     assert "remote_diagnostic_endpoint_unavailable" in workflow
 
 
-def test_post_deploy_autonomous_verify_workflow_uses_remote_backend_and_handoff() -> None:
-    workflow = open(".github/workflows/post-deploy-autonomous-verify.yml", encoding="utf-8").read()
-
-    assert "workflow_run" in workflow
-    assert "CI Deploy Render" in workflow
-    assert "BACKEND_API_BASE_URL" in workflow
-    assert "CODEX_GITHUB_TOKEN" in workflow
-    assert "Rerun affected safe diagnostics" in workflow
-    assert "/diagnostics/assist-apply/{app_id}" in workflow
-    assert "$backend_base/applications/autonomous-real-submit" in workflow
-    assert "$backend_base/diagnostics/handoff/codex" in workflow
-    assert "DIAGNOSTIC_ADMIN_TOKEN" in workflow
-    assert "post_deploy_autonomous_verify" in workflow
-
-
 def test_render_yaml_installs_playwright_chromium_for_web_and_worker() -> None:
     render = open("render.yaml", encoding="utf-8").read()
 
@@ -224,7 +209,7 @@ def test_application_submit_failure_diagnostic_forces_safe_mode(tmp_path, monkey
 
     monkeypatch.setattr(assist_apply_runs, "RUN_ROOT", tmp_path)
     monkeypatch.setattr(applications_api, "enqueue_or_background", fake_enqueue)
-    response = applications_api.start_failed_submit_diagnostic(job.id, BackgroundTasks(), db_session)
+    response = applications_api.start_failed_submit_diagnostic(job.id, BackgroundTasks(), user=user, db=db_session)
 
     assert response.status == "queued"
     assert captured

@@ -38,6 +38,7 @@ import type {
   UnifiedRunList,
   UserProfile
 } from "@/types/api";
+import { clearToken, getToken, redirectToLogin } from "@/lib/session";
 
 const PRODUCTION_API_BASE_URL = "https://job-intelligence-ai-63rj.onrender.com";
 const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
@@ -81,6 +82,10 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
   if (fetchInit.body && !(fetchInit.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+  const token = getToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), timeoutMs);
 
@@ -91,6 +96,12 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
       cache: "no-store",
       signal: controller.signal
     });
+
+    if (response.status === 401 && !path.startsWith("/auth/")) {
+      // Session expired or revoked: send the user back to sign in.
+      clearToken();
+      redirectToLogin();
+    }
 
     if (!response.ok) {
       let detail = `Request failed with status ${response.status}`;
@@ -111,6 +122,9 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
       throw error;
     }
 
+    if (response.status === 204) {
+      return undefined as T;
+    }
     return response.json() as Promise<T>;
   } catch (error) {
     if (error instanceof ApiError) {
@@ -133,6 +147,36 @@ function logAssistApplyPayload(context: string, payload: unknown) {
     console.info(`Assist apply ${context}`, payload);
   }
 }
+
+export interface Account {
+  id: number;
+  email: string;
+  display_name: string | null;
+  is_admin: boolean;
+}
+
+export interface SessionResponse {
+  token: string;
+  user: Account;
+}
+
+export const authApi = {
+  status: () => request<{ setup_required: boolean }>("/auth/status", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
+  login: (email: string, password: string) =>
+    request<SessionResponse>("/auth/login", {
+      method: "POST",
+      timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS,
+      body: JSON.stringify({ email, password })
+    }),
+  setup: (body: { setup_code: string; email: string; password: string; name: string }) =>
+    request<SessionResponse>("/auth/setup", { method: "POST", timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS, body: JSON.stringify(body) }),
+  register: (body: { invite_code: string; email: string; password: string; name: string }) =>
+    request<SessionResponse>("/auth/register", { method: "POST", timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS, body: JSON.stringify(body) }),
+  me: () => request<Account>("/auth/me", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  createInvite: (note?: string) =>
+    request<{ code: string; expires_at: string }>("/auth/invites", { method: "POST", body: JSON.stringify({ note: note ?? null }) })
+};
 
 export const api = {
   overview: () => request<AnalyticsOverview>("/analytics/overview", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),

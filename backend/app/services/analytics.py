@@ -3,11 +3,11 @@ from decimal import Decimal
 import logging
 from time import perf_counter
 
-from sqlalchemy import case, func, or_, select, text
+from sqlalchemy import case, func, or_, select, text, true
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.db.models import Job, JobAnalysis, JobScore, JobSkill, JobSource, MissingSkill, SavedJob, ScrapeRun
+from app.db.models import Job, JobAnalysis, JobScore, JobSkill, JobSource, MissingSkill, SavedJob, ScrapeRun, User
 from app.schemas.database import (
     AnalyticsOverview,
     RoleFitAnalytics,
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 ANALYTICS_STATEMENT_TIMEOUT_MS = 1800
 
 
-def overview(db: Session) -> AnalyticsOverview:
+def overview(db: Session, user: User | None = None) -> AnalyticsOverview:
     try:
         _set_statement_timeout(db)
         job_summary = db.execute(
@@ -46,7 +46,7 @@ def overview(db: Session) -> AnalyticsOverview:
             )
             .select_from(JobScore)
             .join(Job)
-            .where(_included_job_filter())
+            .where(_included_job_filter(), *_score_user_filter(user))
         ).one()
         saved_summary = db.execute(
             select(
@@ -55,7 +55,7 @@ def overview(db: Session) -> AnalyticsOverview:
             )
             .select_from(SavedJob)
             .join(Job)
-            .where(_included_job_filter(), SavedJob.status.in_(("saved", "applied")))
+            .where(_included_job_filter(), SavedJob.status.in_(("saved", "applied")), *_saved_user_filter(user))
         ).one()
         return AnalyticsOverview(
             total_jobs=job_summary.total_jobs or 0,
@@ -71,7 +71,7 @@ def overview(db: Session) -> AnalyticsOverview:
             excluded_jobs=(
                 db.scalar(
                     select(func.count(func.distinct(Job.id)))
-                    .outerjoin(JobScore)
+                    .outerjoin(JobScore, (JobScore.job_id == Job.id) & _score_join_user(user))
                     .where(or_(Job.status == "excluded", JobScore.recommendation_tier == "excluded"))
                 )
                 or 0
@@ -83,6 +83,18 @@ def overview(db: Session) -> AnalyticsOverview:
         logger.exception("analytics.overview failed; returning empty fallback")
         db.rollback()
         return _empty_overview()
+
+
+def _score_user_filter(user: User | None) -> tuple:
+    return (JobScore.user_id == user.id,) if user is not None else ()
+
+
+def _score_join_user(user: User | None):
+    return JobScore.user_id == user.id if user is not None else true()
+
+
+def _saved_user_filter(user: User | None) -> tuple:
+    return (SavedJob.user_id == user.id,) if user is not None else ()
 
 
 def _empty_overview() -> AnalyticsOverview:
@@ -101,7 +113,7 @@ def _empty_overview() -> AnalyticsOverview:
     )
 
 
-def role_fit(db: Session) -> RoleFitAnalytics:
+def role_fit(db: Session, user: User | None = None) -> RoleFitAnalytics:
     analyses = db.scalars(select(JobAnalysis).join(Job).where(_included_job_filter())).all()
     grouped: dict[str | None, list[JobAnalysis]] = defaultdict(list)
     for analysis in analyses:
@@ -110,7 +122,9 @@ def role_fit(db: Session) -> RoleFitAnalytics:
     job_ids = [analysis.job_id for analysis in analyses]
     scores_by_job: dict[int, JobScore] = {}
     if job_ids:
-        for score in db.scalars(select(JobScore).where(JobScore.job_id.in_(job_ids)).order_by(JobScore.id)):
+        for score in db.scalars(
+            select(JobScore).where(JobScore.job_id.in_(job_ids), *_score_user_filter(user)).order_by(JobScore.id)
+        ):
             scores_by_job.setdefault(score.job_id, score)
 
     items = []
@@ -134,8 +148,11 @@ def role_fit(db: Session) -> RoleFitAnalytics:
     return RoleFitAnalytics(items=sorted(items, key=lambda item: item.count, reverse=True))
 
 
-def skill_gaps(db: Session) -> SkillGapAnalytics:
-    missing_rows = db.scalars(select(MissingSkill).join(Job).where(_included_job_filter())).all()
+def skill_gaps(db: Session, user: User | None = None) -> SkillGapAnalytics:
+    missing_query = select(MissingSkill).join(Job).where(_included_job_filter())
+    if user is not None:
+        missing_query = missing_query.where(MissingSkill.user_id == user.id)
+    missing_rows = db.scalars(missing_query).all()
     missing_items = _missing_summary(missing_rows)
     skill_counts = Counter(db.scalars(select(JobSkill.skill_name).join(Job).where(_included_job_filter())).all())
     linked = [
