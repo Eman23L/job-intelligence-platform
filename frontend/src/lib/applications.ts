@@ -8,6 +8,9 @@ export const SOURCE_LABELS: Record<ApplicationSource, string> = {
   other: "Other"
 };
 
+// Listings that have gone, or now show a different job.
+export const CLOSED_AVAILABILITY = ["expired", "unavailable", "replaced", "redirected"];
+
 export const STATUS_LABELS: Record<ApplicationStatus, string> = {
   to_apply: "On apply list",
   applied: "Applied",

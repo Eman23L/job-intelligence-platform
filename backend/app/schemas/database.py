@@ -733,6 +733,10 @@ class PrepareApplicationsResult(BaseModel):
     minimum_apply_score: int
 
 
+class SkipClosedResult(BaseModel):
+    skipped: int
+
+
 class ApplyPackJob(BaseModel):
     title: str
     company: str | None = None

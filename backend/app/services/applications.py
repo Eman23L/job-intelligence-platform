@@ -21,8 +21,8 @@ APPLICATION_STATUSES = {"to_apply", "applied", "interviewing", "offer", "rejecte
 # Statuses that mean the person has actually sent an application.
 SUBMITTED_STATUSES = {"applied", "interviewing", "offer", "rejected"}
 SOURCES = {"jobserve", "linkedin", "indeed", "company_site", "other"}
-# Jobs we know are gone shouldn't be queued automatically.
-CLOSED_AVAILABILITY = {"expired", "unavailable"}
+# Listings we know are gone (or now show a different job) shouldn't be applied to.
+CLOSED_AVAILABILITY = {"expired", "unavailable", "replaced", "redirected"}
 DEFAULT_MINIMUM_APPLY_SCORE = 80
 
 
@@ -87,6 +87,32 @@ def queue_top_matches(db: Session, user: User, minimum_score: int | None = None)
         db.add(_from_job(user, job, status="to_apply"))
     db.commit()
     return [job.id for job, _score in candidates]
+
+
+def jobs_to_check(db: Session, user: User) -> list[int]:
+    """Job ids on the person's apply list, for checking the listings are still open."""
+    return list(
+        db.scalars(
+            select(Application.job_id).where(
+                Application.user_id == user.id, Application.status == "to_apply", Application.job_id.is_not(None)
+            )
+        ).all()
+    )
+
+
+def skip_closed(db: Session, user: User) -> int:
+    """Move apply-list jobs whose listing has closed to Skipped. Returns how many moved."""
+    rows = db.scalars(
+        select(Application)
+        .join(Job, Job.id == Application.job_id)
+        .where(Application.user_id == user.id, Application.status == "to_apply", Job.availability_status.in_(CLOSED_AVAILABILITY))
+    ).all()
+    for application in rows:
+        application.status = "skipped"
+        note = "The listing had closed when checked."
+        application.notes = f"{application.notes}\n{note}" if application.notes else note
+    db.commit()
+    return len(rows)
 
 
 def add_application(db: Session, user: User, payload: ApplicationCreate) -> ApplicationRead:

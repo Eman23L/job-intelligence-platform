@@ -240,6 +240,8 @@ export const api = {
       body: JSON.stringify({ job_ids: jobIds ?? null })
     }),
   availabilityRun: (id: number) => request<JobAvailabilityRunStatus>(`/jobs/availability-runs/${id}`),
+  checkListingsOpen: () => request<JobAvailabilityRunStart>("/applications/check-open", { method: "POST" }),
+  skipClosedListings: () => request<{ skipped: number }>("/applications/skip-closed", { method: "POST" }),
   classifyApplyStrategies: (jobIds?: number[]) =>
     request<JobApplyStrategyRunStart>("/jobs/classify-apply-strategies", {
       method: "POST",

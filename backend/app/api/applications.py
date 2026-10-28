@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -10,9 +10,13 @@ from app.schemas.database import (
     ApplicationsList,
     ApplicationUpdate,
     ApplyPack,
+    JobAvailabilityRunStart,
     PrepareApplicationsResult,
+    SkipClosedResult,
 )
 from app.services import applications as service
+from app.services.job_availability import run_availability_background, start_availability_run
+from app.services.queue import enqueue_or_background
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
@@ -42,6 +46,23 @@ def add_top_matches(
     threshold = minimum_score if minimum_score is not None else service.minimum_apply_score(db, user)
     added = service.queue_top_matches(db, user, threshold)
     return PrepareApplicationsResult(added=len(added), minimum_apply_score=threshold)
+
+
+@router.post("/check-open", response_model=JobAvailabilityRunStart)
+def check_listings_open(background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Check the listings on the apply list are still open. Poll /jobs/availability-runs/{run_id}, then call /skip-closed."""
+    job_ids = service.jobs_to_check(db, user)
+    if not job_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="There are no jobs on your apply list to check.")
+    started, created = start_availability_run(db, job_ids)
+    if created:
+        enqueue_or_background(background_tasks, run_availability_background, started.run_id, job_ids, job_id=f"availability-{started.run_id}")
+    return started
+
+
+@router.post("/skip-closed", response_model=SkipClosedResult)
+def skip_closed_listings(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return SkipClosedResult(skipped=service.skip_closed(db, user))
 
 
 @router.post("", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)

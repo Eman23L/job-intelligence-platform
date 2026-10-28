@@ -8,7 +8,7 @@ import { LoadingState } from "@/components/LoadingState";
 import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScorePill } from "@/components/ScoreBadge";
 import { api } from "@/lib/api";
-import { SOURCE_LABELS } from "@/lib/applications";
+import { CLOSED_AVAILABILITY, SOURCE_LABELS } from "@/lib/applications";
 import { formatDate } from "@/lib/format";
 import type { Application, ApplicationSource, ApplicationStatus, ApplicationsList } from "@/types/api";
 
@@ -30,6 +30,7 @@ export default function ApplicationsPage() {
   const [tab, setTab] = useState<Tab>("to_apply");
   const [threshold, setThreshold] = useState(80);
   const [adding, setAdding] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [showLogForm, setShowLogForm] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
 
@@ -76,6 +77,39 @@ export default function ApplicationsPage() {
       setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't add jobs." });
     } finally {
       setAdding(false);
+    }
+  };
+
+  const checkStillOpen = async () => {
+    setChecking(true);
+    setNotice({ type: "info", message: "Checking each listing. This can take a minute or two." });
+    try {
+      const started = await api.checkListingsOpen();
+      let run = await api.availabilityRun(started.run_id);
+      // Poll for up to 10 minutes; each listing is fetched from the job site in the background.
+      for (let attempt = 0; ["running", "queued"].includes(run.status) && attempt < 200; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        run = await api.availabilityRun(started.run_id);
+        setNotice({ type: "info", message: `Checking listings: ${run.processed} of ${run.total} done.` });
+      }
+      if (run.status !== "completed") {
+        throw new Error(run.error ?? "The check didn't finish. Try again in a few minutes.");
+      }
+      const { skipped } = await api.skipClosedListings();
+      const latest = await refresh();
+      const left = latest.items.filter((item) => item.status === "to_apply" && item.job_id).length;
+      setNotice({
+        type: "success",
+        message: !skipped
+          ? "Every listing on your apply list is still open."
+          : left
+            ? `Moved ${skipped} closed ${skipped === 1 ? "listing" : "listings"} to Skipped. The ${left} left ${left === 1 ? "is" : "are"} still open.`
+            : `All ${skipped} ${skipped === 1 ? "listing has" : "listings have"} closed, so they're in Skipped. Run a new search on the Sources page to find fresh jobs.`
+      });
+    } catch (err) {
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't check the listings." });
+    } finally {
+      setChecking(false);
     }
   };
 
@@ -183,6 +217,16 @@ export default function ApplicationsPage() {
         ))}
       </div>
 
+      {tab === "to_apply" && groups.to_apply.some((item) => item.job_id) ? (
+        <div className="action-row">
+          <button type="button" className="secondary-button" disabled={checking} onClick={() => void checkStillOpen()}>
+            {checking ? <span className="spinner" aria-hidden="true" /> : null}
+            {checking ? "Checking..." : "Check they're still open"}
+          </button>
+          <span className="muted-text">Jobs whose listing has closed move to Skipped.</span>
+        </div>
+      ) : null}
+
       {rows.length === 0 ? (
         <EmptyState
           title={tab === "to_apply" ? "Nothing to apply for yet" : tab === "applied" ? "No applications yet" : "Nothing skipped"}
@@ -260,7 +304,7 @@ export default function ApplicationsPage() {
                     ) : (
                       <td data-label="Where" className="muted-text">
                         {SOURCE_LABELS[item.source] ?? item.source}
-                        {item.availability_status && ["expired", "unavailable"].includes(item.availability_status) ? (
+                        {item.availability_status && CLOSED_AVAILABILITY.includes(item.availability_status) ? (
                           <span className="status-note">Listing may have closed</span>
                         ) : null}
                       </td>
