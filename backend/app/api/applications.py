@@ -26,7 +26,11 @@ def _owned(db: Session, user: User, application_id: int):
 
 @router.get("", response_model=ApplicationsList)
 def get_applications(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return ApplicationsList(items=service.list_applications(db, user), minimum_apply_score=service.minimum_apply_score(db, user))
+    return ApplicationsList(
+        items=service.list_applications(db, user),
+        minimum_apply_score=service.minimum_apply_score(db, user),
+        has_cv=service.has_cv(db, user),
+    )
 
 
 @router.post("/prepare", response_model=PrepareApplicationsResult)

@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Job, JobSource, RawJobSnapshot, ScrapeRun, User
+from app.db.models import Job, JobScore, JobSource, RawJobSnapshot, ScrapeRun, User, UserProfile
 from app.db.session import SessionLocal
 from app.schemas.database import (
     JobServeSearchScrapeRequest,
@@ -42,6 +42,7 @@ from app.services.job_validation import validate_normalised_job
 from app.services.job_availability import check_jobs_availability
 from app.services.link_discovery import discover_links
 from app.services.normalisation import normalise_job_fields
+from app.services.job_scoring import preload_scoring_context, score_job_against_profile
 from app.services.scoring import score_job
 
 
@@ -356,6 +357,12 @@ def run_jobserve_search_scrape_background(scrape_run_id: int, payload_data: dict
                 result.jobs_found,
                 len(result.errors),
             )
+            try:
+                scored = score_new_jobs_for_everyone(db)
+                LOGGER.info("JobServe post-scrape scoring completed run_id=%s scores_added=%s", scrape_run_id, scored)
+            except Exception:
+                db.rollback()
+                LOGGER.exception("JobServe post-scrape scoring failed run_id=%s", scrape_run_id)
             if payload.check_availability_after and run.status == "completed":
                 try:
                     job_ids = list(db.scalars(select(Job.id).where(Job.source_id == result.source_id)).all())
@@ -1596,7 +1603,32 @@ def _salary_fingerprint(item: dict) -> str | None:
     return " ".join(str(part) for part in [currency, value] if part)
 
 
+def score_new_jobs_for_everyone(db: Session) -> int:
+    """Score every open job a person with a CV hasn't been scored on yet. Returns the number of scores added."""
+    added = 0
+    profiles = db.scalars(select(UserProfile).where(UserProfile.cv_text != "").order_by(UserProfile.user_id)).all()
+    for profile in profiles:
+        already_scored = select(JobScore.job_id).where(JobScore.user_id == profile.user_id)
+        jobs = db.scalars(select(Job).where(Job.status != "excluded", Job.id.not_in(already_scored)).order_by(Job.id)).all()
+        if not jobs:
+            continue
+        context = preload_scoring_context(db, jobs, profile.user, profile)
+        for job in jobs:
+            score_job_against_profile(db, job, profile.user, profile, context)
+        db.commit()
+        added += len(jobs)
+    return added
+
+
 def _score_if_possible(db: Session, job: Job, warnings: list[str]) -> None:
+    # Score new jobs for everyone who has saved a CV, so each person's matches stay current.
+    profiles = db.scalars(select(UserProfile).where(UserProfile.cv_text != "").order_by(UserProfile.user_id)).all()
+    if profiles:
+        if job.status != "excluded":
+            for profile in profiles:
+                score_job_against_profile(db, job, profile.user, profile)
+            db.commit()
+        return
     user = db.scalar(select(User).order_by(User.id))
     if user is None:
         warnings.append("Job analysed but not scored because no seeded user exists.")

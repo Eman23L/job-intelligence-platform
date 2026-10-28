@@ -37,7 +37,16 @@ export default function ProfilePage() {
       const saved = await api.saveProfileCv(cvText);
       setProfile(saved);
       setCvText(saved.cv_text);
-      setNotice("CV text saved.");
+      // Match scores come from the CV, so re-score jobs whenever it changes.
+      const rescoring = await api
+        .rescoreJobs()
+        .then(() => true)
+        .catch(() => false);
+      setNotice(
+        rescoring
+          ? "CV saved. Your job matches are being updated and will show on the Jobs page in a minute or two."
+          : "CV saved. To update your job matches, go to Jobs and choose Rescore all jobs."
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save CV profile");
     } finally {

@@ -41,7 +41,9 @@ def test_adding_the_same_job_twice_updates_one_row() -> None:
 
 def test_apply_pack_has_job_and_candidate_details() -> None:
     with phase6_client() as (client, ids):
+        assert client.get("/applications").json()["has_cv"] is False
         client.post("/profile/cv", json={"cv_text": "Python and SQL engineer"})
+        assert client.get("/applications").json()["has_cv"] is True
         client.post(
             "/profile/application",
             json={"first_name": "Alex", "last_name": "Example", "phone": "07000 000000", "salary_expectation": "£50,000 – £75,000"},

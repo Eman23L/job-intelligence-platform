@@ -219,6 +219,7 @@ export interface Application {
 export interface ApplicationsList {
   items: Application[];
   minimum_apply_score: number;
+  has_cv: boolean;
 }
 
 export interface ApplicationCreatePayload {

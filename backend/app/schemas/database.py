@@ -708,6 +708,7 @@ class ApplicationRead(ORMModel):
 class ApplicationsList(BaseModel):
     items: list[ApplicationRead]
     minimum_apply_score: int = 80
+    has_cv: bool = False
 
 
 class ApplicationCreate(BaseModel):
