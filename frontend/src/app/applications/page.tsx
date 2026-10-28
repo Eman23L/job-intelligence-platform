@@ -68,7 +68,9 @@ export default function ApplicationsPage() {
         type: result.added ? "success" : "info",
         message: result.added
           ? `Added ${result.added} ${result.added === 1 ? "job" : "jobs"} scoring ${result.minimum_apply_score} or more.`
-          : `No new jobs scoring ${result.minimum_apply_score} or more. Try a lower score, or find more jobs on the Sources page.`
+          : !data?.has_cv
+            ? "Add your CV on the Profile page first, so jobs can be matched to you."
+            : `No new jobs scoring ${result.minimum_apply_score} or more. Try a lower score, or find more jobs on the Sources page.`
       });
     } catch (err) {
       setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't add jobs." });

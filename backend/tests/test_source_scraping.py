@@ -7,13 +7,14 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.models import Base, Job, JobAnalysis, JobScore, RawJobSnapshot
+from app.db.models import Base, Job, JobAnalysis, JobScore, RawJobSnapshot, User
 from app.db.session import get_db
 from app.main import app
 from app.scrapers.job_boards import JobRecord
 from app.scrapers.policies.robots import RobotsCheckResult
 from app.schemas.database import JobServeSearchScrapeRequest
 from app.services import source_scraping
+from app.services.profile import upsert_cv_profile
 from scripts.seed_data import seed_database
 
 
@@ -780,6 +781,104 @@ def test_scrape_now_creates_snapshot_job_analysis_and_score(monkeypatch) -> None
             assert db.scalar(select(RawJobSnapshot).where(RawJobSnapshot.source_id == source_id)) is not None
             assert db.scalar(select(JobAnalysis).where(JobAnalysis.job_id == job.id)) is not None
             assert db.scalar(select(JobScore).where(JobScore.job_id == job.id)) is not None
+
+
+def test_scrape_scores_new_jobs_for_everyone_with_a_cv(monkeypatch) -> None:
+    directory_html = (FIXTURES / "generic_directory.html").read_text(encoding="utf-8")
+    job_html = (FIXTURES / "generic_job_jsonld.html").read_text(encoding="utf-8")
+
+    def fake_fetch(url: str, *, delay_seconds: float = 0):
+        if "data-engineer" in url:
+            return source_scraping.FetchResult(url="https://example.invalid/jobs/senior-data-engineer", status_code=200, text=job_html)
+        return source_scraping.FetchResult(url=url, status_code=200, text=directory_html)
+
+    monkeypatch.setattr(source_scraping, "fetch_url", fake_fetch)
+    monkeypatch.setattr(
+        source_scraping,
+        "check_robots_allowed",
+        lambda *args, **kwargs: RobotsCheckResult(True, "robots.txt permits this URL"),
+    )
+
+    with scraping_client() as (client, TestingSession):
+        assert client.post("/profile/cv", json={"cv_text": "Data engineer. Skills: Python, SQL, AWS"}).status_code == 200
+        with TestingSession() as db:
+            friend = User(email="friend@example.invalid")
+            db.add(friend)
+            db.commit()
+            friend_id = friend.id
+            no_cv = User(email="no-cv@example.invalid")
+            db.add(no_cv)
+            db.commit()
+            no_cv_id = no_cv.id
+        with TestingSession() as db:
+            upsert_cv_profile(db, db.get(User, friend_id), "Analytics engineer. Skills: SQL, dbt")
+
+        source_id = _create_source(client)
+        client.post(f"/sources/{source_id}/scrape-now", json={"max_jobs": 1, "max_pages": 1, "delay_seconds": 8})
+
+        with TestingSession() as db:
+            job = db.scalar(select(Job))
+            assert job is not None
+            scored_users = set(db.scalars(select(JobScore.user_id).where(JobScore.job_id == job.id)).all())
+            owner_id = db.scalar(select(User.id).order_by(User.id))
+            assert scored_users == {owner_id, friend_id}
+            assert no_cv_id not in scored_users
+
+
+def test_jobserve_search_scores_new_jobs_for_everyone_with_a_cv(monkeypatch) -> None:
+    html = '<html><body><input type="hidden" id="jobIDs" value="ABC123" /></body></html>'
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_search_results",
+        lambda payload: source_scraping.JobServeSearchResultPage(
+            url="https://www.jobserve.com/gb/en/JobSearch.aspx?shid=fixture",
+            html=html,
+            job_ids=["ABC123"],
+            status_code=200,
+            cookies={},
+            diagnostics={},
+        ),
+    )
+    monkeypatch.setattr(
+        source_scraping,
+        "_fetch_jobserve_detail_records",
+        lambda job_ids, **kwargs: (
+            [
+                JobRecord(
+                    source_job_id="ABC123",
+                    title="Data Engineer",
+                    recruiter="Search Recruiter",
+                    location="London",
+                    description="Build data pipelines with Python and SQL.",
+                    url="https://www.jobserve.com/gb/en/job/ABC123",
+                )
+            ],
+            [],
+        ),
+    )
+
+    with scraping_client() as (client, TestingSession):
+        assert client.post("/profile/cv", json={"cv_text": "Data engineer. Skills: Python, SQL, AWS"}).status_code == 200
+        with TestingSession() as db:
+            friend = User(email="friend@example.invalid")
+            no_cv = User(email="no-cv@example.invalid")
+            db.add_all([friend, no_cv])
+            db.commit()
+            friend_id, no_cv_id = friend.id, no_cv.id
+            upsert_cv_profile(db, friend, "Analytics engineer. Skills: SQL, dbt")
+
+        response = client.post("/sources/jobserve/search-scrape", json={"keywords": "Data", "location": "London", "max_pages": 1})
+        assert client.get(f"/sources/scrape-runs/{response.json()['run_id']}").json()["created"] == 1
+
+        with TestingSession() as db:
+            owner_id = db.scalar(select(User.id).order_by(User.id))
+            job = db.scalar(select(Job).where(Job.source_job_id == "ABC123"))
+            assert job is not None
+            scored_users = list(db.scalars(select(JobScore.user_id).where(JobScore.job_id == job.id)).all())
+            assert sorted(scored_users) == sorted([owner_id, friend_id])
+            assert no_cv_id not in scored_users
+            # Running it again adds nothing: everyone already has a score for every job.
+            assert source_scraping.score_new_jobs_for_everyone(db) == 0
 
 
 def _create_source(client: TestClient) -> int:

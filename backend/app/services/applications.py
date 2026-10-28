@@ -36,6 +36,12 @@ def minimum_apply_score(db: Session, user: User) -> int:
     return int(value or DEFAULT_MINIMUM_APPLY_SCORE)
 
 
+def has_cv(db: Session, user: User) -> bool:
+    """Jobs are matched against the CV text, so nothing can be suggested until it's saved."""
+    profile = get_profile(db, user)
+    return bool(profile and (profile.cv_text or "").strip())
+
+
 def list_applications(db: Session, user: User) -> list[ApplicationRead]:
     rows = db.execute(
         select(Application, JobScore, Job)
