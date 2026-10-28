@@ -507,6 +507,15 @@ export default function JobsPage() {
               await api.checkJobAvailability(jobId);
               await refresh();
             }}
+            onAddToApplyList={async (jobId) => {
+              try {
+                await api.addToApplyList(jobId);
+                await refresh();
+                setNotice({ type: "success", message: "Added to your apply list. Open Applications to apply with Claude." });
+              } catch (err) {
+                setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't add that job." });
+              }
+            }}
           />
           {data.total_pages > 1 ? (
             <div className="panel-footer">

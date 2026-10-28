@@ -16,6 +16,7 @@ The project is intentionally split into:
 - Next.js dashboard for jobs, sources, salary analytics, saved jobs, and score views
 - JobServe scraper using hidden search-page job IDs and AJAX detail endpoints
 - Background scrape runs with polling status
+- Per-person apply list, with an "Apply with Claude" page for each job and a LinkedIn & Indeed page (see "Applying for jobs")
 - Salary normalisation for annual, day-rate, and hourly jobs
 - Alembic migrations
 - Pytest backend coverage
@@ -133,6 +134,7 @@ Common endpoints:
 - `POST /sources/{id}/scrape-now`
 - `GET /scrape-runs/{id}`
 - `GET /analytics/salary`
+- `GET /applications`, `POST /applications`, `PATCH /applications/{id}`, `GET /applications/{id}/pack`
 
 ## Vercel Frontend Deployment
 
@@ -209,6 +211,14 @@ The app is invite-only. Every page and API route except `/health` and `/auth/*` 
 3. To add someone, go to **Account → Invite someone** and send them the link. Each link works once and expires after `INVITE_DAYS` (default 14).
 
 Sign-in sessions last `SESSION_DAYS` (default 30). Passwords are hashed with scrypt; session tokens and invite codes are stored only as SHA-256 hashes.
+
+## Applying for jobs
+
+The app doesn't submit applications itself. Claude in Chrome fills in each form in your own browser while you watch, and you press Submit.
+
+- **Applications** is your apply list. "Add top matches" adds open jobs scoring above your minimum score, best first. Each job has an **Apply with Claude** page with instructions to paste into Claude in Chrome, your details, your CV and the job description.
+- **LinkedIn & Indeed** builds a search link and instructions for Claude to apply to a few jobs one at a time, stopping before each Submit. Claude logs each one on the Applications page.
+- Each person's apply list is private to them.
 
 ## Security Notes
 

@@ -2,8 +2,8 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
-from app.db.models import Job, JobScore, JobSource, User, UserProfile
-from app.services.applications import prepare_applications
+from app.db.models import Application, Job, JobScore, JobSource, User, UserProfile
+from app.services.applications import queue_top_matches
 from app.services.apply_strategy import calculate_apply_readiness, classify_apply_strategy, classify_job
 
 
@@ -110,14 +110,12 @@ def test_application_queue_excludes_blocked(db_session, monkeypatch) -> None:
     )
     db_session.commit()
 
-    from app.services import applications
-
-    monkeypatch.setattr(applications, "check_job_availability", lambda db, job: None)
-    queued, job_ids = prepare_applications(db_session, user)
+    job_ids = queue_top_matches(db_session, user)
+    queued = len(job_ids)
 
     assert queued == 1
     assert job_ids == [easy.id]
-    assert db_session.get(Job, blocked.id).application_status == "not_started"
+    assert db_session.scalar(select(Application.job_id).where(Application.job_id == blocked.id)) is None
 
 
 def test_application_queue_orders_easy_before_medium_and_hard(db_session, monkeypatch) -> None:
@@ -147,10 +145,7 @@ def test_application_queue_orders_easy_before_medium_and_hard(db_session, monkey
         db_session.add(JobScore(job_id=job.id, user_id=user.id, total_score=Decimal("80"), recommendation="apply", recommendation_tier="Strong match"))
     db_session.commit()
 
-    from app.services import applications
-
-    monkeypatch.setattr(applications, "check_job_availability", lambda db, job: None)
-    _, job_ids = prepare_applications(db_session, user)
+    job_ids = queue_top_matches(db_session, user)
 
     assert job_ids == [easy.id, medium.id, hard.id]
 
@@ -173,10 +168,7 @@ def test_changing_threshold_to_70_queues_70_plus_jobs(db_session, monkeypatch) -
     )
     db_session.commit()
 
-    from app.services import applications
-
-    monkeypatch.setattr(applications, "check_job_availability", lambda db, job: None)
-    _, job_ids = prepare_applications(db_session, user)
+    job_ids = queue_top_matches(db_session, user)
 
     assert job_ids == [seventy.id]
 
@@ -191,10 +183,8 @@ def test_jobs_below_default_threshold_are_not_queued(db_session, monkeypatch) ->
     db_session.add(JobScore(job_id=job.id, user_id=user.id, total_score=Decimal("79"), recommendation="apply", recommendation_tier="Strong match"))
     db_session.commit()
 
-    from app.services import applications
-
-    monkeypatch.setattr(applications, "check_job_availability", lambda db, job: None)
-    queued, job_ids = prepare_applications(db_session, user)
+    job_ids = queue_top_matches(db_session, user)
+    queued = len(job_ids)
 
     assert queued == 0
     assert job_ids == []

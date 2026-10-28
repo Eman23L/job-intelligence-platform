@@ -7,7 +7,8 @@ from sqlalchemy import case, func, or_, select, text, true
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.db.models import Job, JobAnalysis, JobScore, JobSkill, JobSource, MissingSkill, SavedJob, ScrapeRun, User
+from app.db.models import Application, Job, JobAnalysis, JobScore, JobSkill, JobSource, MissingSkill, SavedJob, ScrapeRun, User
+from app.services.applications import SUBMITTED_STATUSES
 from app.schemas.database import (
     AnalyticsOverview,
     RoleFitAnalytics,
@@ -51,7 +52,7 @@ def overview(db: Session, user: User | None = None) -> AnalyticsOverview:
         saved_summary = db.execute(
             select(
                 func.sum(case((SavedJob.status == "saved", 1), else_=0)).label("saved_jobs"),
-                func.sum(case((SavedJob.status == "applied", 1), else_=0)).label("applied_jobs"),
+                _applied_count_subquery(user).label("applied_jobs"),
             )
             .select_from(SavedJob)
             .join(Job)
@@ -83,6 +84,13 @@ def overview(db: Session, user: User | None = None) -> AnalyticsOverview:
         logger.exception("analytics.overview failed; returning empty fallback")
         db.rollback()
         return _empty_overview()
+
+
+def _applied_count_subquery(user: User | None):
+    query = select(func.count(Application.id)).where(Application.status.in_(SUBMITTED_STATUSES))
+    if user is not None:
+        query = query.where(Application.user_id == user.id)
+    return query.scalar_subquery()
 
 
 def _score_user_filter(user: User | None) -> tuple:

@@ -5,6 +5,7 @@ import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScorePill } from "@/components/ScoreBadge";
 import { PendingScoringBadge } from "@/components/PendingScoringBadge";
 import { useIsOwner } from "@/lib/account-context";
+import { STATUS_LABELS } from "@/lib/applications";
 import { formatDate, formatSalary, formatSalaryPeriod } from "@/lib/format";
 
 export function JobsTable({
@@ -15,7 +16,8 @@ export function JobsTable({
   onDelete,
   onExclude,
   onScorecard,
-  onCheckAvailability
+  onCheckAvailability,
+  onAddToApplyList
 }: {
   jobs: JobListItem[];
   selectedIds: Set<number>;
@@ -25,6 +27,7 @@ export function JobsTable({
   onExclude: (jobId: number) => void;
   onScorecard: (jobId: number) => void;
   onCheckAvailability: (jobId: number) => Promise<void>;
+  onAddToApplyList: (jobId: number) => Promise<void>;
 }) {
   const allSelected = jobs.length > 0 && jobs.every((job) => selectedIds.has(job.id));
   const isOwner = useIsOwner();
@@ -99,6 +102,11 @@ export function JobsTable({
                       ⋯
                     </summary>
                     <div className="menu-panel">
+                      {job.application_status !== "to_apply" ? (
+                        <button type="button" onClick={(event) => closeMenuAfter(event, () => void onAddToApplyList(job.id))}>
+                          Add to apply list
+                        </button>
+                      ) : null}
                       <button type="button" onClick={(event) => closeMenuAfter(event, () => void onCheckAvailability(job.id))}>
                         Check it&apos;s still open
                       </button>
@@ -162,8 +170,9 @@ function StatusCell({ job }: { job: JobListItem }) {
   if (job.status === "excluded") {
     return <span className="badge excluded">Hidden</span>;
   }
-  if (job.application_status && job.application_status !== "not_started") {
-    return <span className="badge strong">{formatLabel(job.application_status)}</span>;
+  if (job.application_status) {
+    const tone = job.application_status === "to_apply" ? "strong" : job.application_status === "skipped" ? "neutral" : "good";
+    return <span className={`badge ${tone}`}>{STATUS_LABELS[job.application_status]}</span>;
   }
   // "Active" and "unknown" are the normal state, so only surface availability when something is wrong.
   if (job.availability_status && !["active", "unknown"].includes(job.availability_status)) {
@@ -176,10 +185,6 @@ function StatusCell({ job }: { job: JobListItem }) {
   return <span className="muted-text">Open</span>;
 }
 
-function formatLabel(value: string): string {
-  const text = value.replaceAll("_", " ");
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
 
 function closeMenuAfter(event: React.MouseEvent<HTMLButtonElement>, action: () => void) {
   event.currentTarget.closest("details")?.removeAttribute("open");

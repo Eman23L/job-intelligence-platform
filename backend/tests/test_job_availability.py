@@ -1,11 +1,9 @@
-from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
 
-from app.db.models import Job, JobScore, JobSource, User
-from app.services import applications
-from app.services.applications import prepare_applications
+from app.db.models import Application, Job, JobScore, JobSource, User
+from app.services.applications import queue_top_matches
 from app.services.job_availability import FetchResult, check_job_availability
 
 
@@ -120,42 +118,29 @@ def test_jobserve_search_page_with_different_selected_job_is_replaced(db_session
     assert "JobServe page loaded but selected job title changed" in (result.availability_reason or "")
 
 
-def test_unavailable_jobs_not_queued(db_session, monkeypatch) -> None:
+def test_unavailable_jobs_not_queued(db_session) -> None:
     job = _seed_scored_job(db_session, "Unavailable Data Engineer")
+    job.availability_status = "unavailable"
+    job.availability_reason = "HTTP 404"
+    db_session.commit()
 
-    def mark_unavailable(db, candidate):
-        candidate.availability_status = "unavailable"
-        candidate.last_checked_at = datetime.now(tz=timezone.utc)
-        candidate.availability_reason = "HTTP 404"
-        db.commit()
+    job_ids = queue_top_matches(db_session, db_session.scalar(select(User)))
 
-    monkeypatch.setattr(applications, "check_job_availability", mark_unavailable)
-
-    queued, job_ids = prepare_applications(db_session, db_session.scalar(select(User)))
-
-    assert queued == 0
     assert job_ids == []
-    db_session.refresh(job)
-    assert job.application_status == "not_started"
+    assert db_session.scalar(select(Application).where(Application.job_id == job.id)) is None
 
 
-def test_unknown_availability_jobs_can_be_queued(db_session, monkeypatch) -> None:
+def test_unknown_availability_jobs_can_be_queued(db_session) -> None:
     job = _seed_scored_job(db_session, "Unknown Availability Data Engineer")
+    job.availability_status = "unknown"
+    db_session.commit()
 
-    def mark_unknown(db, candidate):
-        candidate.availability_status = "unknown"
-        candidate.last_checked_at = datetime.now(tz=timezone.utc)
-        candidate.availability_reason = "Could not verify apply button"
-        db.commit()
+    job_ids = queue_top_matches(db_session, db_session.scalar(select(User)))
 
-    monkeypatch.setattr(applications, "check_job_availability", mark_unknown)
-
-    queued, job_ids = prepare_applications(db_session, db_session.scalar(select(User)))
-
-    assert queued == 1
     assert job_ids == [job.id]
-    db_session.refresh(job)
-    assert job.application_status == "ready_to_apply"
+    application = db_session.scalar(select(Application).where(Application.job_id == job.id))
+    assert application is not None
+    assert application.status == "to_apply"
 
 
 def _seed_scored_job(db_session, title: str, *, company: str = "Example Ltd", canonical_url: str | None = None) -> Job:

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -31,3 +31,16 @@ def upload_cv_file(file: UploadFile = File(...), user: User = Depends(get_curren
         return store_cv_file(db, user, file.filename or "cv", file.file, content_type=file.content_type)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/cv-file")
+def download_cv_file(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    profile = get_profile(db, user)
+    if profile is None or not profile.cv_file_bytes:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No CV file uploaded yet")
+    filename = (profile.cv_file_name or "cv").replace('"', "")
+    return Response(
+        content=profile.cv_file_bytes,
+        media_type=profile.cv_file_mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

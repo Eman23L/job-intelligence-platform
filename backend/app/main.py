@@ -11,7 +11,6 @@ from app.api.analytics import router as analytics_router
 from app.api.auth import router as auth_router
 from app.api.deps import get_current_user
 from app.api.applications import router as applications_router
-from app.api.diagnostics import router as diagnostics_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.profile import router as profile_router
@@ -79,11 +78,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Lets the browser read the CV's filename on download.
+        expose_headers=["Content-Disposition"],
     )
-    # Public: health checks, sign-in, and the diagnostics routes (guarded by their own admin token).
+    # Public: health checks and sign-in.
     app.include_router(health_router)
     app.include_router(auth_router)
-    app.include_router(diagnostics_router)
     # Everything else needs a signed-in user.
     signed_in = [Depends(get_current_user)]
     for router in (

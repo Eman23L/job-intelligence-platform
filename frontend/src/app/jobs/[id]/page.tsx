@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
@@ -8,10 +9,12 @@ import { RecommendationBadge } from "@/components/RecommendationBadge";
 import { ScorePill } from "@/components/ScoreBadge";
 import { SkillBadge } from "@/components/SkillBadge";
 import { api } from "@/lib/api";
+import { STATUS_LABELS } from "@/lib/applications";
 import { formatDate, formatNumber, formatSalary, formatSalaryPeriod } from "@/lib/format";
 import type { JobDetail } from "@/types/api";
 
 export default function JobDetailPage({ params }: { params: { id: string } }) {
+  const router = useRouter();
   const [data, setData] = useState<JobDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -42,6 +45,17 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
       load();
     } catch (err) {
       setActionMessage(err instanceof Error ? err.message : "Action failed");
+    }
+  };
+
+  const applyWithClaude = async () => {
+    setActionMessage(null);
+    try {
+      // Reuse the existing apply-list entry, or create one, then open its apply page.
+      const id = data?.application_id ?? (await api.addToApplyList(params.id)).id;
+      router.push(`/apply/${id}`);
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : "Couldn't start the application");
     }
   };
 
@@ -89,22 +103,32 @@ export default function JobDetailPage({ params }: { params: { id: string } }) {
               </p>
               <div className="badge-list">
                 {score ? <RecommendationBadge tier={score.recommendation_tier} /> : null}
-                {data.saved_status ? <span className="badge strong">{capitalise(data.saved_status)}</span> : null}
+                {data.application_status ? <span className="badge good">{STATUS_LABELS[data.application_status]}</span> : null}
+                {data.saved_status && !data.application_status ? <span className="badge strong">{capitalise(data.saved_status)}</span> : null}
               </div>
             </div>
           </div>
           <div className="action-row">
+            {!data.application_status || data.application_status === "to_apply" ? (
+              <button type="button" onClick={() => void applyWithClaude()}>
+                Apply with Claude
+              </button>
+            ) : null}
             {data.job.canonical_url ? (
-              <a href={data.job.canonical_url} target="_blank" rel="noreferrer" className="button-link">
+              <a href={data.job.canonical_url} target="_blank" rel="noreferrer" className="button-link secondary">
                 View listing ↗
               </a>
             ) : null}
-            <button type="button" className="secondary-button" onClick={() => runAction("save")}>
-              Save
-            </button>
-            <button type="button" className="secondary-button" onClick={() => runAction("applied")}>
-              Mark applied
-            </button>
+            {!data.saved_status ? (
+              <button type="button" className="secondary-button" onClick={() => runAction("save")}>
+                Save
+              </button>
+            ) : null}
+            {data.application_status !== "applied" ? (
+              <button type="button" className="secondary-button" onClick={() => runAction("applied")}>
+                I&apos;ve applied
+              </button>
+            ) : null}
             <button type="button" className="ghost-button" onClick={() => runAction("reject")}>
               Not interested
             </button>

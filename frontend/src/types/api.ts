@@ -36,7 +36,7 @@ export interface JobListItem {
   matched_skills_count: number;
   missing_skills_count: number;
   status: string;
-  application_status: ApplicationStatus;
+  application_status: ApplicationStatus | null;
   availability_status: AvailabilityStatus;
   last_checked_at: string | null;
   availability_reason: string | null;
@@ -68,7 +68,6 @@ export interface JobRecord extends JobListItem {
   description_text: string | null;
   expires_at: string | null;
   status: string;
-  application_status: ApplicationStatus;
   content_hash: string | null;
   first_seen_at: string;
   last_seen_at: string;
@@ -144,7 +143,8 @@ export interface JobRescoreRunStatus {
   error: string | null;
 }
 
-export type ApplicationStatus = "not_started" | "ready_to_apply" | "opened" | "applied" | "skipped" | "failed";
+export type ApplicationStatus = "to_apply" | "applied" | "interviewing" | "offer" | "rejected" | "skipped";
+export type ApplicationSource = "jobserve" | "linkedin" | "indeed" | "company_site" | "other";
 export type AvailabilityStatus = "active" | "expired" | "unavailable" | "redirected" | "replaced" | "unknown";
 export type ApplyDifficulty = "easy" | "medium" | "hard" | "blocked" | "unknown";
 
@@ -198,147 +198,66 @@ export interface JobApplyStrategyRunStatus {
   last_heartbeat_at: string | null;
 }
 
-export interface ApplicationItem {
-  job_id: number;
+export interface Application {
+  id: number;
+  job_id: number | null;
+  source: ApplicationSource;
   title: string;
-  company_name: string | null;
+  company: string | null;
   location: string | null;
-  apply_url: string;
-  application_status: ApplicationStatus;
-  availability_status: AvailabilityStatus;
-  last_checked_at: string | null;
-  availability_reason: string | null;
-  apply_strategy: string;
-  apply_difficulty: ApplyDifficulty;
-  apply_strategy_reason: string | null;
-  apply_readiness_score: string | null;
-  assisted_started_at: string | null;
-  assisted_result: AssistApplyResult | null;
-  assisted_warnings: string[] | null;
-  last_apply_attempt_at: string | null;
+  url: string | null;
+  status: ApplicationStatus;
+  notes: string | null;
+  applied_at: string | null;
+  created_at: string;
+  updated_at: string;
   total_score: string | null;
   recommendation_tier: string | null;
-  recommendation: "apply" | "maybe" | "skip" | string | null;
+  availability_status: AvailabilityStatus | null;
 }
 
 export interface ApplicationsList {
-  items: ApplicationItem[];
+  items: Application[];
   minimum_apply_score: number;
-  warning?: string | null;
 }
 
-export interface AssistApplyResult {
-  status: "review_required" | string;
-  filled_fields: string[];
-  unfilled_fields: string[];
-  unfilled_required_fields: string[];
-  uploaded_cv: boolean;
-  submitted: boolean;
-  warnings: string[];
-  screenshot_path: string | null;
-  screenshot_paths: string[];
-  screenshot_urls: string[];
-  html_snapshot_paths: string[];
-  html_snapshot_urls: string[];
-  detected_buttons: Array<Record<string, unknown>>;
-  detected_fields: Array<Record<string, unknown>>;
-  detected_selects: Array<Record<string, unknown>>;
-  detected_iframes: Array<Record<string, unknown>>;
-  debug_steps: Array<Record<string, unknown>>;
-  final_url: string | null;
-  final_error: string | null;
-  running_step?: string | null;
-  debug_mode: boolean;
-  timing_diagnostics?: Record<string, unknown>;
-  progress?: Record<string, unknown>;
-  profile_diagnostics?: Record<string, unknown>;
-  jobserve_flow_diagnostics?: Record<string, unknown>;
-  upload_diagnostics?: Record<string, unknown>;
-  select_diagnostics?: Array<Record<string, unknown>>;
-  exceptions?: Array<Record<string, unknown>>;
-  submitted_job_title?: string | null;
-  submitted_job_company?: string | null;
-  submitted_job_reference?: string | null;
-  submitted_job_external_id?: string | null;
-  applied_at?: string | null;
-  confirmation_text?: string | null;
-  registration_toggle_disabled?: boolean;
-  modal_closed?: boolean;
+export interface ApplicationCreatePayload {
+  job_id?: number;
+  title?: string;
+  company?: string;
+  location?: string;
+  url?: string;
+  source?: ApplicationSource;
+  status?: ApplicationStatus;
+  notes?: string;
 }
 
-export interface AssistApplyDiagnosticRun {
-  run_id: string;
-  status: "queued" | "running" | "passed" | "failed" | string;
-  latest_progress: Record<string, unknown>;
-  final_report: Record<string, unknown> | null;
-  markdown_summary: string | null;
-  artifact_links: string[];
-}
-
-export interface AutonomousRealSubmitStatus {
-  enabled: boolean;
-  max_submits_per_run: number;
-  eligible_application_ids: number[];
-  last_result: Record<string, unknown> | null;
-}
-
-export interface AutonomousRealSubmitRunResult {
-  status: string;
-  application_id: number | null;
-  submitted: boolean;
-  failed_phase: string | null;
-  exact_error: string | null;
-  recommended_fix: string;
-  diagnostic_run_id: string | null;
-  codex_handoff_status?: string | null;
-  github_issue_url?: string | null;
-  codex_handoff_error?: string | null;
-  codex_handoff_attempt_count?: number | null;
-  focused_application_id?: number | null;
-  attempt_number?: number;
-  max_attempts?: number;
-  waiting_for_fix_deploy?: boolean;
-  will_retry_same_application?: boolean;
-  will_move_to_next_application?: boolean;
-  orchestration_steps: Array<Record<string, unknown>>;
-  current_url?: string | null;
-  page_title?: string | null;
-  screenshot_paths?: string[];
-  screenshot_urls?: string[];
-  html_snapshot_paths?: string[];
-  html_snapshot_urls?: string[];
-  detected_buttons?: Array<Record<string, unknown>>;
-  detected_fields?: Array<Record<string, unknown>>;
-  detected_selects?: Array<Record<string, unknown>>;
-  select_diagnostics?: Array<Record<string, unknown>>;
-  last_known_stage?: string | null;
-  artifact_links?: string[];
-  traceback?: string | null;
-  created_at: string;
-}
-
-export interface ApplicationsPrepareResult {
-  queued: number;
-  job_ids: number[];
-}
-
-export interface ApplicationPrepareRunStart {
-  run_id: number;
-  status: "running" | "completed" | "failed" | string;
-}
-
-export interface ApplicationPrepareRunStatus {
-  run_id: number;
-  status: "running" | "completed" | "failed" | string;
-  total: number;
-  processed: number;
-  queued: number;
-  skipped: number;
-  failed: number;
-  error: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  last_heartbeat_at: string | null;
+export interface ApplyPack {
+  application: Application;
+  job: {
+    title: string;
+    company: string | null;
+    location: string | null;
+    url: string | null;
+    salary: string | null;
+    posted_at: string | null;
+    description: string | null;
+  };
+  candidate: {
+    first_name: string | null;
+    last_name: string | null;
+    email: string | null;
+    phone: string | null;
+    address: string | null;
+    country: string | null;
+    work_status_uk: string | null;
+    sponsorship_required: boolean;
+    availability_notice: string | null;
+    salary_expectation: string | null;
+    travel_distance: string | null;
+    cv_file_name: string | null;
+    cv_text: string | null;
+  };
 }
 
 export interface JobSkill {
@@ -368,6 +287,8 @@ export interface JobDetail {
   missing_skills: MissingSkill[];
   red_flags: string[];
   saved_status: string | null;
+  application_id: number | null;
+  application_status: ApplicationStatus | null;
 }
 
 export interface SavedJob {

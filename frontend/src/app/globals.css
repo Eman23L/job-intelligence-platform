@@ -1885,3 +1885,131 @@ details.debug-panel > summary {
     display: none;
   }
 }
+
+/* Apply list and apply page */
+
+.align-end {
+  align-self: flex-end;
+}
+
+.tab-row {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+}
+
+.tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: -1px;
+  min-height: 42px;
+  padding: 0.5rem 0.9rem;
+}
+
+.tab:hover {
+  background: transparent;
+  color: var(--text);
+}
+
+.tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.tab-count {
+  background: var(--neutral-soft);
+  border-radius: 999px;
+  color: var(--text-soft);
+  font-size: 0.75rem;
+  margin-left: 0.35rem;
+  padding: 0.1rem 0.5rem;
+}
+
+.tab.active .tab-count {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.log-form {
+  border-top: 1px solid var(--line);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.steps {
+  color: var(--text-soft);
+  display: grid;
+  gap: 0.35rem;
+  line-height: 1.5;
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+}
+
+.copy-block {
+  display: grid;
+  gap: 0.6rem;
+  justify-items: start;
+}
+
+.copy-block label {
+  width: 100%;
+}
+
+.copy-block textarea {
+  background: var(--panel-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.detail-list {
+  display: grid;
+  margin: 0;
+}
+
+.detail-row {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(140px, 220px) minmax(0, 1fr) auto;
+  padding: 0.45rem 0;
+}
+
+.detail-row:last-child {
+  border-bottom: 0;
+}
+
+.detail-row dt {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.detail-row dd {
+  font-weight: 600;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cv-text {
+  font-size: 0.9rem;
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+@media (max-width: 720px) {
+  .detail-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .detail-row dt {
+    grid-column: 1 / -1;
+    margin-bottom: -0.5rem;
+  }
+}

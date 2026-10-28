@@ -12,7 +12,8 @@ const navGroups = [
       { href: "/dashboard", label: "Overview" },
       { href: "/jobs", label: "Jobs" },
       { href: "/saved", label: "Saved" },
-      { href: "/applications", label: "Applications" }
+      { href: "/applications", label: "Applications" },
+      { href: "/linkedin-indeed", label: "LinkedIn & Indeed" }
     ]
   },
   {
@@ -62,7 +63,10 @@ export function Sidebar({ account }: { account: Account | null }) {
           <div key={group.label} className="nav-group">
             <span className="nav-group-label">{group.label}</span>
             {group.items.map((item) => {
-              const active = pathname === item.href || (item.href === "/jobs" && pathname.startsWith("/jobs/"));
+              const active =
+                pathname === item.href ||
+                (item.href === "/jobs" && pathname.startsWith("/jobs/")) ||
+                (item.href === "/applications" && pathname.startsWith("/apply/"));
               return (
                 <Link
                   key={item.href}

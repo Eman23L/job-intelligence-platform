@@ -5,7 +5,6 @@ from app.api.deps import get_current_user
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.database import UnifiedRun, UnifiedRunList
-from app.services.applications import run_prepare_applications_background
 from app.services.apply_strategy import run_apply_strategy_background
 from app.services.job_availability import run_availability_background
 from app.services.queue import enqueue_or_background
@@ -45,8 +44,6 @@ def retry_system_run(run_type: str, run_id: int, background_tasks: BackgroundTas
             enqueue_or_background(background_tasks, run_rescore_background, new_id, user.id, job_id=f"rescore-{new_id}")
         elif run_type == "availability":
             enqueue_or_background(background_tasks, run_availability_background, new_id, None, job_id=f"availability-{new_id}")
-        elif run_type == "application_prepare":
-            enqueue_or_background(background_tasks, run_prepare_applications_background, new_id, user.id, job_id=f"application-prepare-{new_id}")
         elif run_type == "apply_strategy":
             enqueue_or_background(background_tasks, run_apply_strategy_background, new_id, None, job_id=f"apply-strategy-{new_id}")
     return result

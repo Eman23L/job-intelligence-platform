@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 
 from app.db.models import ApplicationPrepareRun, JobApplyStrategyRun, JobAvailabilityRun, JobRescoreRun, ScrapeRun, User
 from app.schemas.database import UnifiedRun
-from app.services.applications import start_prepare_applications_run
 from app.services.apply_strategy import start_apply_strategy_run
 from app.services.job_availability import start_availability_run
 from app.services.rescore_runs import cancel_rescore_run, retry_rescore_run
@@ -39,9 +38,6 @@ def retry_run(db: Session, run_type: str, run_id: int, user: User) -> tuple[Unif
     if run_type == "availability":
         started, created = start_availability_run(db)
         return _run_from_availability(db.get(JobAvailabilityRun, started.run_id)), created
-    if run_type == "application_prepare":
-        started, created = start_prepare_applications_run(db, user)
-        return _run_from_application_prepare(db.get(ApplicationPrepareRun, started.run_id)), created
     if run_type == "apply_strategy":
         started, created = start_apply_strategy_run(db)
         return _run_from_apply_strategy(db.get(JobApplyStrategyRun, started.run_id)), created
