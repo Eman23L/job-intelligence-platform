@@ -8,6 +8,7 @@ from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user, require_admin
 from app.db.models import Job, JobAnalysis, JobScore, JobSkill, User
 from app.db.session import get_db
 from app.schemas.database import (
@@ -63,13 +64,6 @@ def _get_job_or_404(db: Session, job_id: int) -> Job:
     return job
 
 
-def _default_user(db: Session) -> User:
-    user = db.scalar(select(User).order_by(User.id))
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No seeded user found")
-    return user
-
-
 @router.get("", response_model=PaginatedJobs)
 def get_jobs(
     role_family: str | None = None,
@@ -92,6 +86,7 @@ def get_jobs(
     sort: str = Query(default="total_score_desc"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     filters = JobFilters(
@@ -124,7 +119,7 @@ def get_jobs(
     if isinstance(bind, Engine):
         event.listen(bind, "before_cursor_execute", count_query)
     try:
-        result = list_jobs(db, filters, sort=sort, page=page, page_size=page_size)
+        result = list_jobs(db, filters, sort=sort, page=page, page_size=page_size, user=user)
         return result
     except Exception:
         logger.exception("jobs.list failed page=%s page_size=%s sort=%s", page, page_size, sort)
@@ -145,13 +140,13 @@ def get_jobs(
         )
 
 
-@router.post("/bulk-delete", response_model=BulkJobActionResult)
+@router.post("/bulk-delete", response_model=BulkJobActionResult, dependencies=[Depends(require_admin)])
 def bulk_delete_jobs(payload: JobIdsRequest, db: Session = Depends(get_db)):
     deleted_ids = delete_jobs(db, payload.job_ids)
     return BulkJobActionResult(affected=len(deleted_ids), job_ids=deleted_ids)
 
 
-@router.post("/bulk-exclude", response_model=BulkJobActionResult)
+@router.post("/bulk-exclude", response_model=BulkJobActionResult, dependencies=[Depends(require_admin)])
 def bulk_exclude_jobs(payload: JobIdsRequest, db: Session = Depends(get_db)):
     excluded_ids = exclude_jobs(db, payload.job_ids)
     return BulkJobActionResult(affected=len(excluded_ids), job_ids=excluded_ids)
@@ -192,9 +187,8 @@ def get_apply_strategy_run(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/rescore", response_model=JobRescoreRunStart)
-def rescore_all_jobs(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def rescore_all_jobs(background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        user = _default_user(db)
         started, created = start_rescore_run(db, user)
         if created:
             enqueue_or_background(background_tasks, run_rescore_background, started.run_id, user.id, job_id=f"rescore-{started.run_id}")
@@ -212,8 +206,7 @@ def get_rescore_run(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/rescore-runs/{run_id}/retry", response_model=JobRescoreRunStart)
-def retry_rescore(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    user = _default_user(db)
+def retry_rescore(run_id: int, background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     started, created = retry_rescore_run(db, run_id, user)
     if started is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rescore run not found")
@@ -231,8 +224,8 @@ def cancel_rescore(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{job_id}", response_model=JobDetail)
-def get_job_detail(job_id: int, db: Session = Depends(get_db)):
-    return job_detail(db, _get_job_or_404(db, job_id))
+def get_job_detail(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return job_detail(db, _get_job_or_404(db, job_id), user)
 
 
 @router.post("/{job_id}/check-availability", response_model=JobAvailabilityResult)
@@ -245,7 +238,7 @@ def classify_single_apply_strategy(job_id: int, db: Session = Depends(get_db)):
     return classify_apply_strategy(db, _get_job_or_404(db, job_id))
 
 
-@router.delete("/{job_id}", response_model=BulkJobActionResult)
+@router.delete("/{job_id}", response_model=BulkJobActionResult, dependencies=[Depends(require_admin)])
 def delete_single_job(job_id: int, db: Session = Depends(get_db)):
     job = _get_job_or_404(db, job_id)
     delete_job(db, job)
@@ -279,85 +272,87 @@ def get_job_skills(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{job_id}/score", response_model=JobScoreRead)
-def score_single_job(job_id: int, db: Session = Depends(get_db)):
+def score_single_job(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = _get_job_or_404(db, job_id)
     try:
-        return score_job(db, job)
+        return score_job(db, job, user)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/score-all")
-def score_all(db: Session = Depends(get_db)):
+def score_all(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        return score_all_jobs(db)
+        return score_all_jobs(db, user)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get("/{job_id}/score", response_model=JobScoreRead)
-def get_job_score(job_id: int, db: Session = Depends(get_db)):
+def get_job_score(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _get_job_or_404(db, job_id)
-    score = db.scalar(select(JobScore).where(JobScore.job_id == job_id).order_by(JobScore.scored_at.desc()))
+    score = db.scalar(
+        select(JobScore).where(JobScore.job_id == job_id, JobScore.user_id == user.id).order_by(JobScore.scored_at.desc())
+    )
     if score is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job score not found")
     return score
 
 
 @router.get("/{job_id}/scorecard", response_model=JobScorecard)
-def get_job_scorecard(job_id: int, db: Session = Depends(get_db)):
+def get_job_scorecard(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = _get_job_or_404(db, job_id)
     try:
-        return scorecard_for_job(db, job)
+        return scorecard_for_job(db, job, user)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/{job_id}/save", response_model=SavedJobRead)
-def save_job(job_id: int, db: Session = Depends(get_db)):
-    return set_saved_job_status(db, _get_job_or_404(db, job_id), _default_user(db), "saved")
+def save_job(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return set_saved_job_status(db, _get_job_or_404(db, job_id), user, "saved")
 
 
 @router.post("/{job_id}/reject", response_model=SavedJobRead)
-def reject_job(job_id: int, db: Session = Depends(get_db)):
-    return set_saved_job_status(db, _get_job_or_404(db, job_id), _default_user(db), "rejected")
+def reject_job(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return set_saved_job_status(db, _get_job_or_404(db, job_id), user, "rejected")
 
 
 @router.post("/{job_id}/mark-applied", response_model=SavedJobRead)
-def mark_job_applied(job_id: int, db: Session = Depends(get_db)):
+def mark_job_applied(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = _get_job_or_404(db, job_id)
     try:
         set_application_status(db, job, "applied")
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return set_saved_job_status(db, job, _default_user(db), "applied")
+    return set_saved_job_status(db, job, user, "applied")
 
 
 @router.post("/{job_id}/mark-ready-to-apply", response_model=JobDetail)
-def mark_job_ready_to_apply(job_id: int, db: Session = Depends(get_db)):
+def mark_job_ready_to_apply(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = _get_job_or_404(db, job_id)
     try:
         set_application_status(db, job, "ready_to_apply")
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return job_detail(db, job, _default_user(db))
+    return job_detail(db, job, user)
 
 
 @router.post("/{job_id}/mark-opened", response_model=JobDetail)
-def mark_job_opened(job_id: int, db: Session = Depends(get_db)):
+def mark_job_opened(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = _get_job_or_404(db, job_id)
     try:
         set_application_status(db, job, "opened")
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return job_detail(db, job, _default_user(db))
+    return job_detail(db, job, user)
 
 
 @router.post("/{job_id}/mark-skipped", response_model=JobDetail)
-def mark_job_skipped(job_id: int, db: Session = Depends(get_db)):
+def mark_job_skipped(job_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     job = _get_job_or_404(db, job_id)
     try:
         set_application_status(db, job, "skipped")
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return job_detail(db, job, _default_user(db))
+    return job_detail(db, job, user)

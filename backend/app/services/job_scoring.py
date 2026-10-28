@@ -192,14 +192,16 @@ def score_tier(total_score: float) -> str:
     return "Weak match"
 
 
-def scorecard_for_job(db: Session, job: Job) -> dict[str, Any]:
-    score = db.scalar(select(JobScore).where(JobScore.job_id == job.id).order_by(JobScore.scored_at.desc()))
+def scorecard_for_job(db: Session, job: Job, user: User | None = None) -> dict[str, Any]:
+    user = user or _default_user(db)
+    score = db.scalar(
+        select(JobScore).where(JobScore.job_id == job.id, JobScore.user_id == user.id).order_by(JobScore.scored_at.desc())
+    )
     if score and score.explanation:
         try:
             return json.loads(score.explanation)
         except json.JSONDecodeError:
             pass
-    user = _default_user(db)
     profile = get_profile(db, user)
     if profile is None:
         raise ValueError("No saved profile found. Save CV/profile before requesting a scorecard.")

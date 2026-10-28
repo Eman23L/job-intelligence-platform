@@ -7,6 +7,7 @@ import { FiltersBar, type JobFiltersState } from "@/components/FiltersBar";
 import { JobsTable } from "@/components/JobsTable";
 import { LoadingState } from "@/components/LoadingState";
 import { PaginationControls } from "@/components/PaginationControls";
+import { useIsOwner } from "@/lib/account-context";
 import { ApiError, api } from "@/lib/api";
 import type { JobApplyStrategyRunStatus, JobAvailabilityRunStatus, JobRescoreRunStatus, JobScorecard, PaginatedJobs } from "@/types/api";
 
@@ -50,6 +51,7 @@ export default function JobsPage() {
   const [classifyingApply, setClassifyingApply] = useState(false);
   const [applyStrategyRunId, setApplyStrategyRunId] = useState<number | null>(null);
   const [applyStrategyRun, setApplyStrategyRun] = useState<JobApplyStrategyRunStatus | null>(null);
+  const isOwner = useIsOwner();
 
   const params = useMemo(() => {
     const next = new URLSearchParams();
@@ -450,7 +452,7 @@ export default function JobsPage() {
               {selectedCount > 0 ? <p className="muted-text">{selectedCount} selected</p> : null}
             </div>
             <div className="panel-actions">
-              {selectedCount > 0 ? (
+              {selectedCount > 0 && isOwner ? (
                 <>
                   <button type="button" className="secondary-button compact-button" disabled={actionLoading} onClick={() => excludeJobs(selectedJobIds)}>
                     Hide selected

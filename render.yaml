@@ -18,6 +18,8 @@ services:
         value: web
       - key: DIAGNOSTIC_ADMIN_TOKEN
         sync: false
+      - key: OWNER_SETUP_CODE
+        sync: false
       - key: AUTONOMOUS_REAL_SUBMIT_ENABLED
         value: "false"
       - key: MAX_AUTONOMOUS_REAL_SUBMITS_PER_RUN

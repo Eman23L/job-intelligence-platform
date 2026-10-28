@@ -2,12 +2,14 @@ import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.ai import router as ai_router
 from app.api.analytics import router as analytics_router
+from app.api.auth import router as auth_router
+from app.api.deps import get_current_user
 from app.api.applications import router as applications_router
 from app.api.diagnostics import router as diagnostics_router
 from app.api.health import router as health_router
@@ -78,18 +80,25 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Public: health checks, sign-in, and the diagnostics routes (guarded by their own admin token).
     app.include_router(health_router)
-    app.include_router(sources_router)
-    app.include_router(jobs_router)
-    app.include_router(scores_router)
-    app.include_router(scrape_runs_router)
-    app.include_router(saved_jobs_router)
-    app.include_router(analytics_router)
-    app.include_router(applications_router)
-    app.include_router(ai_router)
-    app.include_router(profile_router)
-    app.include_router(runs_router)
+    app.include_router(auth_router)
     app.include_router(diagnostics_router)
+    # Everything else needs a signed-in user.
+    signed_in = [Depends(get_current_user)]
+    for router in (
+        sources_router,
+        jobs_router,
+        scores_router,
+        scrape_runs_router,
+        saved_jobs_router,
+        analytics_router,
+        applications_router,
+        ai_router,
+        profile_router,
+        runs_router,
+    ):
+        app.include_router(router, dependencies=signed_in)
     return app
 
 

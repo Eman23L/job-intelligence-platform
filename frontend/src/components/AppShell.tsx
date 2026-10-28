@@ -1,9 +1,12 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Header } from "@/components/Header";
 import { Sidebar } from "@/components/Sidebar";
+import { AccountContext } from "@/lib/account-context";
+import { authApi, type Account } from "@/lib/api";
+import { getToken, isPublicPath, redirectToLogin } from "@/lib/session";
 
 const pages: Record<string, { title: string; description: string }> = {
   "/dashboard": { title: "Overview", description: "Your job search at a glance." },
@@ -17,11 +20,34 @@ const pages: Record<string, { title: string; description: string }> = {
   "/profile": { title: "Profile", description: "Your CV and application details, used to score every job." },
   "/sources": { title: "Sources", description: "Where jobs are collected from." },
   "/runs": { title: "Activity", description: "Background tasks like scraping, scoring and availability checks." },
-  "/debug": { title: "Diagnostics", description: "Connection and configuration details." }
+  "/debug": { title: "Diagnostics", description: "Connection and configuration details." },
+  "/account": { title: "Account", description: "Your sign-in details and invites." }
 };
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const publicPage = isPublicPath(pathname);
+  const [account, setAccount] = useState<Account | null>(null);
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    if (publicPage) {
+      return;
+    }
+    if (!getToken()) {
+      redirectToLogin();
+      return;
+    }
+    let active = true;
+    authApi
+      .me()
+      .then((me) => active && setAccount(me))
+      .catch(() => undefined) // A 401 already redirects; anything else shouldn't block the page.
+      .finally(() => active && setChecked(true));
+    return () => {
+      active = false;
+    };
+  }, [publicPage]);
 
   // Dropdown menus are plain <details> elements; close them on outside click or Escape.
   useEffect(() => {
@@ -50,13 +76,23 @@ export function AppShell({ children }: { children: ReactNode }) {
     ? { title: "Job details", description: "" }
     : pages[pathname] ?? pages["/dashboard"];
 
+  if (publicPage) {
+    return <main className="auth-page">{children}</main>;
+  }
+  if (!checked && !account) {
+    // Hold the app until we know who is signed in, so nothing flashes before a redirect.
+    return <main className="auth-page" aria-busy="true" />;
+  }
+
   return (
-    <div className="app-shell">
-      <Sidebar />
-      <div className="main-area">
-        <Header title={page.title} description={page.description} />
-        <main className="content">{children}</main>
+    <AccountContext.Provider value={account}>
+      <div className="app-shell">
+        <Sidebar account={account} />
+        <div className="main-area">
+          <Header title={page.title} description={page.description} />
+          <main className="content">{children}</main>
+        </div>
       </div>
-    </div>
+    </AccountContext.Provider>
   );
 }

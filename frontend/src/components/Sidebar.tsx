@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { authApi, type Account } from "@/lib/api";
+import { clearToken } from "@/lib/session";
 
 const navGroups = [
   {
@@ -27,13 +29,24 @@ const navGroups = [
     items: [
       { href: "/profile", label: "Profile" },
       { href: "/sources", label: "Sources" },
-      { href: "/runs", label: "Activity" }
+      { href: "/runs", label: "Activity" },
+      { href: "/account", label: "Account" }
     ]
   }
 ];
 
-export function Sidebar() {
+export function Sidebar({ account }: { account: Account | null }) {
   const pathname = usePathname();
+
+  const signOut = async () => {
+    try {
+      await authApi.logout();
+    } catch {
+      // The token is cleared locally either way.
+    }
+    clearToken();
+    window.location.assign("/login");
+  };
 
   return (
     <aside className="sidebar">
@@ -64,6 +77,14 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
+      {account ? (
+        <div className="sidebar-account">
+          <span className="sidebar-account-name">{account.display_name || account.email}</span>
+          <button type="button" className="ghost-button compact-button" onClick={() => void signOut()}>
+            Sign out
+          </button>
+        </div>
+      ) : null}
     </aside>
   );
 }

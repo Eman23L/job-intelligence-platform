@@ -6,6 +6,8 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
+from app.db.models import User
 from app.db.session import get_db
 from app.schemas.database import (
     AnalyticsOverview,
@@ -21,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/overview", response_model=AnalyticsOverview)
-def get_overview(db: Session = Depends(get_db)):
+def get_overview(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     started_at = perf_counter()
-    result = analytics_service.overview(db)
+    result = analytics_service.overview(db, user)
     duration_ms = (perf_counter() - started_at) * 1000
     logger.info(
         "analytics.overview completed duration_ms=%.2f total_jobs=%s scored_jobs=%s",
@@ -35,13 +37,13 @@ def get_overview(db: Session = Depends(get_db)):
 
 
 @router.get("/role-fit", response_model=RoleFitAnalytics)
-def get_role_fit(db: Session = Depends(get_db)):
-    return analytics_service.role_fit(db)
+def get_role_fit(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return analytics_service.role_fit(db, user)
 
 
 @router.get("/skill-gaps", response_model=SkillGapAnalytics)
-def get_skill_gaps(db: Session = Depends(get_db)):
-    return analytics_service.skill_gaps(db)
+def get_skill_gaps(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return analytics_service.skill_gaps(db, user)
 
 
 @router.get("/salary", response_model=SalaryAnalytics)

@@ -8,6 +8,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_admin
 from app.db.session import get_db
 from app.config import settings
 from app.schemas.database import (
@@ -108,7 +109,7 @@ def jobserve_debug_artifact(filename: str):
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
-@router.post("/from-url", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED)
+@router.post("/from-url", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
 def create_source_from_url(payload: SourceFromUrlCreate, db: Session = Depends(get_db)):
     try:
         return source_scraping.create_source_from_url(db, payload)
@@ -122,7 +123,7 @@ def get_source(source_id: int, db: Session = Depends(get_db)):
     return _get_source_or_404(db, source_id)
 
 
-@router.delete("/{source_id}", response_model=SourceDeleteResult)
+@router.delete("/{source_id}", response_model=SourceDeleteResult, dependencies=[Depends(require_admin)])
 def delete_source(source_id: int, delete_jobs: bool = False, db: Session = Depends(get_db)):
     source = _get_source_or_404(db, source_id)
     try:
@@ -133,7 +134,7 @@ def delete_source(source_id: int, delete_jobs: bool = False, db: Session = Depen
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to delete source. Please retry.") from exc
 
 
-@router.post("", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=JobSourceRead, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
 def create_source(payload: JobSourceCreate, db: Session = Depends(get_db)):
     try:
         return source_service.create_source(db, payload)
@@ -142,7 +143,7 @@ def create_source(payload: JobSourceCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Source already exists") from exc
 
 
-@router.patch("/{source_id}", response_model=JobSourceRead)
+@router.patch("/{source_id}", response_model=JobSourceRead, dependencies=[Depends(require_admin)])
 def update_source(source_id: int, payload: JobSourceUpdate, db: Session = Depends(get_db)):
     source = _get_source_or_404(db, source_id)
     try:
@@ -152,13 +153,13 @@ def update_source(source_id: int, payload: JobSourceUpdate, db: Session = Depend
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Source update conflicts") from exc
 
 
-@router.post("/{source_id}/enable", response_model=JobSourceRead)
+@router.post("/{source_id}/enable", response_model=JobSourceRead, dependencies=[Depends(require_admin)])
 def enable_source(source_id: int, db: Session = Depends(get_db)):
     source = _get_source_or_404(db, source_id)
     return source_service.set_source_enabled(db, source, True)
 
 
-@router.post("/{source_id}/disable", response_model=JobSourceRead)
+@router.post("/{source_id}/disable", response_model=JobSourceRead, dependencies=[Depends(require_admin)])
 def disable_source(source_id: int, db: Session = Depends(get_db)):
     source = _get_source_or_404(db, source_id)
     return source_service.set_source_enabled(db, source, False)

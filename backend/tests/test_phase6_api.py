@@ -301,7 +301,7 @@ def test_analytics_overview_uses_lightweight_queries() -> None:
 
     assert response.status_code == 200
     assert response.json()["total_jobs"] == 4
-    assert len(statements) <= 5
+    assert len(statements) <= 6  # +1 for the signed-in user lookup
     assert all("explanation" not in statement.lower() for statement in statements)
 
 
@@ -493,7 +493,7 @@ def test_source_health_uses_bounded_lightweight_queries() -> None:
         event.remove(engine, "before_cursor_execute", count_statement)
 
     assert response.status_code == 200
-    assert len(statements) <= 3
+    assert len(statements) <= 4  # +1 for the signed-in user lookup
     selected_sql = "\n".join(statements).lower()
     assert "parsed_jobs" not in selected_sql
     assert "scrape_runs.errors" not in selected_sql
@@ -529,7 +529,7 @@ def test_sources_list_uses_single_query() -> None:
         event.remove(engine, "before_cursor_execute", count_statement)
 
     assert response.status_code == 200
-    assert len(statements) == 1
+    assert len(statements) == 2  # signed-in user lookup + the sources query
 
 
 def _seed_phase6_data(db) -> dict[str, int]:
