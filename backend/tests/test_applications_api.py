@@ -1,6 +1,9 @@
 import pytest
 
+from app.api import applications as applications_api
 from app.db.models import Job, JobSource, UserProfile
+from app.db.session import get_db
+from app.main import app
 from tests.test_auth import _bearer, _invite_and_register, _setup_owner, auth_client
 from tests.test_phase6_api import phase6_client
 
@@ -99,3 +102,29 @@ def test_cv_file_download_returns_uploaded_file() -> None:
         assert download.content == b"%PDF-1.4 fake"
         assert download.headers["content-type"] == "application/pdf"
         assert 'filename="my_cv.pdf"' in download.headers["content-disposition"]
+
+
+def test_check_open_then_skip_closed_listings(monkeypatch) -> None:
+    queued: list[tuple] = []
+    monkeypatch.setattr(applications_api, "enqueue_or_background", lambda _tasks, _func, *args, **_kw: queued.append(args))
+    with phase6_client() as (client, ids):
+        assert client.post("/applications/check-open").status_code == 400
+        open_id = client.post(f"/jobs/{ids['excellent']}/add-to-apply-list").json()["id"]
+        closed_id = client.post(f"/jobs/{ids['strong']}/add-to-apply-list").json()["id"]
+
+        started = client.post("/applications/check-open")
+
+        assert started.status_code == 200
+        assert sorted(queued[0][1]) == sorted([ids["excellent"], ids["strong"]])
+        # The availability check finds one listing has gone.
+        db = next(app.dependency_overrides[get_db]())
+        db.get(Job, ids["strong"]).availability_status = "unavailable"
+        db.commit()
+        db.close()
+
+        assert client.post("/applications/skip-closed").json() == {"skipped": 1}
+        items = {item["id"]: item for item in client.get("/applications").json()["items"]}
+        assert items[closed_id]["status"] == "skipped"
+        assert "closed" in items[closed_id]["notes"]
+        assert items[open_id]["status"] == "to_apply"
+        assert client.post("/applications/skip-closed").json() == {"skipped": 0}
