@@ -209,6 +209,24 @@ def update_application_profile(db: Session, user: User, values: dict[str, Any]) 
     return profile
 
 
+def update_search_preferences(db: Session, user: User, *, roles: list[str], location: str | None, remote_only: bool) -> UserProfile:
+    profile = get_profile(db, user)
+    if profile is None:
+        profile = UserProfile(user_id=user.id, cv_text="", summary="", skills=[], experience=[], projects=[], education=[], preferred_roles=[])
+        db.add(profile)
+    cleaned: list[str] = []
+    for role in roles:
+        role = " ".join(role.split())[:120]
+        if role and role.lower() not in {existing.lower() for existing in cleaned}:
+            cleaned.append(role)
+    profile.search_roles = cleaned
+    profile.search_location = (location or "").strip()[:255]
+    profile.search_remote_only = remote_only
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
 def store_cv_file(db: Session, user: User, file_name: str, source_file, *, content_type: str | None = None) -> UserProfile:
     suffix = Path(file_name).suffix.lower()
     if suffix not in {".pdf", ".doc", ".docx"}:

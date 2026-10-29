@@ -11,18 +11,15 @@ import { getToken, isPublicPath, redirectToLogin } from "@/lib/session";
 
 const pages: Record<string, { title: string; description: string }> = {
   "/dashboard": { title: "Overview", description: "Your job search at a glance." },
-  "/jobs": { title: "Jobs", description: "Every role we've found, ranked by how well it fits your profile." },
+  "/jobs": { title: "All jobs", description: "Every job the searches have found, ranked by how well it fits your CV." },
   "/saved": { title: "Saved jobs", description: "Roles you've shortlisted and where each one stands." },
-  "/applications": { title: "Applications", description: "Jobs to apply for, and how each application is going." },
-  "/daily-search": {
-    title: "Daily search",
-    description: "New jobs found for you every weekday morning, ready to approve."
-  },
+  "/applications": { title: "Applications", description: "Jobs queued for Claude, and the ones you've applied for." },
+  "/find": { title: "Find jobs", description: "Jobs found for the roles you want. Apply to one, or to all of them." },
   "/ai": { title: "AI Advisor", description: "Ask questions about your matches, skills and next steps." },
   "/missing-skills": { title: "Skill gaps", description: "Skills employers ask for that aren't on your profile yet." },
   "/role-fit": { title: "Role fit", description: "How well you match each type of role." },
   "/salary": { title: "Salary", description: "What the roles you're seeing pay." },
-  "/profile": { title: "Profile", description: "Your CV and application details, used to score every job." },
+  "/profile": { title: "My CV", description: "Your CV, the jobs you want, and the details Claude uses on applications." },
   "/sources": { title: "Sources", description: "Where jobs are collected from." },
   "/runs": { title: "Activity", description: "Background tasks like scraping, scoring and availability checks." },
   "/debug": { title: "Diagnostics", description: "Connection and configuration details." },
@@ -90,7 +87,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     ? { title: "Job details", description: "" }
     : pathname.startsWith("/apply/")
       ? { title: "Apply with Claude", description: "Everything Claude needs to fill in this application for you." }
-      : pages[pathname] ?? pages["/dashboard"];
+      : pages[pathname] ?? pages["/find"];
 
   if (publicPage) {
     return <main className="auth-page">{children}</main>;

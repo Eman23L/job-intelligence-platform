@@ -31,10 +31,6 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    # A key that can only add jobs to this person's New matches (used by the daily LinkedIn & Indeed check).
-    import_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
-    import_key_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    import_key_last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     skills: Mapped[list["UserSkill"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     target_roles: Mapped[list["TargetRole"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -132,6 +128,12 @@ class UserProfile(Base):
     cv_file_mime_type: Mapped[str | None] = mapped_column(String(120))
     cv_file_size: Mapped[int | None] = mapped_column(Integer)
     cv_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # What the person wants to search for; when empty, the roles found in their CV are used.
+    search_roles: Mapped[list[str] | None] = mapped_column(JSON)
+    search_location: Mapped[str | None] = mapped_column(String(255))
+    search_remote_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    search_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    search_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     location_preference: Mapped[str | None] = mapped_column(String(255))
     remote_preference: Mapped[str | None] = mapped_column(String(80))
     salary_min_preference: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))

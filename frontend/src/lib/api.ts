@@ -7,8 +7,7 @@ import type {
   ApplicationsList,
   ApplicationStatus,
   ApplyPack,
-  DiscoveryStatus,
-  ImportKeyStatus,
+  FindResult,
   JobApplyStrategyRunStart,
   JobApplyStrategyRunStatus,
   JobAvailabilityResult,
@@ -309,13 +308,12 @@ export const api = {
   checkListingsOpen: () => request<JobAvailabilityRunStart>("/applications/check-open", { method: "POST" }),
   skipClosedListings: () => request<{ skipped: number }>("/applications/skip-closed", { method: "POST" }),
   applicationCounts: () => request<Partial<Record<ApplicationStatus, number>>>("/applications/counts"),
-  // ids omitted means every job in New matches.
-  decideNewMatches: (approve: boolean, ids?: number[]) =>
-    request<{ changed: number }>("/applications/decide", { method: "POST", body: JSON.stringify({ approve, ids: ids ?? null }) }),
-  discoveryStatus: () => request<DiscoveryStatus>("/discovery/status", { timeoutMs: DASHBOARD_REQUEST_TIMEOUT_MS }),
-  runDiscovery: () => request<{ status: string }>("/discovery/run", { method: "POST" }),
-  createImportKey: () => request<ImportKeyStatus & { key: string }>("/suggestions/key", { method: "POST" }),
-  deleteImportKey: () => request<void>("/suggestions/key", { method: "DELETE" }),
+  find: () => request<FindResult>("/find", { timeoutMs: JOBS_REQUEST_TIMEOUT_MS }),
+  applyToJobs: (jobIds: number[]) => request<{ changed: number }>("/find/apply", { method: "POST", body: JSON.stringify({ job_ids: jobIds }) }),
+  dismissJobs: (jobIds: number[]) => request<{ changed: number }>("/find/dismiss", { method: "POST", body: JSON.stringify({ job_ids: jobIds }) }),
+  newSearch: () => request<{ status: string }>("/discovery/run", { method: "POST" }),
+  saveSearchPreferences: (body: { roles: string[]; location: string | null; remote_only: boolean }) =>
+    request<UserProfile>("/profile/search", { method: "POST", body: JSON.stringify(body) }),
   classifyApplyStrategies: (jobIds?: number[]) =>
     request<JobApplyStrategyRunStart>("/jobs/classify-apply-strategies", {
       method: "POST",

@@ -14,8 +14,7 @@ export const SOURCE_LABELS: Record<ApplicationSource, string> = {
 export const CLOSED_AVAILABILITY = ["expired", "unavailable", "replaced", "redirected"];
 
 export const STATUS_LABELS: Record<ApplicationStatus, string> = {
-  suggested: "New match",
-  to_apply: "On apply list",
+  to_apply: "Queued for Claude",
   applied: "Applied",
   interviewing: "Interviewing",
   offer: "Offer",

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
@@ -16,6 +18,11 @@ export default function ProfilePage() {
   const [fileUploading, setFileUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [roles, setRoles] = useState("");
+  const [place, setPlace] = useState("");
+  const [remoteOnly, setRemoteOnly] = useState(false);
+  const [savingSearch, setSavingSearch] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
     api
@@ -23,6 +30,7 @@ export default function ProfilePage() {
       .then((result) => {
         setProfile(result);
         setCvText(result?.cv_text ?? "");
+        fillSearchFields(result);
         setError(null);
       })
       .catch((err: Error) => setError(err.message))
@@ -37,20 +45,38 @@ export default function ProfilePage() {
       const saved = await api.saveProfileCv(cvText);
       setProfile(saved);
       setCvText(saved.cv_text);
+      if (!roles.trim()) {
+        fillSearchFields(saved);
+      }
       // Match scores come from the CV, so re-score jobs whenever it changes.
-      const rescoring = await api
-        .rescoreJobs()
-        .then(() => true)
-        .catch(() => false);
-      setNotice(
-        rescoring
-          ? "CV saved. Your job matches are being updated and will show on the Jobs page in a minute or two."
-          : "CV saved. To update your job matches, go to Jobs and choose Rescore all jobs."
-      );
+      await api.rescoreJobs().catch(() => undefined);
+      setNotice("CV saved. Next, check the jobs you want below.");
+      document.getElementById("wanted")?.scrollIntoView({ behavior: "smooth" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save CV profile");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveSearch = async (event: FormEvent) => {
+    event.preventDefault();
+    setSavingSearch(true);
+    setError(null);
+    try {
+      const wanted = roles
+        .split(",")
+        .map((role) => role.trim())
+        .filter(Boolean)
+        .slice(0, 5);
+      const saved = await api.saveSearchPreferences({ roles: wanted, location: place.trim() || null, remote_only: remoteOnly });
+      setProfile(saved);
+      // Search straight away for the new roles, then show the results.
+      await api.newSearch().catch(() => undefined);
+      router.push("/find");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save the jobs you want");
+      setSavingSearch(false);
     }
   };
 
@@ -101,8 +127,8 @@ export default function ProfilePage() {
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>Your CV</h2>
-            <p className="muted-text">Every job is scored against this, so keep it up to date.</p>
+            <h2>1. Your CV</h2>
+            <p className="muted-text">Every job is matched against this. The file is what gets attached to your applications.</p>
           </div>
           <span className="muted-text">
             {profile?.updated_at ? `Updated ${formatDate(profile.updated_at)}` : "No CV saved yet"}
@@ -132,11 +158,45 @@ export default function ProfilePage() {
         </form>
       </section>
 
+      <section className="panel" id="wanted">
+        <div className="panel-header">
+          <div>
+            <h2>2. What jobs do you want?</h2>
+            <p className="muted-text">
+              Up to five roles. They don&apos;t have to be on your CV yet: if you want to move into something new, add it here.
+            </p>
+          </div>
+        </div>
+        <form className="profile-form" onSubmit={saveSearch}>
+          <div className="form-grid">
+            <label>
+              Roles (comma separated)
+              <input value={roles} placeholder="e.g. Junior Python Developer, Data Analyst" onChange={(event) => setRoles(event.target.value)} />
+            </label>
+            <label>
+              Where
+              <input value={place} placeholder="e.g. Milton Keynes" disabled={remoteOnly} onChange={(event) => setPlace(event.target.value)} />
+            </label>
+            <label className="checkbox-label form-grid-checkbox">
+              <input type="checkbox" checked={remoteOnly} onChange={(event) => setRemoteOnly(event.target.checked)} />
+              Remote jobs only
+            </label>
+          </div>
+          <div className="action-row">
+            <button type="submit" disabled={savingSearch || !profile || !roles.trim()}>
+              {savingSearch ? <span className="spinner" aria-hidden="true" /> : null}
+              Save and find jobs
+            </button>
+            {!profile ? <span className="muted-text">Save your CV first.</span> : null}
+          </div>
+        </form>
+      </section>
+
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>Application details</h2>
-            <p className="muted-text">Used to fill in application forms for you.</p>
+            <h2>3. Your details for applications</h2>
+            <p className="muted-text">Claude uses these to fill in application forms for you.</p>
           </div>
         </div>
         <form className="profile-form" onSubmit={saveApplicationProfile}>
@@ -182,13 +242,6 @@ export default function ProfilePage() {
                   setProfileField("travel_distance", value ? TRAVEL_BANDS[value] : "");
                 }}
               />
-              <ProfileSelect
-                label="Only apply to jobs scoring"
-                value={String(profile?.minimum_apply_score ?? 80)}
-                options={["60", "70", "80", "85", "90"]}
-                optionLabels={{ "60": "60 or more", "70": "70 or more", "80": "80 or more", "85": "85 or more", "90": "90 or more" }}
-                onChange={(value) => setProfileField("minimum_apply_score", Number(value))}
-              />
               <label className="checkbox-label form-grid-checkbox">
                 <input
                   type="checkbox"
@@ -209,10 +262,10 @@ export default function ProfilePage() {
       </section>
 
       {profile ? (
-        <section className="panel">
-          <div className="panel-header">
-            <h2>Extracted profile</h2>
-          </div>
+        <details className="panel collapsible-panel">
+          <summary>
+            <h2>What we read from your CV</h2>
+          </summary>
           <div className="profile-summary-grid">
             <SummaryBlock title="Skills">
               <div className="badge-list">
@@ -248,10 +301,22 @@ export default function ProfilePage() {
               <ListItems items={profile.education} />
             </SummaryBlock>
           </div>
-        </section>
+        </details>
       ) : null}
+      <p className="muted-text">
+        Done? <Link href="/find">See the jobs found for you →</Link>
+      </p>
     </div>
   );
+
+  function fillSearchFields(source: UserProfile | null) {
+    if (!source) {
+      return;
+    }
+    setRoles((source.search_roles?.length ? source.search_roles : source.preferred_roles).slice(0, 5).join(", "));
+    setPlace(source.search_location ?? source.location_preference?.split("/")[0]?.trim() ?? "");
+    setRemoteOnly(source.search_remote_only);
+  }
 
   function setProfileField(key: keyof UserProfile, value: string | boolean | number | null) {
     setProfile((current) => (current ? { ...current, [key]: value } : current));
