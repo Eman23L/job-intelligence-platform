@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { Header } from "@/components/Header";
+import { LoadingState } from "@/components/LoadingState";
 import { Sidebar } from "@/components/Sidebar";
 import { AccountContext } from "@/lib/account-context";
 import { authApi, type Account } from "@/lib/api";
@@ -33,6 +34,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const publicPage = isPublicPath(pathname);
   const [account, setAccount] = useState<Account | null>(null);
   const [checked, setChecked] = useState(false);
+  const [slow, setSlow] = useState(false);
 
   useEffect(() => {
     if (publicPage) {
@@ -43,13 +45,21 @@ export function AppShell({ children }: { children: ReactNode }) {
       return;
     }
     let active = true;
+    // The server can take up to a minute to wake up, so say so rather than show a blank page.
+    const slowTimer = window.setTimeout(() => active && setSlow(true), 2500);
     authApi
       .me()
       .then((me) => active && setAccount(me))
       .catch(() => undefined) // A 401 already redirects; anything else shouldn't block the page.
-      .finally(() => active && setChecked(true));
+      .finally(() => {
+        window.clearTimeout(slowTimer);
+        if (active) {
+          setChecked(true);
+        }
+      });
     return () => {
       active = false;
+      window.clearTimeout(slowTimer);
     };
   }, [publicPage]);
 
@@ -87,7 +97,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
   if (!checked && !account) {
     // Hold the app until we know who is signed in, so nothing flashes before a redirect.
-    return <main className="auth-page" aria-busy="true" />;
+    return (
+      <main className="auth-page" aria-busy="true">
+        {slow ? <LoadingState label="Waking up the server. This can take up to a minute" /> : null}
+      </main>
+    );
   }
 
   return (
