@@ -15,7 +15,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (getToken()) {
-      window.location.replace(nextPathFromLocation("/dashboard"));
+      window.location.replace(nextPathFromLocation("/find"));
       return;
     }
     authApi
@@ -31,7 +31,7 @@ export default function LoginPage() {
     try {
       const session = await authApi.login(email, password);
       setToken(session.token);
-      window.location.replace(nextPathFromLocation("/dashboard"));
+      window.location.replace(nextPathFromLocation("/find"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed. Try again.");
       setBusy(false);

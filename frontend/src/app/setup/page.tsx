@@ -21,7 +21,7 @@ export default function SetupPage() {
     try {
       const session = await authApi.setup({ setup_code: setupCode, email, password, name });
       setToken(session.token);
-      window.location.replace("/dashboard");
+      window.location.replace("/find");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Setup failed. Try again.");
       setBusy(false);

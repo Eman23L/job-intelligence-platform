@@ -2,8 +2,11 @@
 const nextConfig = {
   reactStrictMode: true,
   async redirects() {
-    // The LinkedIn & Indeed page became the Daily search page.
-    return [{ source: "/linkedin-indeed", destination: "/daily-search", permanent: true }];
+    // Old pages folded into Find jobs.
+    return [
+      { source: "/linkedin-indeed", destination: "/find", permanent: false },
+      { source: "/daily-search", destination: "/find", permanent: false }
+    ];
   }
 };
 

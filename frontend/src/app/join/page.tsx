@@ -26,7 +26,7 @@ export default function JoinPage() {
       const session = await authApi.register({ invite_code: code, email, password, name });
       setToken(session.token);
       // New accounts start with no CV, so send them straight to add one.
-      window.location.replace("/profile");
+      window.location.replace("/find");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't create your account. Try again.");
       setBusy(false);

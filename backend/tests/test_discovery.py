@@ -68,39 +68,40 @@ def test_searches_come_from_target_roles_and_location() -> None:
     ]
 
 
-def test_discover_saves_scores_and_suggests_new_matches() -> None:
+def test_discover_saves_analyses_scores_and_records_progress() -> None:
     db = _session()
     keen = _person(db, "keen@example.invalid", roles=["Data Engineer"], minimum_score=0)
-    picky = _person(db, "picky@example.invalid", roles=["Data Engineer"], minimum_score=101)
+    other = _person(db, "other@example.invalid", roles=["Data Engineer"], minimum_score=0)
     searched: list[Search] = []
 
     def fake_feed(db, source, search):
         searched.append(search)
-        # The same role from a second board should only be suggested once.
-        records = [_record("reed-1", "Data Engineer"), _record("reed-2", "Analytics Engineer", "Beta"), _record("reed-3", "Data Engineer")]
+        records = [_record("reed-1", "Data Engineer"), _record("reed-2", "Analytics Engineer", "Beta")]
         return discovery._save_records(db, source, records)
 
-    summary = discovery.discover(db, feeds={"reed": fake_feed})
+    summary = discovery.discover(db, user_ids=[keen.id], feeds={"reed": fake_feed})
 
-    assert searched == [Search("Data Engineer", "Milton Keynes")]  # identical searches run once
-    assert summary["feeds"]["reed"]["created"] == 3
+    assert searched == [Search("Data Engineer", "Milton Keynes")]
+    assert summary["feeds"]["reed"]["created"] == 2
     jobs = db.scalars(select(Job)).all()
-    assert len(jobs) == 3
     assert all(db.scalar(select(JobAnalysis).where(JobAnalysis.job_id == job.id)) for job in jobs)
-    assert db.scalar(select(JobScore).where(JobScore.user_id == picky.id)) is not None
-    suggested = db.scalars(select(Application).where(Application.user_id == keen.id)).all()
-    assert sorted(item.title for item in suggested) == ["Analytics Engineer", "Data Engineer"]
-    assert all(item.status == "suggested" for item in suggested)
-    assert db.scalars(select(Application).where(Application.user_id == picky.id)).all() == []
+    # Everyone with a CV gets scores, but only the person who searched is marked as searching.
+    assert db.scalar(select(JobScore).where(JobScore.user_id == other.id)) is not None
+    keen_profile = db.scalar(select(UserProfile).where(UserProfile.user_id == keen.id))
+    other_profile = db.scalar(select(UserProfile).where(UserProfile.user_id == other.id))
+    assert keen_profile.search_started_at is not None and keen_profile.search_finished_at >= keen_profile.search_started_at
+    assert other_profile.search_started_at is None
+    assert db.scalar(select(Application)) is None
     run = db.scalar(select(ScrapeRun))
-    assert run.status == "completed" and run.jobs_created == 3
+    assert run.status == "completed" and run.jobs_created == 2
 
-    # Dismissed matches stay dismissed, and nothing is suggested twice.
-    for item in suggested:
-        item.status = "skipped"
-    db.commit()
-    discovery.discover(db, feeds={"reed": fake_feed})
-    assert db.scalars(select(Application).where(Application.user_id == keen.id, Application.status == "suggested")).all() == []
+
+def test_chosen_roles_and_location_override_the_cv() -> None:
+    profile = UserProfile(
+        cv_text="x", preferred_roles=["Warehouse Operative"], location_preference="Leeds", search_roles=["Junior Python Developer"], search_location="", search_remote_only=True
+    )
+
+    assert discovery.searches_for(profile) == [Search("Junior Python Developer", None, remote_only=True)]
 
 
 def test_a_failing_feed_is_recorded_and_others_still_run() -> None:
@@ -214,4 +215,8 @@ def test_only_titles_that_fit_a_target_role_are_suggested() -> None:
     assert all(title_fits_roles(title, roles) for title in fits)
     assert not any(title_fits_roles(title, roles) for title in misfits)
     assert title_fits_roles("Anything at all", [])
+    # Every key word of a role has to be there, so a broad word like "support" doesn't let unrelated jobs in.
+    assert title_fits_roles("IT Support Analyst", ["IT Support"])
+    assert not title_fits_roles("Project Support Officer", ["IT Support"])
+    assert not title_fits_roles("Head of IT Project Delivery", ["IT Support"])
 

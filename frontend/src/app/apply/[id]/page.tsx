@@ -28,7 +28,6 @@ export default function ApplyPage({ params }: { params: { id: string } }) {
   const instructions = useMemo(() => (pack ? claudeInstructions(pack, pageUrl) : ""), [pack, pageUrl]);
 
   const setStatus = async (status: "applied" | "skipped" | "to_apply") => {
-    const wasSuggested = pack?.application.status === "suggested";
     if (!pack) {
       return;
     }
@@ -39,14 +38,7 @@ export default function ApplyPage({ params }: { params: { id: string } }) {
       setPack({ ...pack, application });
       setMessage({
         type: "success",
-        text:
-          status === "applied"
-            ? "Marked as applied. Good luck!"
-            : status === "skipped"
-              ? "Skipped."
-              : wasSuggested
-                ? "Approved. It's on your apply list."
-                : "Back on your apply list."
+        text: status === "applied" ? "Marked as applied. Good luck!" : status === "skipped" ? "Skipped." : "Queued for Claude again."
       });
     } catch (err) {
       setMessage({ type: "error", text: err instanceof Error ? err.message : "Couldn't update this application." });
@@ -67,7 +59,7 @@ export default function ApplyPage({ params }: { params: { id: string } }) {
   return (
     <div className="page-stack apply-pack">
       <Link href="/applications" className="back-link">
-        ← Apply list
+        ← Applications
       </Link>
 
       <section className="panel">
@@ -75,9 +67,7 @@ export default function ApplyPage({ params }: { params: { id: string } }) {
           <div>
             <h2>{job.title}</h2>
             <p className="muted">{[job.company, job.location, job.salary].filter(Boolean).join(" · ")}</p>
-            <span
-              className={`badge ${["to_apply", "suggested"].includes(application.status) ? "strong" : application.status === "skipped" ? "neutral" : "good"}`}
-            >
+            <span className={`badge ${application.status === "to_apply" ? "strong" : application.status === "skipped" ? "neutral" : "good"}`}>
               {STATUS_LABELS[application.status]}
             </span>
           </div>
@@ -87,16 +77,7 @@ export default function ApplyPage({ params }: { params: { id: string } }) {
                 Open the job listing ↗
               </a>
             ) : null}
-            {application.status === "suggested" ? (
-              <>
-                <button type="button" className="secondary-button" disabled={busy} onClick={() => void setStatus("to_apply")}>
-                  Approve
-                </button>
-                <button type="button" className="ghost-button" disabled={busy} onClick={() => void setStatus("skipped")}>
-                  Dismiss
-                </button>
-              </>
-            ) : application.status === "to_apply" ? (
+            {application.status === "to_apply" ? (
               <>
                 <button type="button" className="secondary-button" disabled={busy} onClick={() => void setStatus("applied")}>
                   I&apos;ve applied
@@ -107,7 +88,7 @@ export default function ApplyPage({ params }: { params: { id: string } }) {
               </>
             ) : (
               <button type="button" className="secondary-button" disabled={busy} onClick={() => void setStatus("to_apply")}>
-                Move back to apply list
+                Queue for Claude again
               </button>
             )}
           </div>

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
-from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -19,8 +18,7 @@ from app.schemas.database import (
 from app.services.apply_strategy import classify_job, refresh_apply_readiness
 from app.services.profile import get_profile
 
-# "suggested" = found by the daily search and waiting in New matches for approval.
-APPLICATION_STATUSES = {"suggested", "to_apply", "applied", "interviewing", "offer", "rejected", "skipped"}
+APPLICATION_STATUSES = {"to_apply", "applied", "interviewing", "offer", "rejected", "skipped"}
 # Statuses that mean the person has actually sent an application.
 SUBMITTED_STATUSES = {"applied", "interviewing", "offer", "rejected"}
 SOURCES = {"jobserve", "reed", "adzuna", "linkedin", "indeed", "company_site", "other"}
@@ -106,92 +104,49 @@ def queue_top_matches(db: Session, user: User, minimum_score: int | None = None)
     return [job.id for job, _score in candidates]
 
 
-def suggest_new_matches(db: Session, user: User, job_ids: list[int]) -> int:
-    """Put newly found jobs that score well for this person into their New matches. Returns how many were added."""
-    if not job_ids:
-        return 0
-    threshold = minimum_apply_score(db, user)
-    profile = get_profile(db, user)
-    roles = list(getattr(profile, "preferred_roles", None) or [])
-    listed = select(Application.job_id).where(Application.user_id == user.id, Application.job_id.is_not(None))
-    rows = db.execute(
-        select(Job, JobScore)
-        .join(JobScore, (JobScore.job_id == Job.id) & (JobScore.user_id == user.id))
-        .where(
-            Job.id.in_(job_ids),
-            JobScore.total_score >= threshold,
-            or_(JobScore.recommendation_tier.is_(None), JobScore.recommendation_tier != "excluded"),
-            Job.status != "excluded",
-            Job.availability_status.not_in(CLOSED_AVAILABILITY),
-            Job.id.not_in(listed),
-        )
-        .order_by(JobScore.total_score.desc())
-    ).all()
-    seen = _listed_roles(db, user)
-    added = 0
-    for job, _score in rows:
-        # Keyword searches return plenty of unrelated roles; only suggest titles that fit a target role.
-        if not title_fits_roles(job.title, roles):
-            continue
-        # The same role is often advertised on several boards; suggest it once.
-        role = _role_key(job.title, job.company_name)
-        if role in seen:
-            continue
-        seen.add(role)
-        db.add(_from_job(user, job, status="suggested"))
-        added += 1
-    db.commit()
-    return added
-
-
-def import_suggestions(db: Session, user: User, jobs: list[dict]) -> tuple[int, int]:
-    """Add jobs found elsewhere (LinkedIn and Indeed alert emails) to New matches. Returns (added, skipped)."""
-    seen_urls = {_url_key(url) for url in db.scalars(select(Application.url).where(Application.user_id == user.id, Application.url.is_not(None)))}
-    seen_roles = _listed_roles(db, user)
-    added = skipped = 0
-    for item in jobs:
-        title = (item.get("title") or "").strip()
-        url_key = _url_key(item.get("url"))
-        role = _role_key(title, item.get("company"))
-        if not title or (url_key and url_key in seen_urls) or role in seen_roles:
-            skipped += 1
-            continue
-        seen_urls.add(url_key)
-        seen_roles.add(role)
-        db.add(
-            Application(
-                user_id=user.id,
-                source=item.get("source") if item.get("source") in SOURCES else "other",
-                title=title[:500],
-                company=_clean(item.get("company"), 255),
-                location=_clean(item.get("location"), 255),
-                url=_clean(item.get("url"), 2000),
-                status="suggested",
-                notes=_clean(item.get("reason"), 2000),
-            )
-        )
-        added += 1
-    db.commit()
-    return added, skipped
-
-
-def decide_suggestions(db: Session, user: User, *, approve: bool, application_ids: list[int] | None = None) -> int:
-    """Approve New matches onto the apply list, or dismiss them to Skipped. None means all of them."""
-    query = select(Application).where(Application.user_id == user.id, Application.status == "suggested")
-    if application_ids is not None:
-        query = query.where(Application.id.in_(application_ids))
-    rows = db.scalars(query).all()
-    for application in rows:
-        application.status = "to_apply" if approve else "skipped"
-    db.commit()
-    return len(rows)
-
-
 def counts(db: Session, user: User) -> dict[str, int]:
     rows = db.execute(
         select(Application.status, func.count()).where(Application.user_id == user.id).group_by(Application.status)
     ).all()
     return {status: total for status, total in rows}
+
+
+def queue_jobs(db: Session, user: User, job_ids: list[int]) -> int:
+    """Queue jobs for Claude to apply to. Jobs already applied for are left alone. Returns how many changed."""
+    changed = 0
+    for job_id in dict.fromkeys(job_ids):
+        job = db.get(Job, job_id)
+        if job is None:
+            continue
+        existing = _for_job(db, user, job.id)
+        if existing is None:
+            db.add(_from_job(user, job, status="to_apply"))
+        elif existing.status == "skipped":
+            existing.status = "to_apply"
+        else:
+            continue
+        changed += 1
+    db.commit()
+    return changed
+
+
+def dismiss_jobs(db: Session, user: User, job_ids: list[int]) -> int:
+    """Hide jobs from Find jobs ("not for me"). Jobs already applied for are left alone."""
+    changed = 0
+    for job_id in dict.fromkeys(job_ids):
+        job = db.get(Job, job_id)
+        if job is None:
+            continue
+        existing = _for_job(db, user, job.id)
+        if existing is None:
+            db.add(_from_job(user, job, status="skipped"))
+        elif existing.status == "to_apply":
+            existing.status = "skipped"
+        else:
+            continue
+        changed += 1
+    db.commit()
+    return changed
 
 
 def jobs_to_check(db: Session, user: User) -> list[int]:
@@ -304,7 +259,7 @@ def apply_pack(db: Session, user: User, application: Application) -> ApplyPack:
             company=application.company,
             location=application.location,
             url=application.url or (job.canonical_url if job else None),
-            salary=_salary_text(job) if job else None,
+            salary=salary_text(job) if job else None,
             posted_at=job.posted_at if job else None,
             description=job.description_text if job else None,
         ),
@@ -330,7 +285,7 @@ def _from_job(user: User, job: Job, *, status: str) -> Application:
     return Application(
         user_id=user.id,
         job_id=job.id,
-        source=_source_for_url(job.canonical_url),
+        source=source_for_url(job.canonical_url),
         title=job.title,
         company=job.company_name,
         location=job.location,
@@ -341,18 +296,21 @@ def _from_job(user: User, job: Job, *, status: str) -> Application:
 
 
 def title_fits_roles(title: str | None, roles: list[str]) -> bool:
-    """True when the job title shares a meaningful word (or close synonym) with one of the target roles."""
+    """True when the job title has every key word (or a close synonym) of at least one of the roles.
+
+    "IT Support" fits "IT Support Analyst" but not "Project Support Officer"; "Data Engineer" fits "BI Developer".
+    """
     if not roles:
         return True
     title_words = set(re.findall(r"[a-z0-9]+", (title or "").lower()))
     for role in roles:
-        for word in set(re.findall(r"[a-z0-9]+", role.lower())) - GENERIC_TITLE_WORDS:
-            if title_words & ROLE_WORD_SYNONYMS.get(word, {word}):
-                return True
+        key_words = set(re.findall(r"[a-z0-9]+", role.lower())) - GENERIC_TITLE_WORDS
+        if key_words and all(title_words & ROLE_WORD_SYNONYMS.get(word, {word}) for word in key_words):
+            return True
     return False
 
 
-def _source_for_url(url: str | None) -> str:
+def source_for_url(url: str | None) -> str:
     lowered = (url or "").lower()
     for marker, source in (("jobserve.", "jobserve"), ("reed.co.uk", "reed"), ("adzuna.", "adzuna"), ("linkedin.com", "linkedin"), ("indeed.", "indeed")):
         if marker in lowered:
@@ -360,30 +318,11 @@ def _source_for_url(url: str | None) -> str:
     return "company_site"
 
 
-def _url_key(url: str | None) -> str:
-    """A stable key for a job link: the LinkedIn or Indeed job id when there is one, else the bare URL."""
-    if not url:
-        return ""
-    parts = urlsplit(url.strip())
-    linkedin = re.search(r"/jobs/view/(?:[^/]*-)?(\d+)", parts.path)
-    if "linkedin.com" in parts.netloc and linkedin:
-        return f"linkedin:{linkedin.group(1)}"
-    indeed_id = parse_qs(parts.query).get("jk") or parse_qs(parts.query).get("vjk")
-    if "indeed." in parts.netloc and indeed_id:
-        return f"indeed:{indeed_id[0]}"
-    return f"{parts.netloc.lower()}{parts.path.rstrip('/')}"
-
-
-def _role_key(title: str | None, company: str | None) -> tuple[str, str]:
+def role_key(title: str | None, company: str | None) -> tuple[str, str]:
     def norm(value: str | None) -> str:
         return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
 
     return norm(title), norm(company)
-
-
-def _listed_roles(db: Session, user: User) -> set[tuple[str, str]]:
-    rows = db.execute(select(Application.title, Application.company).where(Application.user_id == user.id)).all()
-    return {_role_key(title, company) for title, company in rows}
 
 
 _DIFFICULTY_RANK = {"easy": 0, "medium": 1, "hard": 2, "unknown": 3, "blocked": 4}
@@ -420,7 +359,7 @@ def _clean(value: str | None, limit: int) -> str | None:
     return text[:limit] or None
 
 
-def _salary_text(job: Job) -> str | None:
+def salary_text(job: Job) -> str | None:
     low, high = job.salary_min, job.salary_max
     if low is None and high is None:
         return None

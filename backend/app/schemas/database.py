@@ -110,8 +110,17 @@ class UserProfileRead(ORMModel):
     remote_preference: str | None = None
     salary_min_preference: Decimal | None = None
     salary_max_preference: Decimal | None = None
+    search_roles: list[str] | None = None
+    search_location: str | None = None
+    search_remote_only: bool = False
     created_at: datetime
     updated_at: datetime
+
+
+class SearchPreferencesUpdate(BaseModel):
+    roles: list[str] = Field(max_length=5)
+    location: str | None = Field(default=None, max_length=255)
+    remote_only: bool = False
 
 
 class ExcludedTechnologyBase(BaseModel):
@@ -737,61 +746,48 @@ class SkipClosedResult(BaseModel):
     skipped: int
 
 
-class SuggestionDecision(BaseModel):
-    approve: bool
-    # None means every job in New matches.
-    ids: list[int] | None = None
+class FoundJob(BaseModel):
+    job_id: int
+    title: str
+    company: str | None
+    location: str | None
+    salary: str | None
+    source: str
+    url: str | None
+    first_seen_at: datetime
+    is_new: bool
+    total_score: Decimal | None
+    recommendation_tier: str | None
+    application_id: int | None
+    # None = not acted on yet; otherwise the application status (to_apply = queued for Claude).
+    status: str | None
+    applied_at: datetime | None
 
 
-class SuggestionDecisionResult(BaseModel):
+class SearchState(BaseModel):
+    roles: list[str]
+    location: str | None
+    remote_only: bool
+    searching: bool
+    last_finished_at: datetime | None
+    next_run_at: datetime | None
+    feeds: dict[str, bool]
+
+
+class FindResult(BaseModel):
+    has_cv: bool
+    search: SearchState
+    jobs: list[FoundJob]
+
+
+class JobIdList(BaseModel):
+    job_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class FindActionResult(BaseModel):
     changed: int
 
 
-class SuggestionImportItem(BaseModel):
-    source: str = Field(default="other", max_length=40)
-    title: str = Field(min_length=1, max_length=500)
-    company: str | None = Field(default=None, max_length=255)
-    location: str | None = Field(default=None, max_length=255)
-    url: str | None = Field(default=None, max_length=2000)
-    reason: str | None = Field(default=None, max_length=2000)
-
-
-class SuggestionImport(BaseModel):
-    jobs: list[SuggestionImportItem] = Field(max_length=100)
-
-
-class SuggestionImportResult(BaseModel):
-    added: int
-    skipped: int
-
-
-class ImportKeyStatus(BaseModel):
-    exists: bool
-    created_at: datetime | None = None
-    last_used_at: datetime | None = None
-
-
-class ImportKeyCreated(ImportKeyStatus):
-    key: str
-
-
-class DiscoveryFeed(BaseModel):
-    key: str
-    name: str
-    enabled: bool
-    last_run_at: datetime | None = None
-    last_status: str | None = None
-    last_found: int = 0
-    last_created: int = 0
-
-
-class DiscoveryStatus(BaseModel):
-    roles: list[str]
-    location: str | None
-    minimum_score: int
-    feeds: list[DiscoveryFeed]
-    next_run_at: datetime | None
-    import_key: ImportKeyStatus
 
 
 class ApplyPackJob(BaseModel):

@@ -1,7 +1,7 @@
 import pytest
 
 from app.api import applications as applications_api
-from app.db.models import Application, Job, JobSource, UserProfile
+from app.db.models import Job, JobSource, UserProfile
 from app.db.session import get_db
 from app.main import app
 from tests.test_auth import _bearer, _invite_and_register, _setup_owner, auth_client
@@ -128,49 +128,3 @@ def test_check_open_then_skip_closed_listings(monkeypatch) -> None:
         assert "closed" in items[closed_id]["notes"]
         assert items[open_id]["status"] == "to_apply"
         assert client.post("/applications/skip-closed").json() == {"skipped": 0}
-
-
-def test_approve_all_and_dismiss_new_matches() -> None:
-    with phase6_client() as (client, ids):
-        db = next(app.dependency_overrides[get_db]())
-        for title in ("Data Engineer", "Platform Engineer", "Analytics Engineer"):
-            db.add(Application(user_id=1, source="reed", title=title, company="Acme", status="suggested"))
-        db.commit()
-        suggested = {item.title: item.id for item in db.query(Application).filter_by(status="suggested")}
-        db.close()
-
-        assert client.get("/applications/counts").json() == {"suggested": 3}
-        dismissed = client.post("/applications/decide", json={"approve": False, "ids": [suggested["Platform Engineer"]]})
-        approved = client.post("/applications/decide", json={"approve": True})
-
-        assert dismissed.json() == {"changed": 1}
-        assert approved.json() == {"changed": 2}
-        assert client.get("/applications/counts").json() == {"skipped": 1, "to_apply": 2}
-
-
-@pytest.mark.real_auth
-def test_import_key_adds_linkedin_and_indeed_jobs_to_new_matches(monkeypatch) -> None:
-    with auth_client(monkeypatch) as (client, _):
-        owner = _setup_owner(client)
-        friend = _invite_and_register(client, owner)
-
-        assert client.post("/suggestions/import", json={"jobs": []}).status_code == 401
-        key = client.post("/suggestions/key", headers=_bearer(owner)).json()["key"]
-        jobs = [
-            {"source": "linkedin", "title": "Data Engineer", "company": "Acme", "url": "https://www.linkedin.com/jobs/view/123/?trk=alert", "reason": "Python and SQL match"},
-            {"source": "linkedin", "title": "Data Engineer", "company": "Acme", "url": "https://www.linkedin.com/jobs/view/123/"},
-            {"source": "indeed", "title": "AI Engineer", "company": "Beta", "url": "https://uk.indeed.com/viewjob?jk=abc"},
-        ]
-        imported = client.post("/suggestions/import", json={"jobs": jobs}, headers={"X-Import-Key": key})
-        again = client.post("/suggestions/import", json={"jobs": jobs}, headers={"X-Import-Key": key})
-
-        assert imported.json() == {"added": 2, "skipped": 1}
-        assert again.json() == {"added": 0, "skipped": 3}
-        owner_items = client.get("/applications", headers=_bearer(owner)).json()["items"]
-        assert sorted((item["source"], item["status"]) for item in owner_items) == [("indeed", "suggested"), ("linkedin", "suggested")]
-        assert next(item for item in owner_items if item["source"] == "linkedin")["notes"] == "Python and SQL match"
-        assert client.get("/applications", headers=_bearer(friend)).json()["items"] == []
-        assert client.get("/suggestions/key", headers=_bearer(owner)).json()["last_used_at"] is not None
-
-        client.delete("/suggestions/key", headers=_bearer(owner))
-        assert client.post("/suggestions/import", json={"jobs": jobs}, headers={"X-Import-Key": key}).status_code == 401

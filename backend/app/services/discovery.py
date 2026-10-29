@@ -1,7 +1,7 @@
-"""Daily job discovery: search the job boards for each person's target roles and suggest the best new matches.
+"""Daily job search: search the job boards for the roles each person wants.
 
-Runs on the worker every weekday morning. New jobs are saved, analysed and scored against everyone's CV, and
-those that score at or above a person's minimum apply score land in their New matches for approval.
+Runs on the worker every weekday morning, and on demand from the Find jobs page. New jobs are saved, analysed and
+scored against everyone's CV; the Find jobs page then lists the ones whose titles fit each person's roles.
 """
 
 from __future__ import annotations
@@ -19,14 +19,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.models import Job, JobAnalysis, JobSource, ScrapeRun, User, UserProfile
+from app.db.models import Job, JobAnalysis, JobSource, ScrapeRun, UserProfile
 from app.db.session import SessionLocal
 from app.schemas.database import JobServeSearchScrapeRequest
 from app.scrapers.parsers.html import extract_text
 from app.scrapers.utils.hashing import content_hash
 from app.services import source_scraping
 from app.services.analysis import analyse_job
-from app.services.applications import suggest_new_matches
 from app.services.job_validation import validate_normalised_job
 from app.services.normalisation import normalise_job_fields
 
@@ -35,8 +34,8 @@ LOGGER = logging.getLogger(__name__)
 RUN_AT = day_time(6, 30)
 MAX_ROLES = 5
 RESULTS_PER_SEARCH = 25
-# Jobs first seen this recently can still be suggested, so a run started by one person reaches everyone.
-SUGGEST_WITHIN_DAYS = 3
+# New jobs from this recent are analysed for skills before scoring.
+ANALYSE_WITHIN_DAYS = 3
 REQUEST_TIMEOUT_SECONDS = 20
 USER_AGENT = "JobSearch/1.0 (+https://jobs.thetechbuilder.co.uk)"
 
@@ -49,6 +48,7 @@ ADZUNA_SEARCH_URL = "https://api.adzuna.com/v1/api/jobs/gb/search/1"
 class Search:
     role: str
     location: str | None
+    remote_only: bool = False
 
 
 @dataclass
@@ -87,10 +87,25 @@ def feeds_configured() -> dict[str, bool]:
     }
 
 
+def wanted_roles(profile: UserProfile | None) -> list[str]:
+    """The roles the person chose, or the ones found in their CV if they haven't chosen any."""
+    if profile is None:
+        return []
+    chosen = profile.search_roles if profile.search_roles else profile.preferred_roles
+    return [role.strip() for role in (chosen or []) if role and role.strip()][:MAX_ROLES]
+
+
+def wanted_location(profile: UserProfile | None) -> str | None:
+    if profile is None:
+        return None
+    if profile.search_location is not None:
+        return profile.search_location.strip() or None
+    return (profile.location_preference or "").split("/")[0].strip() or None
+
+
 def searches_for(profile: UserProfile) -> list[Search]:
-    roles = [role.strip() for role in (profile.preferred_roles or []) if role and role.strip()][:MAX_ROLES]
-    location = (profile.location_preference or "").split("/")[0].strip() or None
-    return [Search(role=role, location=location) for role in roles]
+    location = wanted_location(profile)
+    return [Search(role=role, location=location, remote_only=bool(profile.search_remote_only)) for role in wanted_roles(profile)]
 
 
 def schedule_next_run(queue) -> datetime:
@@ -123,7 +138,7 @@ def run_scheduled_discovery() -> dict[str, Any]:
 
 
 def run_discovery(user_ids: list[int] | None = None) -> dict[str, Any]:
-    """Search every feed for the target roles of everyone with a CV (or just `user_ids`), then suggest new matches."""
+    """Search every feed for the roles of everyone with a CV (or just `user_ids`)."""
     with SessionLocal() as db:
         return discover(db, user_ids=user_ids)
 
@@ -145,39 +160,46 @@ def discover(db: Session, *, user_ids: list[int] | None = None, feeds: dict[str,
     profiles_query = select(UserProfile).where(UserProfile.cv_text != "")
     if user_ids:
         profiles_query = profiles_query.where(UserProfile.user_id.in_(user_ids))
+    profiles = db.scalars(profiles_query.order_by(UserProfile.user_id)).all()
+    profile_ids = [profile.id for profile in profiles]
     searches: list[Search] = []
-    for profile in db.scalars(profiles_query.order_by(UserProfile.user_id)).all():
+    for profile in profiles:
         for search in searches_for(profile):
             if search not in searches:
                 searches.append(search)
-    LOGGER.info("daily_discovery_start searches=%s", [(s.role, s.location) for s in searches])
+    _mark_search(db, profile_ids, started=True)
+    LOGGER.info("daily_discovery_start searches=%s", [(s.role, s.location, s.remote_only) for s in searches])
 
     summary: dict[str, Any] = {"searches": len(searches), "feeds": {}}
-    if searches:
-        for key, search_one in (feeds if feeds is not None else default_feeds()).items():
-            summary["feeds"][key] = _run_feed(db, key, searches, search_one)
-
-    _analyse_new_jobs(db)
-    source_scraping.score_new_jobs_for_everyone(db)
-    summary["suggested"] = suggest_for_everyone(db)
+    try:
+        if searches:
+            for key, search_one in (feeds if feeds is not None else default_feeds()).items():
+                summary["feeds"][key] = _run_feed(db, key, searches, search_one)
+        _analyse_new_jobs(db)
+        source_scraping.score_new_jobs_for_everyone(db)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        _mark_search(db, profile_ids, started=False)
     LOGGER.info("daily_discovery_finished summary=%s", summary)
     return summary
 
 
-def suggest_for_everyone(db: Session) -> dict[int, int]:
-    since = datetime.now(tz=timezone.utc) - timedelta(days=SUGGEST_WITHIN_DAYS)
-    recent = list(db.scalars(select(Job.id).where(Job.first_seen_at >= since)).all())
-    added: dict[int, int] = {}
-    for profile in db.scalars(select(UserProfile).where(UserProfile.cv_text != "")).all():
-        user = db.get(User, profile.user_id)
-        if user is not None:
-            added[user.id] = suggest_new_matches(db, user, recent)
-    return added
+def _mark_search(db: Session, profile_ids: list[int], *, started: bool) -> None:
+    """Record when each person's search started and finished, so the Find jobs page can show progress."""
+    now = datetime.now(tz=timezone.utc)
+    for profile in db.scalars(select(UserProfile).where(UserProfile.id.in_(profile_ids))).all():
+        if started:
+            profile.search_started_at = now
+        else:
+            profile.search_finished_at = now
+    db.commit()
 
 
 def _analyse_new_jobs(db: Session) -> None:
     # Skills come from the analysis; without it every job looks like a perfect skill match.
-    since = datetime.now(tz=timezone.utc) - timedelta(days=SUGGEST_WITHIN_DAYS)
+    since = datetime.now(tz=timezone.utc) - timedelta(days=ANALYSE_WITHIN_DAYS)
     analysed = select(JobAnalysis.job_id)
     for job in db.scalars(select(Job).where(Job.first_seen_at >= since, Job.id.not_in(analysed))).all():
         try:
@@ -244,7 +266,9 @@ def _feed_source(db: Session, key: str) -> JobSource:
 
 
 def _search_jobserve(db: Session, source: JobSource, search: Search) -> FeedResult:
-    payload = JobServeSearchScrapeRequest(keywords=search.role[:120], location=search.location, max_pages=1)
+    payload = JobServeSearchScrapeRequest(
+        keywords=search.role[:120], location=None if search.remote_only else search.location, remote_only=search.remote_only, max_pages=1
+    )
     result = source_scraping.search_scrape_jobserve(db, payload)
     return FeedResult(
         found=result.jobs_found, created=result.jobs_created, updated=result.jobs_updated, skipped=result.jobs_skipped, errors=result.errors
@@ -309,8 +333,8 @@ def _normalised(source: JobSource, record: dict[str, Any]) -> dict[str, Any]:
 
 def fetch_reed(search: Search) -> list[dict[str, Any]]:
     auth = (settings.reed_api_key, "")
-    params: dict[str, Any] = {"keywords": search.role, "resultsToTake": RESULTS_PER_SEARCH}
-    if search.location:
+    params: dict[str, Any] = {"keywords": f"{search.role} remote" if search.remote_only else search.role, "resultsToTake": RESULTS_PER_SEARCH}
+    if search.location and not search.remote_only:
         params.update({"locationName": search.location, "distanceFromLocation": 20})
     response = requests.get(REED_SEARCH_URL, params=params, auth=auth, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
@@ -353,13 +377,13 @@ def fetch_adzuna(search: Search) -> list[dict[str, Any]]:
     params: dict[str, Any] = {
         "app_id": settings.adzuna_app_id,
         "app_key": settings.adzuna_app_key,
-        "what": search.role,
+        "what": f"{search.role} remote" if search.remote_only else search.role,
         "results_per_page": RESULTS_PER_SEARCH,
         "max_days_old": 7,
         "sort_by": "date",
         "content-type": "application/json",
     }
-    if search.location:
+    if search.location and not search.remote_only:
         params.update({"where": search.location, "distance": 32})
     response = requests.get(ADZUNA_SEARCH_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()

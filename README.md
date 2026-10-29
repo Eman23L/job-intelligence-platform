@@ -16,8 +16,8 @@ The project is intentionally split into:
 - Next.js dashboard for jobs, sources, salary analytics, saved jobs, and score views
 - JobServe scraper using hidden search-page job IDs and AJAX detail endpoints
 - Background scrape runs with polling status
-- Daily search every weekday morning (JobServe, Reed, Adzuna, plus LinkedIn and Indeed alert emails) feeding a per-person New matches list to approve
-- Per-person apply list, with an "Apply with Claude" page for each job (see "Applying for jobs")
+- One simple flow: add your CV and the jobs you want, see the jobs found for you, apply to one or all, and see what's been applied for (see "Applying for jobs")
+- Daily search every weekday morning (JobServe, plus Reed and Adzuna when their API keys are set)
 - Salary normalisation for annual, day-rate, and hourly jobs
 - Alembic migrations
 - Pytest backend coverage
@@ -215,12 +215,13 @@ Sign-in sessions last `SESSION_DAYS` (default 30). Passwords are hashed with scr
 
 ## Applying for jobs
 
-The app doesn't submit applications itself. Claude in Chrome fills in each form in your own browser while you watch, and you press Submit.
+The app doesn't submit applications itself. Claude in Chrome fills in each form in your own browser and you press Submit.
 
-- **Daily search** runs on the worker at 6:30am UK time every weekday. For each person with a CV it searches JobServe, Reed and Adzuna for the roles on the CV's `TARGET ROLES` line, analyses and scores new jobs, and adds those at or above the person's minimum apply score (and whose title fits a target role) to **New matches**. Reed and Adzuna need free API keys: set `REED_API_KEY`, `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` on both Render services.
-- **LinkedIn and Indeed** don't allow automated searching, so their own job alert emails are used. A Claude scheduled task reads the alerts in Gmail and posts good fits to `POST /suggestions/import` with the person's import key (created on the Daily search page; it can only add New matches).
-- **Applications** has New matches (approve all, or pick), To apply, Applied and Skipped. "Apply to all with Claude" gives Claude in Chrome instructions to work down the whole list, stopping before each Submit. Each job also has its own **Apply with Claude** page with your details, your CV and the job description.
-- Each person's lists are private to them.
+1. **My CV**: add your CV (file and text), then say which roles you want (up to five, even ones your CV doesn't show yet) and where. Saving runs a search straight away.
+2. **Find jobs**: the jobs found for those roles in the last two weeks, best match to your CV first, with a **New search** button. The search also runs on the worker at 6:30am UK time every weekday. A job is listed when its title contains every key word of one of your roles (close synonyms count: data also covers analytics and BI, AI also covers machine learning). Press **Apply** on a job or **Apply to all** to queue them for Claude, or **Not for me** to hide one.
+3. **Applications**: jobs queued for Claude, and the ones you've applied for, with how each is going. "Show instructions for Claude" gives Claude in Chrome one set of instructions: work through the queue (each job's **Apply now** page has your details, your CV and the description), then apply on LinkedIn and Indeed for your roles and log each one. Save them as a Claude in Chrome shortcut and schedule it daily to have it run every morning. When Claude marks a job as applied it shows as **✓ Applied** on Find jobs too.
+
+Reed and Adzuna need free API keys: set `REED_API_KEY`, `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` on both Render services. Each person's lists are private to them. Older tools (overview, all jobs, AI advisor, skill gaps, salary, sources, activity) are under **More tools** in the menu.
 
 ## Security Notes
 

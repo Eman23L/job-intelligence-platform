@@ -11,9 +11,9 @@ import { ScorePill } from "@/components/ScoreBadge";
 import { api } from "@/lib/api";
 import { CLOSED_AVAILABILITY, SOURCE_LABELS } from "@/lib/applications";
 import { formatDate } from "@/lib/format";
-import type { Application, ApplicationSource, ApplicationStatus, ApplicationsList } from "@/types/api";
+import type { Application, ApplicationSource, ApplicationStatus, ApplicationsList, UserProfile } from "@/types/api";
 
-type Tab = "suggested" | "to_apply" | "applied" | "skipped";
+type Tab = "queued" | "applied" | "not_for_me";
 
 const SUBMITTED: ApplicationStatus[] = ["applied", "interviewing", "offer", "rejected"];
 
@@ -26,18 +26,18 @@ const PROGRESS_LABELS: Record<string, string> = {
 
 export default function ApplicationsPage() {
   const [data, setData] = useState<ApplicationsList | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
-  const [tab, setTab] = useState<Tab>("to_apply");
-  const [threshold, setThreshold] = useState(80);
-  const [adding, setAdding] = useState(false);
+  const [notice, setNotice] = useState<{
+    type: "success" | "error" | "info";
+    message: string;
+  } | null>(null);
+  const [tab, setTab] = useState<Tab>("queued");
   const [checking, setChecking] = useState(false);
   const [showLogForm, setShowLogForm] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [deciding, setDeciding] = useState(false);
-  const [showBatch, setShowBatch] = useState(false);
   const [origin, setOrigin] = useState("");
+  const [showInstructions, setShowInstructions] = useState(false);
 
   const refresh = useCallback(async () => {
     const result = await api.applications();
@@ -49,54 +49,33 @@ export default function ApplicationsPage() {
     setOrigin(window.location.origin);
     refresh()
       .then((result) => {
-        setThreshold(result.minimum_apply_score);
-        // Open on New matches when the daily search has found something.
-        if (result.items.some((item) => item.status === "suggested")) {
-          setTab("suggested");
+        if (!result.items.some((item) => item.status === "to_apply") && result.items.some((item) => SUBMITTED.includes(item.status))) {
+          setTab("applied");
         }
       })
       .catch((err: Error) => setError(err.message));
+    api
+      .profile()
+      .then(setProfile)
+      .catch(() => undefined);
   }, [refresh]);
 
   const groups = useMemo(() => {
     const items = data?.items ?? [];
     const byScore = (a: Application, b: Application) => Number(b.total_score ?? -1) - Number(a.total_score ?? -1);
     return {
-      suggested: items.filter((item) => item.status === "suggested").sort(byScore),
-      // Best matches first; jobs logged from other sites (no score) go last.
-      to_apply: items
-        .filter((item) => item.status === "to_apply")
-        .sort(byScore),
+      queued: items.filter((item) => item.status === "to_apply").sort(byScore),
       applied: items.filter((item) => SUBMITTED.includes(item.status)),
-      skipped: items.filter((item) => item.status === "skipped")
+      not_for_me: items.filter((item) => item.status === "skipped")
     };
   }, [data]);
 
-  const addTopMatches = async () => {
-    setAdding(true);
-    setNotice(null);
-    try {
-      const result = await api.prepareApplications(threshold);
-      await refresh();
-      setTab("to_apply");
-      setNotice({
-        type: result.added ? "success" : "info",
-        message: result.added
-          ? `Added ${result.added} ${result.added === 1 ? "job" : "jobs"} scoring ${result.minimum_apply_score} or more.`
-          : !data?.has_cv
-            ? "Add your CV on the Profile page first, so jobs can be matched to you."
-            : `No new jobs scoring ${result.minimum_apply_score} or more. Try a lower score, or find more jobs on the Sources page.`
-      });
-    } catch (err) {
-      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't add jobs." });
-    } finally {
-      setAdding(false);
-    }
-  };
-
   const checkStillOpen = async () => {
     setChecking(true);
-    setNotice({ type: "info", message: "Checking each listing. This can take a minute or two." });
+    setNotice({
+      type: "info",
+      message: "Checking each listing. This can take a minute or two."
+    });
     try {
       const started = await api.checkListingsOpen();
       let run = await api.availabilityRun(started.run_id);
@@ -104,62 +83,34 @@ export default function ApplicationsPage() {
       for (let attempt = 0; ["running", "queued"].includes(run.status) && attempt < 200; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
         run = await api.availabilityRun(started.run_id);
-        setNotice({ type: "info", message: `Checking listings: ${run.processed} of ${run.total} done.` });
+        setNotice({
+          type: "info",
+          message: `Checking listings: ${run.processed} of ${run.total} done.`
+        });
       }
       if (run.status !== "completed") {
         throw new Error(run.error ?? "The check didn't finish. Try again in a few minutes.");
       }
       const { skipped } = await api.skipClosedListings();
       const latest = await refresh();
+      window.dispatchEvent(new Event("applications-changed"));
       const left = latest.items.filter((item) => item.status === "to_apply" && item.job_id).length;
       setNotice({
         type: "success",
         message: !skipped
-          ? "Every listing on your apply list is still open."
+          ? "Every queued listing is still open."
           : left
-            ? `Moved ${skipped} closed ${skipped === 1 ? "listing" : "listings"} to Skipped. The ${left} left ${left === 1 ? "is" : "are"} still open.`
-            : `All ${skipped} ${skipped === 1 ? "listing has" : "listings have"} closed, so they're in Skipped. Run a new search on the Sources page to find fresh jobs.`
+            ? `Removed ${skipped} closed ${skipped === 1 ? "listing" : "listings"}. The ${left} left ${left === 1 ? "is" : "are"} still open.`
+            : `All ${skipped} ${skipped === 1 ? "listing has" : "listings have"} closed. Find fresh ones on the Find jobs page.`
       });
     } catch (err) {
-      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't check the listings." });
+      setNotice({
+        type: "error",
+        message: err instanceof Error ? err.message : "Couldn't check the listings."
+      });
     } finally {
       setChecking(false);
     }
-  };
-
-  const decide = async (approve: boolean, ids?: number[]) => {
-    setDeciding(true);
-    setNotice(null);
-    try {
-      const { changed } = await api.decideNewMatches(approve, ids);
-      setSelected(new Set());
-      const latest = await refresh();
-      window.dispatchEvent(new Event("applications-changed"));
-      const jobs = `${changed} ${changed === 1 ? "job" : "jobs"}`;
-      setNotice({
-        type: "success",
-        message: approve ? `Approved ${jobs}. They're on your apply list, ready for Claude.` : `Dismissed ${jobs}. They're in Skipped.`
-      });
-      if (!latest.items.some((item) => item.status === "suggested")) {
-        setTab("to_apply");
-      }
-    } catch (err) {
-      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't update your new matches." });
-    } finally {
-      setDeciding(false);
-    }
-  };
-
-  const toggle = (id: number, checked: boolean) => {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(id);
-      } else {
-        next.delete(id);
-      }
-      return next;
-    });
   };
 
   const update = async (item: Application, status: ApplicationStatus, message: string) => {
@@ -171,7 +122,10 @@ export default function ApplicationsPage() {
       window.dispatchEvent(new Event("applications-changed"));
       setNotice({ type: "success", message });
     } catch (err) {
-      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't update that application." });
+      setNotice({
+        type: "error",
+        message: err instanceof Error ? err.message : "Couldn't update that application."
+      });
     } finally {
       setBusyId(null);
     }
@@ -185,8 +139,12 @@ export default function ApplicationsPage() {
     try {
       await api.deleteApplication(item.id);
       await refresh();
+      window.dispatchEvent(new Event("applications-changed"));
     } catch (err) {
-      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't remove that application." });
+      setNotice({
+        type: "error",
+        message: err instanceof Error ? err.message : "Couldn't remove that application."
+      });
     } finally {
       setBusyId(null);
     }
@@ -200,47 +158,42 @@ export default function ApplicationsPage() {
   }
 
   const rows = groups[tab];
+  const roles = profile?.search_roles?.length ? profile.search_roles : (profile?.preferred_roles ?? []);
+  const place = profile?.search_remote_only
+    ? "remote"
+    : profile?.search_location || profile?.location_preference?.split("/")[0]?.trim() || "the UK";
 
   return (
     <div className="page-stack">
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>Your apply list</h2>
+            <h2>Let Claude apply for you</h2>
             <p className="muted-text">
-              Your <Link href="/daily-search">daily search</Link> puts new jobs in <strong>New matches</strong> each weekday morning. Approve
-              the ones you want, then let Claude fill in each application in your own browser while you check it and press Submit.
+              Claude works in your own Chrome: it applies to your queued jobs, then finds more on LinkedIn and Indeed. It fills in each
+              form, you press Submit, and each one shows up as Applied here.
             </p>
           </div>
-        </div>
-        <div className="action-row">
-          <label>
-            Add my matches scoring
-            <select value={threshold} onChange={(event) => setThreshold(Number(event.target.value))}>
-              {[60, 70, 80, 85, 90].map((value) => (
-                <option key={value} value={value}>
-                  {value} or more
-                </option>
-              ))}
-            </select>
-          </label>
-          <button type="button" className="align-end" disabled={adding} onClick={() => void addTopMatches()}>
-            {adding ? <span className="spinner" aria-hidden="true" /> : null}
-            {adding ? "Adding..." : "Add top matches"}
-          </button>
-          <button type="button" className="secondary-button align-end" onClick={() => setShowLogForm((open) => !open)}>
-            {showLogForm ? "Close" : "Add a job from LinkedIn, Indeed..."}
+          <button
+            type="button"
+            className={groups.queued.length ? undefined : "secondary-button"}
+            onClick={() => setShowInstructions((open) => !open)}
+          >
+            {showInstructions ? "Hide instructions" : "Show instructions for Claude"}
           </button>
         </div>
-        {showLogForm ? (
-          <LogApplicationForm
-            onSaved={async (status) => {
-              setShowLogForm(false);
-              await refresh();
-              setTab(status === "applied" ? "applied" : "to_apply");
-              setNotice({ type: "success", message: status === "applied" ? "Application logged." : "Added to your apply list." });
-            }}
-          />
+        {showInstructions ? (
+          <>
+            <ol className="steps">
+              <li>In Chrome, sign in to LinkedIn and Indeed, then open the Claude in Chrome side panel.</li>
+              <li>Copy the instructions below and paste them into Claude.</li>
+              <li>
+                To have it run every morning, save the instructions as a shortcut in Claude in Chrome and schedule it daily with the clock
+                icon. It runs while Chrome is open and your computer is on.
+              </li>
+            </ol>
+            <CopyBlock label="Instructions for Claude" text={claudeInstructions(origin, roles, place)} rows={12} />
+          </>
         ) : null}
       </section>
 
@@ -249,10 +202,9 @@ export default function ApplicationsPage() {
       <div className="tab-row" role="tablist" aria-label="Application status">
         {(
           [
-            ["suggested", "New matches"],
-            ["to_apply", "To apply"],
+            ["queued", "Queued for Claude"],
             ["applied", "Applied"],
-            ["skipped", "Skipped"]
+            ["not_for_me", "Not for me"]
           ] as const
         ).map(([key, label]) => (
           <button
@@ -268,66 +220,50 @@ export default function ApplicationsPage() {
         ))}
       </div>
 
-      {tab === "suggested" && rows.length > 0 ? (
+      {tab === "queued" && groups.queued.some((item) => item.job_id) ? (
         <div className="action-row">
-          <button type="button" disabled={deciding} onClick={() => void decide(true)}>
-            {deciding ? <span className="spinner" aria-hidden="true" /> : null}
-            Approve all ({rows.length})
+          <button type="button" className="secondary-button" disabled={checking} onClick={() => void checkStillOpen()}>
+            {checking ? <span className="spinner" aria-hidden="true" /> : null}
+            {checking ? "Checking..." : "Check they're still open"}
           </button>
-          <button type="button" className="secondary-button" disabled={deciding || selected.size === 0} onClick={() => void decide(true, [...selected])}>
-            Approve selected{selected.size ? ` (${selected.size})` : ""}
-          </button>
-          <button type="button" className="ghost-button" disabled={deciding || selected.size === 0} onClick={() => void decide(false, [...selected])}>
-            Dismiss selected
-          </button>
+          <span className="muted-text">Jobs whose listing has closed are removed.</span>
         </div>
       ) : null}
 
-      {tab === "to_apply" && rows.length > 0 ? (
+      {tab === "applied" ? (
         <div className="action-row">
-          <button type="button" onClick={() => setShowBatch((open) => !open)}>
-            {showBatch ? "Hide instructions" : `Apply to all ${rows.length} with Claude`}
+          <button type="button" className="secondary-button" onClick={() => setShowLogForm((open) => !open)}>
+            {showLogForm ? "Close" : "Add a job you applied for"}
           </button>
-          {groups.to_apply.some((item) => item.job_id) ? (
-            <button type="button" className="secondary-button" disabled={checking} onClick={() => void checkStillOpen()}>
-              {checking ? <span className="spinner" aria-hidden="true" /> : null}
-              {checking ? "Checking..." : "Check they're still open"}
-            </button>
-          ) : null}
+          <span className="muted-text">For jobs you applied for on LinkedIn, Indeed or anywhere else.</span>
         </div>
       ) : null}
-
-      {tab === "to_apply" && showBatch && rows.length > 0 ? (
+      {tab === "applied" && showLogForm ? (
         <section className="panel">
-          <h2>Apply to your whole list with Claude</h2>
-          <ol className="steps">
-            <li>Open Claude in Chrome on this page and paste these instructions.</li>
-            <li>Claude works down your list, filling in each application from your details and stopping before Submit.</li>
-            <li>Check each one and press Submit. Claude marks it as applied and moves on to the next.</li>
-          </ol>
-          <CopyBlock label="Instructions for Claude" text={batchInstructions(origin, Math.min(rows.length, 10))} rows={14} />
+          <LogApplicationForm
+            onSaved={async (status) => {
+              setShowLogForm(false);
+              await refresh();
+              window.dispatchEvent(new Event("applications-changed"));
+              setTab(status === "applied" ? "applied" : "queued");
+              setNotice({
+                type: "success",
+                message: status === "applied" ? "Application added." : "Added to your queue."
+              });
+            }}
+          />
         </section>
       ) : null}
 
       {rows.length === 0 ? (
         <EmptyState
-          title={
-            tab === "suggested"
-              ? "No new matches right now"
-              : tab === "to_apply"
-                ? "Nothing to apply for yet"
-                : tab === "applied"
-                  ? "No applications yet"
-                  : "Nothing skipped"
-          }
+          title={tab === "queued" ? "Nothing queued" : tab === "applied" ? "No applications yet" : "Nothing here"}
           message={
-            tab === "suggested"
-              ? "Your daily search adds new jobs here each weekday morning. You can also run it now from the Daily search page."
-              : tab === "to_apply"
-              ? "Approve some new matches, add your top matches above, or pick jobs from the Jobs page."
+            tab === "queued"
+              ? "Press Apply on the Find jobs page to queue jobs for Claude."
               : tab === "applied"
-                ? "Jobs you apply for, here or on other sites, will show up here."
-                : "Jobs you skip are kept here in case you change your mind."
+                ? "Jobs Claude applies for, and ones you add yourself, show up here."
+                : "Jobs you mark as not for you are kept here in case you change your mind."
           }
         />
       ) : (
@@ -336,16 +272,6 @@ export default function ApplicationsPage() {
             <table className="data-table stack-table">
               <thead>
                 <tr>
-                  {tab === "suggested" ? (
-                    <th className="select-cell">
-                      <input
-                        type="checkbox"
-                        aria-label="Select all new matches"
-                        checked={rows.every((item) => selected.has(item.id))}
-                        onChange={(event) => setSelected(event.target.checked ? new Set(rows.map((item) => item.id)) : new Set())}
-                      />
-                    </th>
-                  ) : null}
                   <th>Job</th>
                   <th>{tab === "applied" ? "Applied" : "Match"}</th>
                   <th>{tab === "applied" ? "Progress" : "Where"}</th>
@@ -355,16 +281,6 @@ export default function ApplicationsPage() {
               <tbody>
                 {rows.map((item) => (
                   <tr key={item.id}>
-                    {tab === "suggested" ? (
-                      <td className="select-cell">
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${item.title}`}
-                          checked={selected.has(item.id)}
-                          onChange={(event) => toggle(item.id, event.target.checked)}
-                        />
-                      </td>
-                    ) : null}
                     <td data-label="Job">
                       <div className="job-cell">
                         {item.job_id ? (
@@ -384,7 +300,7 @@ export default function ApplicationsPage() {
                     </td>
                     {tab === "applied" ? (
                       <td data-label="Applied" className="muted-text">
-                        {formatDate(item.applied_at)}
+                        ✓ {formatDate(item.applied_at)}
                       </td>
                     ) : (
                       <td data-label="Match">
@@ -394,7 +310,7 @@ export default function ApplicationsPage() {
                             <RecommendationBadge tier={item.recommendation_tier} />
                           </div>
                         ) : (
-                          <span className="muted-text">{item.source === "linkedin" || item.source === "indeed" ? "Picked by Claude" : "Not scored"}</span>
+                          <span className="muted-text">Not scored</span>
                         )}
                       </td>
                     )}
@@ -423,40 +339,37 @@ export default function ApplicationsPage() {
                     )}
                     <td data-label="Actions">
                       <div className="row-actions">
-                        {tab === "to_apply" ? (
+                        {tab === "queued" ? (
                           <Link href={`/apply/${item.id}`} className="button-link compact-button">
-                            Apply with Claude
+                            Apply now
                           </Link>
-                        ) : null}
-                        {tab === "suggested" ? (
-                          <button type="button" className="compact-button" disabled={deciding} onClick={() => void decide(true, [item.id])}>
-                            Approve
-                          </button>
                         ) : null}
                         <details className="menu">
                           <summary className="icon-button" aria-label={`More actions for ${item.title}`}>
                             ⋯
                           </summary>
                           <div className="menu-panel">
-                            {tab === "suggested" ? (
-                              <button type="button" onClick={(event) => closeMenuAfter(event, () => void decide(false, [item.id]))}>
-                                Dismiss
-                              </button>
-                            ) : tab === "to_apply" ? (
+                            {tab === "queued" ? (
                               <>
-                                <button type="button" onClick={(event) => closeMenuAfter(event, () => void update(item, "applied", "Marked as applied."))}>
+                                <button
+                                  type="button"
+                                  onClick={(event) => closeMenuAfter(event, () => void update(item, "applied", "Marked as applied."))}
+                                >
                                   Mark as applied
                                 </button>
-                                <button type="button" onClick={(event) => closeMenuAfter(event, () => void update(item, "skipped", "Skipped."))}>
-                                  Skip this job
+                                <button
+                                  type="button"
+                                  onClick={(event) => closeMenuAfter(event, () => void update(item, "skipped", "Moved to Not for me."))}
+                                >
+                                  Not for me
                                 </button>
                               </>
                             ) : (
                               <button
                                 type="button"
-                                onClick={(event) => closeMenuAfter(event, () => void update(item, "to_apply", "Moved back to your apply list."))}
+                                onClick={(event) => closeMenuAfter(event, () => void update(item, "to_apply", "Queued for Claude again."))}
                               >
-                                Move back to apply list
+                                Queue for Claude again
                               </button>
                             )}
                             <hr />
@@ -492,7 +405,13 @@ function LogApplicationForm({ onSaved }: { onSaved: (status: ApplicationStatus) 
     setSaving(true);
     setError(null);
     try {
-      await api.createApplication({ title, company: company || undefined, url: url || undefined, source, status });
+      await api.createApplication({
+        title,
+        company: company || undefined,
+        url: url || undefined,
+        source,
+        status
+      });
       await onSaved(status);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save that application.");
@@ -548,21 +467,27 @@ function closeMenuAfter(event: React.MouseEvent<HTMLButtonElement>, action: () =
   action();
 }
 
-function batchInstructions(origin: string, limit: number): string {
+function claudeInstructions(origin: string, roles: string[], place: string): string {
+  const wanted = roles.length ? roles.join(", ") : "the roles on my CV";
   return [
-    "Please help me apply for the jobs on my apply list, one at a time, while I watch.",
+    "Please help me apply for jobs, one at a time.",
     "",
-    `1. Open my apply list: ${origin}/applications (the "To apply" tab).`,
-    "2. For each job, starting from the top:",
-    "   - Click \"Apply with Claude\". That page has my details, my CV and the job description. Read it, but don't change anything on it.",
-    "   - Open the job listing from that page. If the listing has closed, go back, click \"Skip\" and move on to the next job.",
+    "Part 1: the jobs I've queued",
+    `1. Open ${origin}/applications. The "Queued for Claude" tab lists the jobs I've chosen.`,
+    "2. For each job, from the top:",
+    '   - Click "Apply now". That page has my details, my CV and the job description. Read it, but don\'t change anything on it.',
+    '   - Open the job listing from that page. If it has closed, go back, click "Skip" and move on.',
     "   - Fill in the application using only my details. Answer screening questions honestly from my CV. If a question isn't covered, ask me.",
-    "   - For a cover letter or \"why this job\" box, write a short, specific answer (under 150 words) in plain British English with no emojis.",
+    '   - For a cover letter or "why this job" box, write a short, specific answer (under 150 words) in plain British English with no emojis.',
     "   - If it needs my CV file, tell me and I'll attach it. If it asks me to create an account or shows a CAPTCHA, stop and ask me.",
-    "   - Don't press the final Submit or Apply button. Tell me it's ready, and wait for me to check and submit it.",
-    "   - After I've submitted, go back to the job's Apply with Claude page, click \"I've applied\", then start the next job.",
-    `3. Stop after ${limit} applications, or sooner if I say so.`,
+    "   - Don't press the final Submit or Apply button. Tell me it's ready and wait for me to submit it.",
+    "   - After I've submitted, click \"I've applied\" on the job's page, then start the next one.",
     "",
-    "Don't message anyone, follow companies, or change any of my profiles or settings."
+    "Part 2: LinkedIn and Indeed",
+    `3. Search LinkedIn Jobs (Easy Apply, past week) and Indeed (last 7 days) for: ${wanted}, ${place === "remote" ? "remote" : `near ${place}`}.`,
+    "4. Apply to the ones that are one of those roles, the same way as Part 1. Skip any that clearly aren't, and tell me in one line why.",
+    `5. After I've submitted each one, open ${origin}/applications, go to the Applied tab, click "Add a job you applied for", and save the job title, company and link, with Found on set to LinkedIn or Indeed.`,
+    "",
+    "Stop after 10 applications in total, or sooner if I say so. Don't message anyone, follow companies, or change any of my profiles or settings."
   ].join("\n");
 }

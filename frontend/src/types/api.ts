@@ -143,7 +143,7 @@ export interface JobRescoreRunStatus {
   error: string | null;
 }
 
-export type ApplicationStatus = "suggested" | "to_apply" | "applied" | "interviewing" | "offer" | "rejected" | "skipped";
+export type ApplicationStatus = "to_apply" | "applied" | "interviewing" | "offer" | "rejected" | "skipped";
 export type ApplicationSource = "jobserve" | "reed" | "adzuna" | "linkedin" | "indeed" | "company_site" | "other";
 export type AvailabilityStatus = "active" | "expired" | "unavailable" | "redirected" | "replaced" | "unknown";
 export type ApplyDifficulty = "easy" | "medium" | "hard" | "blocked" | "unknown";
@@ -342,6 +342,9 @@ export interface UserProfile {
   salary_max_preference: string | null;
   created_at: string;
   updated_at: string;
+  search_roles: string[] | null;
+  search_location: string | null;
+  search_remote_only: boolean;
 }
 
 export interface AIChatResponse {
@@ -544,27 +547,36 @@ export interface UnifiedRunList {
   items: UnifiedRun[];
 }
 
-export interface ImportKeyStatus {
-  exists: boolean;
-  created_at: string | null;
-  last_used_at: string | null;
+export interface FoundJob {
+  job_id: number;
+  title: string;
+  company: string | null;
+  location: string | null;
+  salary: string | null;
+  source: ApplicationSource;
+  url: string | null;
+  first_seen_at: string;
+  is_new: boolean;
+  total_score: string | null;
+  recommendation_tier: string | null;
+  application_id: number | null;
+  /** null = not decided yet; "to_apply" = queued for Claude; otherwise applied and how it's going. */
+  status: ApplicationStatus | null;
+  applied_at: string | null;
 }
 
-export interface DiscoveryFeed {
-  key: "jobserve" | "reed" | "adzuna";
-  name: string;
-  enabled: boolean;
-  last_run_at: string | null;
-  last_status: string | null;
-  last_found: number;
-  last_created: number;
-}
-
-export interface DiscoveryStatus {
+export interface SearchState {
   roles: string[];
   location: string | null;
-  minimum_score: number;
-  feeds: DiscoveryFeed[];
+  remote_only: boolean;
+  searching: boolean;
+  last_finished_at: string | null;
   next_run_at: string | null;
-  import_key: ImportKeyStatus;
+  feeds: Record<"jobserve" | "reed" | "adzuna", boolean>;
+}
+
+export interface FindResult {
+  has_cv: boolean;
+  search: SearchState;
+  jobs: FoundJob[];
 }
