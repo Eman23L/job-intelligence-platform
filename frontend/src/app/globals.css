@@ -235,6 +235,48 @@ button:disabled {
   font-weight: 600;
 }
 
+.nav-badge {
+  background: var(--accent);
+  border-radius: 999px;
+  color: #ffffff;
+  float: right;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.35rem;
+  min-width: 1.35rem;
+  padding: 0 0.4rem;
+  text-align: center;
+}
+
+.feed-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.feed-row {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  justify-content: space-between;
+  padding: 0.7rem 0.9rem;
+}
+
+.feed-row strong {
+  min-width: 6rem;
+}
+
+.key-box {
+  background: var(--panel-soft);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+  padding: 0.7rem 0.9rem;
+}
+
 .main-area {
   min-width: 0;
 }

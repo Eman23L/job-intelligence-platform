@@ -102,7 +102,7 @@ export function JobsTable({
                       ⋯
                     </summary>
                     <div className="menu-panel">
-                      {job.application_status !== "to_apply" ? (
+                      {job.application_status !== "to_apply" && job.application_status !== "suggested" ? (
                         <button type="button" onClick={(event) => closeMenuAfter(event, () => void onAddToApplyList(job.id))}>
                           Add to apply list
                         </button>
@@ -171,7 +171,7 @@ function StatusCell({ job }: { job: JobListItem }) {
     return <span className="badge excluded">Hidden</span>;
   }
   if (job.application_status) {
-    const tone = job.application_status === "to_apply" ? "strong" : job.application_status === "skipped" ? "neutral" : "good";
+    const tone = ["to_apply", "suggested"].includes(job.application_status) ? "strong" : job.application_status === "skipped" ? "neutral" : "good";
     return <span className={`badge ${tone}`}>{STATUS_LABELS[job.application_status]}</span>;
   }
   // "Active" and "unknown" are the normal state, so only surface availability when something is wrong.

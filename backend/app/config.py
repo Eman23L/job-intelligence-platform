@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     owner_setup_code: str = Field(default="", alias="OWNER_SETUP_CODE")
     session_days: int = Field(default=30, alias="SESSION_DAYS")
     invite_days: int = Field(default=14, alias="INVITE_DAYS")
+    # Optional job feeds for the daily search. Free keys: reed.co.uk/developers and developer.adzuna.com.
+    reed_api_key: str = Field(default="", alias="REED_API_KEY")
+    adzuna_app_id: str = Field(default="", alias="ADZUNA_APP_ID")
+    adzuna_app_key: str = Field(default="", alias="ADZUNA_APP_KEY")
 
     @field_validator("database_url", mode="before")
     @classmethod

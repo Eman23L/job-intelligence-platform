@@ -13,6 +13,8 @@ from app.schemas.database import (
     JobAvailabilityRunStart,
     PrepareApplicationsResult,
     SkipClosedResult,
+    SuggestionDecision,
+    SuggestionDecisionResult,
 )
 from app.services import applications as service
 from app.services.job_availability import run_availability_background, start_availability_run
@@ -46,6 +48,17 @@ def add_top_matches(
     threshold = minimum_score if minimum_score is not None else service.minimum_apply_score(db, user)
     added = service.queue_top_matches(db, user, threshold)
     return PrepareApplicationsResult(added=len(added), minimum_apply_score=threshold)
+
+
+@router.get("/counts")
+def application_counts(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, int]:
+    return service.counts(db, user)
+
+
+@router.post("/decide", response_model=SuggestionDecisionResult)
+def decide_new_matches(payload: SuggestionDecision, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Approve New matches onto the apply list, or dismiss them."""
+    return SuggestionDecisionResult(changed=service.decide_suggestions(db, user, approve=payload.approve, application_ids=payload.ids))
 
 
 @router.post("/check-open", response_model=JobAvailabilityRunStart)

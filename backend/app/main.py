@@ -10,6 +10,7 @@ from app.api.ai import router as ai_router
 from app.api.analytics import router as analytics_router
 from app.api.auth import router as auth_router
 from app.api.deps import get_current_user
+from app.api.discovery import router as discovery_router
 from app.api.applications import router as applications_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
@@ -19,6 +20,8 @@ from app.api.saved_jobs import router as saved_jobs_router
 from app.api.scrape_runs import router as scrape_runs_router
 from app.api.scores import router as scores_router
 from app.api.sources import router as sources_router
+from app.api.suggestions import import_router as suggestions_import_router
+from app.api.suggestions import router as suggestions_router
 from app.config import settings
 from app.logging_config import configure_logging
 
@@ -57,9 +60,23 @@ def _validate_production_startup() -> None:
     logger.info("production startup database connectivity check passed")
 
 
+def _ensure_daily_search_scheduled() -> None:
+    # The worker schedules each day's search after the last one; re-check on every web start in case the queue lost it.
+    if not settings.queue_enabled:
+        return
+    try:
+        from app.services.discovery import schedule_next_run
+        from app.services.queue import rq_queue
+
+        schedule_next_run(rq_queue())
+    except Exception:  # noqa: BLE001 - the API should start even if Redis is unavailable.
+        logging.getLogger(__name__).exception("daily_discovery_schedule_check_failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _validate_production_startup()
+    _ensure_daily_search_scheduled()
     yield
 
 
@@ -84,6 +101,8 @@ def create_app() -> FastAPI:
     # Public: health checks and sign-in.
     app.include_router(health_router)
     app.include_router(auth_router)
+    # Authenticated by a per-person import key instead of a session.
+    app.include_router(suggestions_import_router)
     # Everything else needs a signed-in user.
     signed_in = [Depends(get_current_user)]
     for router in (
@@ -97,6 +116,8 @@ def create_app() -> FastAPI:
         ai_router,
         profile_router,
         runs_router,
+        discovery_router,
+        suggestions_router,
     ):
         app.include_router(router, dependencies=signed_in)
     return app

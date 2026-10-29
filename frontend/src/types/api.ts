@@ -143,8 +143,8 @@ export interface JobRescoreRunStatus {
   error: string | null;
 }
 
-export type ApplicationStatus = "to_apply" | "applied" | "interviewing" | "offer" | "rejected" | "skipped";
-export type ApplicationSource = "jobserve" | "linkedin" | "indeed" | "company_site" | "other";
+export type ApplicationStatus = "suggested" | "to_apply" | "applied" | "interviewing" | "offer" | "rejected" | "skipped";
+export type ApplicationSource = "jobserve" | "reed" | "adzuna" | "linkedin" | "indeed" | "company_site" | "other";
 export type AvailabilityStatus = "active" | "expired" | "unavailable" | "redirected" | "replaced" | "unknown";
 export type ApplyDifficulty = "easy" | "medium" | "hard" | "blocked" | "unknown";
 
@@ -542,4 +542,29 @@ export interface UnifiedRun {
 
 export interface UnifiedRunList {
   items: UnifiedRun[];
+}
+
+export interface ImportKeyStatus {
+  exists: boolean;
+  created_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface DiscoveryFeed {
+  key: "jobserve" | "reed" | "adzuna";
+  name: string;
+  enabled: boolean;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_found: number;
+  last_created: number;
+}
+
+export interface DiscoveryStatus {
+  roles: string[];
+  location: string | null;
+  minimum_score: number;
+  feeds: DiscoveryFeed[];
+  next_run_at: string | null;
+  import_key: ImportKeyStatus;
 }

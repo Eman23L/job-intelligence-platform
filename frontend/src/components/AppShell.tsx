@@ -14,9 +14,9 @@ const pages: Record<string, { title: string; description: string }> = {
   "/jobs": { title: "Jobs", description: "Every role we've found, ranked by how well it fits your profile." },
   "/saved": { title: "Saved jobs", description: "Roles you've shortlisted and where each one stands." },
   "/applications": { title: "Applications", description: "Jobs to apply for, and how each application is going." },
-  "/linkedin-indeed": {
-    title: "Apply on LinkedIn and Indeed",
-    description: "Claude applies in your own browser, one job at a time, while you watch."
+  "/daily-search": {
+    title: "Daily search",
+    description: "New jobs found for you every weekday morning, ready to approve."
   },
   "/ai": { title: "AI Advisor", description: "Ask questions about your matches, skills and next steps." },
   "/missing-skills": { title: "Skill gaps", description: "Skills employers ask for that aren't on your profile yet." },

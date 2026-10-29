@@ -90,6 +90,31 @@ def create_session(db: Session, user: User) -> str:
     return token
 
 
+def create_import_key(db: Session, user: User) -> str:
+    """A key that can only add jobs to this person's New matches. Creating a new one replaces the old one."""
+    key = f"jsk_{secrets.token_urlsafe(24)}"
+    user.import_key_hash = _sha256(key)
+    user.import_key_created_at = _now()
+    user.import_key_last_used_at = None
+    db.commit()
+    return key
+
+
+def revoke_import_key(db: Session, user: User) -> None:
+    user.import_key_hash = None
+    user.import_key_created_at = None
+    user.import_key_last_used_at = None
+    db.commit()
+
+
+def user_for_import_key(db: Session, key: str) -> User | None:
+    user = db.scalar(select(User).where(User.import_key_hash == _sha256(key.strip())))
+    if user is not None:
+        user.import_key_last_used_at = _now()
+        db.commit()
+    return user
+
+
 def user_for_token(db: Session, token: str) -> User | None:
     row = db.execute(
         select(User, AuthSession).join(AuthSession, AuthSession.user_id == User.id).where(AuthSession.token_hash == _sha256(token))
