@@ -16,7 +16,8 @@ The project is intentionally split into:
 - Next.js dashboard for jobs, sources, salary analytics, saved jobs, and score views
 - JobServe scraper using hidden search-page job IDs and AJAX detail endpoints
 - Background scrape runs with polling status
-- Per-person apply list, with an "Apply with Claude" page for each job and a LinkedIn & Indeed page (see "Applying for jobs")
+- Daily search every weekday morning (JobServe, Reed, Adzuna, plus LinkedIn and Indeed alert emails) feeding a per-person New matches list to approve
+- Per-person apply list, with an "Apply with Claude" page for each job (see "Applying for jobs")
 - Salary normalisation for annual, day-rate, and hourly jobs
 - Alembic migrations
 - Pytest backend coverage
@@ -216,9 +217,10 @@ Sign-in sessions last `SESSION_DAYS` (default 30). Passwords are hashed with scr
 
 The app doesn't submit applications itself. Claude in Chrome fills in each form in your own browser while you watch, and you press Submit.
 
-- **Applications** is your apply list. "Add top matches" adds open jobs scoring above your minimum score, best first. Each job has an **Apply with Claude** page with instructions to paste into Claude in Chrome, your details, your CV and the job description.
-- **LinkedIn & Indeed** builds a search link and instructions for Claude to apply to a few jobs one at a time, stopping before each Submit. Claude logs each one on the Applications page.
-- Each person's apply list is private to them.
+- **Daily search** runs on the worker at 6:30am UK time every weekday. For each person with a CV it searches JobServe, Reed and Adzuna for the roles on the CV's `TARGET ROLES` line, analyses and scores new jobs, and adds those at or above the person's minimum apply score (and whose title fits a target role) to **New matches**. Reed and Adzuna need free API keys: set `REED_API_KEY`, `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` on both Render services.
+- **LinkedIn and Indeed** don't allow automated searching, so their own job alert emails are used. A Claude scheduled task reads the alerts in Gmail and posts good fits to `POST /suggestions/import` with the person's import key (created on the Daily search page; it can only add New matches).
+- **Applications** has New matches (approve all, or pick), To apply, Applied and Skipped. "Apply to all with Claude" gives Claude in Chrome instructions to work down the whole list, stopping before each Submit. Each job also has its own **Apply with Claude** page with your details, your CV and the job description.
+- Each person's lists are private to them.
 
 ## Security Notes
 

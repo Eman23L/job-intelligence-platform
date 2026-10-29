@@ -1,6 +1,6 @@
 import logging
 
-from rq import Worker
+from rq import Queue, Worker
 
 from app.config import settings
 from app.services.browser_automation import browser_status, chromium_diagnostics
@@ -93,6 +93,13 @@ def _run_worker() -> None:
     logger.info("worker_construction_start queue=%s redis_host=%s", settings.queue_name, redis_url_host())
     worker = Worker([settings.queue_name], connection=connection)
     logger.info("worker_construction_success queue=%s redis_host=%s", settings.queue_name, redis_url_host())
+    try:
+        from app.services.discovery import schedule_next_run
+
+        run_at = schedule_next_run(Queue(settings.queue_name, connection=connection))
+        logger.info("worker_daily_discovery_next_run run_at=%s", run_at.isoformat())
+    except Exception:  # noqa: BLE001 - the worker should still process jobs without the daily search.
+        logger.exception("worker_daily_discovery_schedule_failed")
     logger.info("worker_work_start queue=%s redis_host=%s with_scheduler=true", settings.queue_name, redis_url_host())
     worker.work(with_scheduler=True)
     logger.warning("worker_work_exited queue=%s redis_host=%s", settings.queue_name, redis_url_host())

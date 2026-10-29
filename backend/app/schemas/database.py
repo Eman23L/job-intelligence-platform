@@ -737,6 +737,63 @@ class SkipClosedResult(BaseModel):
     skipped: int
 
 
+class SuggestionDecision(BaseModel):
+    approve: bool
+    # None means every job in New matches.
+    ids: list[int] | None = None
+
+
+class SuggestionDecisionResult(BaseModel):
+    changed: int
+
+
+class SuggestionImportItem(BaseModel):
+    source: str = Field(default="other", max_length=40)
+    title: str = Field(min_length=1, max_length=500)
+    company: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    url: str | None = Field(default=None, max_length=2000)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class SuggestionImport(BaseModel):
+    jobs: list[SuggestionImportItem] = Field(max_length=100)
+
+
+class SuggestionImportResult(BaseModel):
+    added: int
+    skipped: int
+
+
+class ImportKeyStatus(BaseModel):
+    exists: bool
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+
+class ImportKeyCreated(ImportKeyStatus):
+    key: str
+
+
+class DiscoveryFeed(BaseModel):
+    key: str
+    name: str
+    enabled: bool
+    last_run_at: datetime | None = None
+    last_status: str | None = None
+    last_found: int = 0
+    last_created: int = 0
+
+
+class DiscoveryStatus(BaseModel):
+    roles: list[str]
+    location: str | None
+    minimum_score: int
+    feeds: list[DiscoveryFeed]
+    next_run_at: datetime | None
+    import_key: ImportKeyStatus
+
+
 class ApplyPackJob(BaseModel):
     title: str
     company: str | None = None

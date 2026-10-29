@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { CopyBlock } from "@/components/CandidateDetails";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
@@ -12,7 +13,7 @@ import { CLOSED_AVAILABILITY, SOURCE_LABELS } from "@/lib/applications";
 import { formatDate } from "@/lib/format";
 import type { Application, ApplicationSource, ApplicationStatus, ApplicationsList } from "@/types/api";
 
-type Tab = "to_apply" | "applied" | "skipped";
+type Tab = "suggested" | "to_apply" | "applied" | "skipped";
 
 const SUBMITTED: ApplicationStatus[] = ["applied", "interviewing", "offer", "rejected"];
 
@@ -33,6 +34,10 @@ export default function ApplicationsPage() {
   const [checking, setChecking] = useState(false);
   const [showLogForm, setShowLogForm] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [deciding, setDeciding] = useState(false);
+  const [showBatch, setShowBatch] = useState(false);
+  const [origin, setOrigin] = useState("");
 
   const refresh = useCallback(async () => {
     const result = await api.applications();
@@ -41,18 +46,27 @@ export default function ApplicationsPage() {
   }, []);
 
   useEffect(() => {
+    setOrigin(window.location.origin);
     refresh()
-      .then((result) => setThreshold(result.minimum_apply_score))
+      .then((result) => {
+        setThreshold(result.minimum_apply_score);
+        // Open on New matches when the daily search has found something.
+        if (result.items.some((item) => item.status === "suggested")) {
+          setTab("suggested");
+        }
+      })
       .catch((err: Error) => setError(err.message));
   }, [refresh]);
 
   const groups = useMemo(() => {
     const items = data?.items ?? [];
+    const byScore = (a: Application, b: Application) => Number(b.total_score ?? -1) - Number(a.total_score ?? -1);
     return {
+      suggested: items.filter((item) => item.status === "suggested").sort(byScore),
       // Best matches first; jobs logged from other sites (no score) go last.
       to_apply: items
         .filter((item) => item.status === "to_apply")
-        .sort((a, b) => Number(b.total_score ?? -1) - Number(a.total_score ?? -1)),
+        .sort(byScore),
       applied: items.filter((item) => SUBMITTED.includes(item.status)),
       skipped: items.filter((item) => item.status === "skipped")
     };
@@ -113,12 +127,48 @@ export default function ApplicationsPage() {
     }
   };
 
+  const decide = async (approve: boolean, ids?: number[]) => {
+    setDeciding(true);
+    setNotice(null);
+    try {
+      const { changed } = await api.decideNewMatches(approve, ids);
+      setSelected(new Set());
+      const latest = await refresh();
+      window.dispatchEvent(new Event("applications-changed"));
+      const jobs = `${changed} ${changed === 1 ? "job" : "jobs"}`;
+      setNotice({
+        type: "success",
+        message: approve ? `Approved ${jobs}. They're on your apply list, ready for Claude.` : `Dismissed ${jobs}. They're in Skipped.`
+      });
+      if (!latest.items.some((item) => item.status === "suggested")) {
+        setTab("to_apply");
+      }
+    } catch (err) {
+      setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't update your new matches." });
+    } finally {
+      setDeciding(false);
+    }
+  };
+
+  const toggle = (id: number, checked: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  };
+
   const update = async (item: Application, status: ApplicationStatus, message: string) => {
     setBusyId(item.id);
     setNotice(null);
     try {
       await api.updateApplication(item.id, { status });
       await refresh();
+      window.dispatchEvent(new Event("applications-changed"));
       setNotice({ type: "success", message });
     } catch (err) {
       setNotice({ type: "error", message: err instanceof Error ? err.message : "Couldn't update that application." });
@@ -158,8 +208,8 @@ export default function ApplicationsPage() {
           <div>
             <h2>Your apply list</h2>
             <p className="muted-text">
-              Open a job and choose <strong>Apply with Claude</strong>. Claude fills in the form in your own browser, and you check it and press
-              Submit.
+              Your <Link href="/daily-search">daily search</Link> puts new jobs in <strong>New matches</strong> each weekday morning. Approve
+              the ones you want, then let Claude fill in each application in your own browser while you check it and press Submit.
             </p>
           </div>
         </div>
@@ -199,6 +249,7 @@ export default function ApplicationsPage() {
       <div className="tab-row" role="tablist" aria-label="Application status">
         {(
           [
+            ["suggested", "New matches"],
             ["to_apply", "To apply"],
             ["applied", "Applied"],
             ["skipped", "Skipped"]
@@ -217,22 +268,63 @@ export default function ApplicationsPage() {
         ))}
       </div>
 
-      {tab === "to_apply" && groups.to_apply.some((item) => item.job_id) ? (
+      {tab === "suggested" && rows.length > 0 ? (
         <div className="action-row">
-          <button type="button" className="secondary-button" disabled={checking} onClick={() => void checkStillOpen()}>
-            {checking ? <span className="spinner" aria-hidden="true" /> : null}
-            {checking ? "Checking..." : "Check they're still open"}
+          <button type="button" disabled={deciding} onClick={() => void decide(true)}>
+            {deciding ? <span className="spinner" aria-hidden="true" /> : null}
+            Approve all ({rows.length})
           </button>
-          <span className="muted-text">Jobs whose listing has closed move to Skipped.</span>
+          <button type="button" className="secondary-button" disabled={deciding || selected.size === 0} onClick={() => void decide(true, [...selected])}>
+            Approve selected{selected.size ? ` (${selected.size})` : ""}
+          </button>
+          <button type="button" className="ghost-button" disabled={deciding || selected.size === 0} onClick={() => void decide(false, [...selected])}>
+            Dismiss selected
+          </button>
         </div>
+      ) : null}
+
+      {tab === "to_apply" && rows.length > 0 ? (
+        <div className="action-row">
+          <button type="button" onClick={() => setShowBatch((open) => !open)}>
+            {showBatch ? "Hide instructions" : `Apply to all ${rows.length} with Claude`}
+          </button>
+          {groups.to_apply.some((item) => item.job_id) ? (
+            <button type="button" className="secondary-button" disabled={checking} onClick={() => void checkStillOpen()}>
+              {checking ? <span className="spinner" aria-hidden="true" /> : null}
+              {checking ? "Checking..." : "Check they're still open"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {tab === "to_apply" && showBatch && rows.length > 0 ? (
+        <section className="panel">
+          <h2>Apply to your whole list with Claude</h2>
+          <ol className="steps">
+            <li>Open Claude in Chrome on this page and paste these instructions.</li>
+            <li>Claude works down your list, filling in each application from your details and stopping before Submit.</li>
+            <li>Check each one and press Submit. Claude marks it as applied and moves on to the next.</li>
+          </ol>
+          <CopyBlock label="Instructions for Claude" text={batchInstructions(origin, Math.min(rows.length, 10))} rows={14} />
+        </section>
       ) : null}
 
       {rows.length === 0 ? (
         <EmptyState
-          title={tab === "to_apply" ? "Nothing to apply for yet" : tab === "applied" ? "No applications yet" : "Nothing skipped"}
+          title={
+            tab === "suggested"
+              ? "No new matches right now"
+              : tab === "to_apply"
+                ? "Nothing to apply for yet"
+                : tab === "applied"
+                  ? "No applications yet"
+                  : "Nothing skipped"
+          }
           message={
-            tab === "to_apply"
-              ? "Add your top matches above, or pick jobs from the Jobs page."
+            tab === "suggested"
+              ? "Your daily search adds new jobs here each weekday morning. You can also run it now from the Daily search page."
+              : tab === "to_apply"
+              ? "Approve some new matches, add your top matches above, or pick jobs from the Jobs page."
               : tab === "applied"
                 ? "Jobs you apply for, here or on other sites, will show up here."
                 : "Jobs you skip are kept here in case you change your mind."
@@ -244,6 +336,16 @@ export default function ApplicationsPage() {
             <table className="data-table stack-table">
               <thead>
                 <tr>
+                  {tab === "suggested" ? (
+                    <th className="select-cell">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all new matches"
+                        checked={rows.every((item) => selected.has(item.id))}
+                        onChange={(event) => setSelected(event.target.checked ? new Set(rows.map((item) => item.id)) : new Set())}
+                      />
+                    </th>
+                  ) : null}
                   <th>Job</th>
                   <th>{tab === "applied" ? "Applied" : "Match"}</th>
                   <th>{tab === "applied" ? "Progress" : "Where"}</th>
@@ -253,6 +355,16 @@ export default function ApplicationsPage() {
               <tbody>
                 {rows.map((item) => (
                   <tr key={item.id}>
+                    {tab === "suggested" ? (
+                      <td className="select-cell">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${item.title}`}
+                          checked={selected.has(item.id)}
+                          onChange={(event) => toggle(item.id, event.target.checked)}
+                        />
+                      </td>
+                    ) : null}
                     <td data-label="Job">
                       <div className="job-cell">
                         {item.job_id ? (
@@ -282,7 +394,7 @@ export default function ApplicationsPage() {
                             <RecommendationBadge tier={item.recommendation_tier} />
                           </div>
                         ) : (
-                          <span className="muted-text">Not scored</span>
+                          <span className="muted-text">{item.source === "linkedin" || item.source === "indeed" ? "Picked by Claude" : "Not scored"}</span>
                         )}
                       </td>
                     )}
@@ -316,12 +428,21 @@ export default function ApplicationsPage() {
                             Apply with Claude
                           </Link>
                         ) : null}
+                        {tab === "suggested" ? (
+                          <button type="button" className="compact-button" disabled={deciding} onClick={() => void decide(true, [item.id])}>
+                            Approve
+                          </button>
+                        ) : null}
                         <details className="menu">
                           <summary className="icon-button" aria-label={`More actions for ${item.title}`}>
                             ⋯
                           </summary>
                           <div className="menu-panel">
-                            {tab === "to_apply" ? (
+                            {tab === "suggested" ? (
+                              <button type="button" onClick={(event) => closeMenuAfter(event, () => void decide(false, [item.id]))}>
+                                Dismiss
+                              </button>
+                            ) : tab === "to_apply" ? (
                               <>
                                 <button type="button" onClick={(event) => closeMenuAfter(event, () => void update(item, "applied", "Marked as applied."))}>
                                   Mark as applied
@@ -425,4 +546,23 @@ function LogApplicationForm({ onSaved }: { onSaved: (status: ApplicationStatus) 
 function closeMenuAfter(event: React.MouseEvent<HTMLButtonElement>, action: () => void) {
   event.currentTarget.closest("details")?.removeAttribute("open");
   action();
+}
+
+function batchInstructions(origin: string, limit: number): string {
+  return [
+    "Please help me apply for the jobs on my apply list, one at a time, while I watch.",
+    "",
+    `1. Open my apply list: ${origin}/applications (the "To apply" tab).`,
+    "2. For each job, starting from the top:",
+    "   - Click \"Apply with Claude\". That page has my details, my CV and the job description. Read it, but don't change anything on it.",
+    "   - Open the job listing from that page. If the listing has closed, go back, click \"Skip\" and move on to the next job.",
+    "   - Fill in the application using only my details. Answer screening questions honestly from my CV. If a question isn't covered, ask me.",
+    "   - For a cover letter or \"why this job\" box, write a short, specific answer (under 150 words) in plain British English with no emojis.",
+    "   - If it needs my CV file, tell me and I'll attach it. If it asks me to create an account or shows a CAPTCHA, stop and ask me.",
+    "   - Don't press the final Submit or Apply button. Tell me it's ready, and wait for me to check and submit it.",
+    "   - After I've submitted, go back to the job's Apply with Claude page, click \"I've applied\", then start the next job.",
+    `3. Stop after ${limit} applications, or sooner if I say so.`,
+    "",
+    "Don't message anyone, follow companies, or change any of my profiles or settings."
+  ].join("\n");
 }

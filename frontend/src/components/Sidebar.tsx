@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { authApi, type Account } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { api, authApi, type Account } from "@/lib/api";
 import { clearToken } from "@/lib/session";
 
 const navGroups = [
@@ -13,7 +14,7 @@ const navGroups = [
       { href: "/jobs", label: "Jobs" },
       { href: "/saved", label: "Saved" },
       { href: "/applications", label: "Applications" },
-      { href: "/linkedin-indeed", label: "LinkedIn & Indeed" }
+      { href: "/daily-search", label: "Daily search" }
     ]
   },
   {
@@ -38,6 +39,26 @@ const navGroups = [
 
 export function Sidebar({ account }: { account: Account | null }) {
   const pathname = usePathname();
+  const [newMatches, setNewMatches] = useState(0);
+
+  // Count of jobs waiting in New matches, refreshed on navigation and when the apply list changes.
+  useEffect(() => {
+    if (!account) {
+      return;
+    }
+    let active = true;
+    const load = () =>
+      api
+        .applicationCounts()
+        .then((counts) => active && setNewMatches(counts.suggested ?? 0))
+        .catch(() => undefined);
+    void load();
+    window.addEventListener("applications-changed", load);
+    return () => {
+      active = false;
+      window.removeEventListener("applications-changed", load);
+    };
+  }, [account, pathname]);
 
   const signOut = async () => {
     try {
@@ -75,6 +96,11 @@ export function Sidebar({ account }: { account: Account | null }) {
                   aria-current={active ? "page" : undefined}
                 >
                   {item.label}
+                  {item.href === "/applications" && newMatches > 0 ? (
+                    <span className="nav-badge" aria-label={`${newMatches} new matches`}>
+                      {newMatches}
+                    </span>
+                  ) : null}
                 </Link>
               );
             })}

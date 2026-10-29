@@ -20,6 +20,12 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: REED_API_KEY
+        sync: false
+      - key: ADZUNA_APP_ID
+        sync: false
+      - key: ADZUNA_APP_KEY
+        sync: false
       - key: CORS_ORIGINS
         sync: false
       - key: AI_PROVIDER
@@ -71,6 +77,12 @@ services:
       - key: SERVICE_TYPE
         value: worker
       - key: DATABASE_URL
+        sync: false
+      - key: REED_API_KEY
+        sync: false
+      - key: ADZUNA_APP_ID
+        sync: false
+      - key: ADZUNA_APP_KEY
         sync: false
       - key: AI_PROVIDER
         value: groq
