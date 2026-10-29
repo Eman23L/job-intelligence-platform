@@ -46,6 +46,13 @@ const REQUEST_TIMEOUT_MS = 10000;
 const DASHBOARD_REQUEST_TIMEOUT_MS = 20000;
 const JOBS_REQUEST_TIMEOUT_MS = 20000;
 const SOURCES_REQUEST_TIMEOUT_MS = 20000;
+// The backend sleeps after a while without visits (Render's free plan) and takes up to a
+// minute to start again, so requests first wait for it to answer /health.
+const WAKE_TIMEOUT_MS = 120_000;
+const WAKE_PROBE_TIMEOUT_MS = 10_000;
+const ASSUME_ASLEEP_AFTER_MS = 10 * 60_000;
+let serverReady: Promise<void> | null = null;
+let lastResponseAt = 0;
 
 export const apiConfig = {
   baseUrl: API_BASE_URL,
@@ -69,10 +76,65 @@ export class ApiError extends Error {
   }
 }
 
+function waitForServer(): Promise<void> {
+  if (Date.now() - lastResponseAt > ASSUME_ASLEEP_AFTER_MS) {
+    serverReady = null;
+  }
+  if (!serverReady) {
+    serverReady = probeUntilAwake().catch((error) => {
+      serverReady = null;
+      throw error;
+    });
+  }
+  return serverReady;
+}
+
+async function probeUntilAwake(): Promise<void> {
+  const deadline = Date.now() + WAKE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const controller = new AbortController();
+    const timeoutId = globalThis.setTimeout(() => controller.abort(), WAKE_PROBE_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${API_BASE_URL}/health`, { cache: "no-store", signal: controller.signal });
+      if (response.ok) {
+        lastResponseAt = Date.now();
+        return;
+      }
+    } catch {
+      // Still starting up.
+    } finally {
+      globalThis.clearTimeout(timeoutId);
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 2000));
+  }
+  throw new ApiError("The server is taking too long to start. Try again in a minute.", 0);
+}
+
+function isConnectionFailure(error: unknown): boolean {
+  // Timeouts surface as status 0; a dropped or refused connection makes fetch throw a TypeError.
+  return (error instanceof ApiError && error.status === 0) || error instanceof TypeError;
+}
+
 async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   if (!API_BASE_URL) {
     throw new ApiError("NEXT_PUBLIC_API_BASE_URL is required in production", 0);
   }
+  await waitForServer();
+  try {
+    return await sendRequest<T>(path, init);
+  } catch (error) {
+    // The server may have gone back to sleep: wait for it, then retry reads once.
+    if ((init?.method ?? "GET").toUpperCase() === "GET" && isConnectionFailure(error)) {
+      serverReady = null;
+      lastResponseAt = 0;
+      await waitForServer();
+      return sendRequest<T>(path, init);
+    }
+    throw error;
+  }
+}
+
+async function sendRequest<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const { timeoutMs: configuredTimeoutMs, ...fetchInit } = init ?? {};
   const timeoutMs = configuredTimeoutMs ?? REQUEST_TIMEOUT_MS;
   const url = `${API_BASE_URL}${path}`;
@@ -94,6 +156,7 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
       cache: "no-store",
       signal: controller.signal
     });
+    lastResponseAt = Date.now();
 
     if (response.status === 401 && !path.startsWith("/auth/")) {
       // Session expired or revoked: send the user back to sign in.
@@ -142,6 +205,7 @@ async function request<T>(path: string, init?: RequestInit & { timeoutMs?: numbe
 
 // Fetch a file with the signed-in token and hand it to the browser as a download.
 async function downloadFile(path: string): Promise<string> {
+  await waitForServer();
   const token = getToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
