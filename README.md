@@ -225,6 +225,7 @@ The app doesn't submit applications itself. Claude in Chrome fills in each form 
     - applies straight away to jobs you queued and to JobServe jobs at or above the score you allow on My CV ("On JobServe, Claude applies without asking to jobs matching…");
     - searches LinkedIn (Easy Apply) and Indeed for your roles, shows one numbered list with the "ask first" jobs, and waits for "approve all" or the numbers you pick;
     - applies on each site with the CV saved there, skipping anything that needs a company website, a new account, a CAPTCHA or an answer your details don't cover;
+    - never applies to your current employer (taken from the job on your CV that runs "to present"), under any name it trades under or through an agency that names it, so they don't find out;
     - records each application on Claude's daily page and ends with a report. At most 10 applications per run.
 
 **Keeping the CV current.** Every 2 days, at the start of the daily run, Claude checks for anything new: the notes you leave under "Anything new for your CV?" on My CV, new or updated repositories on the GitHub linked from your CV, and what it knows of your recent work. It adds only what it has evidence for and keeps your name, contact details, employers, titles and dates as they are. It then saves the whole updated CV and a line for each change on Claude's daily page. The app:

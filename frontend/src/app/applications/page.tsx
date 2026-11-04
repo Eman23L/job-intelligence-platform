@@ -163,6 +163,7 @@ export default function ApplicationsPage() {
     ? "remote"
     : profile?.search_location || profile?.location_preference?.split("/")[0]?.trim() || "the UK";
   const github = profile?.cv_text?.match(/github\.com\/([A-Za-z0-9-]+)/i)?.[1] ?? null;
+  const employer = currentEmployer(profile?.cv_text ?? "");
 
   return (
     <div className="page-stack">
@@ -208,7 +209,7 @@ export default function ApplicationsPage() {
                 want, and it applies and reports back.
               </li>
             </ol>
-            <CopyBlock label="Instructions for Claude" text={claudeInstructions(origin, roles, place, github)} rows={14} />
+            <CopyBlock label="Instructions for Claude" text={claudeInstructions(origin, roles, place, github, employer)} rows={14} />
           </>
         ) : null}
       </section>
@@ -506,7 +507,28 @@ function WeeklyReport({ items }: { items: Application[] }) {
   );
 }
 
-function claudeInstructions(origin: string, roles: string[], place: string, github: string | null): string {
+// The employer of the job on the CV that runs to the present, e.g. "Software Engineer, Acme, UK (2021 to present)" gives "Acme".
+function currentEmployer(cvText: string): string | null {
+  for (const raw of cvText.split("\n")) {
+    const line = raw.trim();
+    if (line.length > 160 || /^[-*•]/.test(line) || !/\b(present|current|now)\b/i.test(line)) {
+      continue;
+    }
+    const head = line
+      .replace(/\([^()]*\)\s*$/, "")
+      .replace(/\b(19|20)\d{2}\b.*$/, "")
+      .replace(/[\s,|:\u2013\u2014-]+$/, "")
+      .trim();
+    const at = head.match(/\bat\s+(.+)$/i);
+    const name = (at ? at[1] : head.split(/\s*[,|]\s*/)[1])?.trim();
+    if (name && name.length > 1 && name.length < 60) {
+      return name;
+    }
+  }
+  return null;
+}
+
+function claudeInstructions(origin: string, roles: string[], place: string, github: string | null, employer: string | null): string {
   const wanted = roles.length ? roles.join(", ") : "the roles on my CV";
   const where = place === "remote" ? "remote" : `near ${place}`;
   const repos = github ? `new or updated repositories on github.com/${github} (read their READMEs)` : "my GitHub, if my CV links to it";
@@ -527,6 +549,7 @@ function claudeInstructions(origin: string, roles: string[], place: string, gith
     "6. Apply to the ones I approve.",
     "",
     "How to apply to each job:",
+    `- Never apply to a job at my current employer (from the job on my CV that runs to the present${employer ? `: ${employer}` : ""}) or any other name it trades under, even if it's marked "Apply automatically". That includes agency jobs that name them or clearly describe them. Skip these and note why.`,
     "- Use the site's own application (JobServe's Apply, LinkedIn Easy Apply, Indeed's Apply) and the CV already saved on that site.",
     "- Fill in every field from my details only. Answer screening questions honestly from my CV, and never invent experience, qualifications or numbers.",
     '- For a cover letter or "why this job" box, write under 150 words, specific to the job, in plain British English with no emojis.',
