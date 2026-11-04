@@ -113,6 +113,7 @@ class UserProfileRead(ORMModel):
     search_roles: list[str] | None = None
     search_location: str | None = None
     search_remote_only: bool = False
+    auto_apply_min_score: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -121,6 +122,8 @@ class SearchPreferencesUpdate(BaseModel):
     roles: list[str] = Field(max_length=5)
     location: str | None = Field(default=None, max_length=255)
     remote_only: bool = False
+    # None means Claude always asks before applying.
+    auto_apply_min_score: int | None = Field(default=None, ge=0, le=100)
 
 
 class ExcludedTechnologyBase(BaseModel):

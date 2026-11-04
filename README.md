@@ -219,7 +219,12 @@ The app doesn't submit applications itself. Claude in Chrome fills in each form 
 
 1. **My CV**: add your CV (file and text), then say which roles you want (up to five, even ones your CV doesn't show yet) and where. Saving runs a search straight away.
 2. **Find jobs**: the jobs found for those roles in the last two weeks, best match to your CV first, with a **New search** button. The search also runs on the worker at 6:30am UK time every weekday. A job is listed when its title contains every key word of one of your roles (close synonyms count: data also covers analytics and BI, AI also covers machine learning). Press **Apply** on a job or **Apply to all** to queue them for Claude, or **Not for me** to hide one.
-3. **Applications**: jobs queued for Claude, and the ones you've applied for, with how each is going. "Show instructions for Claude" gives Claude in Chrome one set of instructions: work through the queue (each job's **Apply now** page has your details, your CV and the description), then apply on LinkedIn and Indeed for your roles and log each one. Save them as a Claude in Chrome shortcut and schedule it daily to have it run every morning. When Claude marks a job as applied it shows as **✓ Applied** on Find jobs too.
+3. **Applications**: jobs queued for Claude, the ones you've applied for (with a 7-day report), and how each is going. "Set up the daily run" gives one set of instructions for Claude in Chrome, saved as a shortcut and scheduled every weekday. Each run Claude:
+    - works from **Claude's daily page** (`/claude`): your details, CV, the jobs you want, and today's jobs from your searches;
+    - applies straight away to jobs you queued and to JobServe jobs at or above the score you allow on My CV ("On JobServe, Claude applies without asking to jobs matching…");
+    - searches LinkedIn (Easy Apply) and Indeed for your roles, shows one numbered list with the "ask first" jobs, and waits for "approve all" or the numbers you pick;
+    - applies on each site with the CV saved there, skipping anything that needs a company website, a new account, a CAPTCHA or an answer your details don't cover;
+    - records each application on Claude's daily page and ends with a report. At most 10 applications per run.
 
 Reed and Adzuna need free API keys: set `REED_API_KEY`, `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` on both Render services. Each person's lists are private to them. Older tools (overview, all jobs, AI advisor, skill gaps, salary, sources, activity) are under **More tools** in the menu.
 

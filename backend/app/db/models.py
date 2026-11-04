@@ -132,6 +132,8 @@ class UserProfile(Base):
     search_roles: Mapped[list[str] | None] = mapped_column(JSON)
     search_location: Mapped[str | None] = mapped_column(String(255))
     search_remote_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    # Claude applies to JobServe jobs scoring at least this without asking first; None means always ask.
+    auto_apply_min_score: Mapped[int | None] = mapped_column(Integer)
     search_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     search_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     location_preference: Mapped[str | None] = mapped_column(String(255))

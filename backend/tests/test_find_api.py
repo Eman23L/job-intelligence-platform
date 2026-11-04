@@ -25,8 +25,13 @@ def test_find_lists_jobs_for_the_chosen_roles_and_tracks_what_was_done(monkeypat
     monkeypatch.setattr(discovery_api, "enqueue_or_background", lambda _tasks, _func, *args, **_kw: queued.append(args))
     with phase6_client() as (client, ids):
         client.post("/profile/cv", json={"cv_text": "Warehouse supervisor. Skills: forklift, stock control"})
-        saved = client.post("/profile/search", json={"roles": ["Data Engineer", " data engineer ", "AI Engineer"], "location": "Leeds", "remote_only": False})
+        saved = client.post(
+            "/profile/search",
+            json={"roles": ["Data Engineer", " data engineer ", "AI Engineer"], "location": "Leeds", "remote_only": False, "auto_apply_min_score": 75},
+        )
         assert saved.json()["search_roles"] == ["Data Engineer", "AI Engineer"]
+        assert saved.json()["auto_apply_min_score"] == 75
+        assert client.post("/profile/search", json={"roles": ["Data Engineer"], "auto_apply_min_score": 101}).status_code == 422
         db = _db()
         # A copy of the same role on another board is shown once.
         original = db.get(Job, ids["excellent"])

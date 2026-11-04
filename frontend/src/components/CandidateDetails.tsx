@@ -34,7 +34,7 @@ export function CandidateDetails({ candidate }: { candidate: Candidate }) {
       </div>
       {missing.length ? (
         <div className="notice-banner warning">
-          Missing: {missing.join(", ")}. <Link href="/profile">Add them on your Profile</Link> so Claude can fill them in.
+          Missing: {missing.join(", ")}. <Link href="/profile">Add them on My CV</Link> so Claude can fill them in.
         </div>
       ) : null}
       <dl className="detail-list">
@@ -47,7 +47,7 @@ export function CandidateDetails({ candidate }: { candidate: Candidate }) {
         ))}
         <div className="detail-row">
           <dt>CV file</dt>
-          <dd>{candidate.cv_file_name ?? <span className="muted-text">No file uploaded. Add one on your Profile.</span>}</dd>
+          <dd>{candidate.cv_file_name ?? <span className="muted-text">No file uploaded. Add one on My CV.</span>}</dd>
           <span />
         </div>
       </dl>
@@ -60,7 +60,7 @@ export function CvPanel({ cvText }: { cvText: string | null }) {
     <section className="panel">
       <h2>Your CV</h2>
       <p className="muted-text">For writing cover notes and answering questions about your experience.</p>
-      <p className="description cv-text">{cvText ?? "No CV saved yet. Add it on your Profile."}</p>
+      <p className="description cv-text">{cvText ?? "No CV saved yet. Add it on My CV."}</p>
     </section>
   );
 }

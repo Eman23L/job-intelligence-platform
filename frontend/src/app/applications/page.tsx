@@ -168,10 +168,10 @@ export default function ApplicationsPage() {
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>Let Claude apply for you</h2>
+            <h2>Let Claude apply for you every day</h2>
             <p className="muted-text">
-              Claude works in your own Chrome: it applies to your queued jobs, then finds more on LinkedIn and Indeed. It fills in each
-              form, you press Submit, and each one shows up as Applied here.
+              One daily run in your own Chrome: Claude applies to the JobServe jobs you&apos;ve allowed, finds more on LinkedIn and Indeed,
+              asks you to approve them, applies, and gives you a report. Everything it applies for shows up here.
             </p>
           </div>
           <button
@@ -179,20 +179,31 @@ export default function ApplicationsPage() {
             className={groups.queued.length ? undefined : "secondary-button"}
             onClick={() => setShowInstructions((open) => !open)}
           >
-            {showInstructions ? "Hide instructions" : "Show instructions for Claude"}
+            {showInstructions ? "Hide setup" : "Set up the daily run"}
           </button>
         </div>
         {showInstructions ? (
           <>
             <ol className="steps">
-              <li>In Chrome, sign in to LinkedIn and Indeed, then open the Claude in Chrome side panel.</li>
-              <li>Copy the instructions below and paste them into Claude.</li>
               <li>
-                To have it run every morning, save the instructions as a shortcut in Claude in Chrome and schedule it daily with the clock
-                icon. It runs while Chrome is open and your computer is on.
+                In Chrome, sign in to JobServe, LinkedIn and Indeed, and upload your latest CV to each. Claude uses the CV saved on each
+                site.
+              </li>
+              <li>
+                Choose which JobServe jobs Claude can apply to without asking on <Link href="/profile#wanted">My CV</Link>. Claude works
+                from <Link href="/claude">Claude&apos;s daily page</Link>.
+              </li>
+              <li>Open the Claude in Chrome side panel, paste the instructions below and run them once while you watch.</li>
+              <li>
+                Save them as a shortcut and schedule it every weekday (for example 9am, after the 6:30am search) with the clock icon. It
+                runs while Chrome is open and your computer is on.
+              </li>
+              <li>
+                Each run Claude shows you the LinkedIn and Indeed jobs it found. Reply <strong>approve all</strong>, or the numbers you
+                want, and it applies and reports back.
               </li>
             </ol>
-            <CopyBlock label="Instructions for Claude" text={claudeInstructions(origin, roles, place)} rows={12} />
+            <CopyBlock label="Instructions for Claude" text={claudeInstructions(origin, roles, place)} rows={14} />
           </>
         ) : null}
       </section>
@@ -229,6 +240,8 @@ export default function ApplicationsPage() {
           <span className="muted-text">Jobs whose listing has closed are removed.</span>
         </div>
       ) : null}
+
+      {tab === "applied" ? <WeeklyReport items={groups.applied} /> : null}
 
       {tab === "applied" ? (
         <div className="action-row">
@@ -467,27 +480,52 @@ function closeMenuAfter(event: React.MouseEvent<HTMLButtonElement>, action: () =
   action();
 }
 
+function WeeklyReport({ items }: { items: Application[] }) {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const recent = items.filter((item) => item.applied_at && new Date(item.applied_at).getTime() >= since);
+  const bySite = recent.reduce<Record<string, number>>((totals, item) => {
+    const site = SOURCE_LABELS[item.source] ?? item.source;
+    totals[site] = (totals[site] ?? 0) + 1;
+    return totals;
+  }, {});
+  return (
+    <div className="notice-banner info">
+      <strong>Last 7 days:</strong> {recent.length} {recent.length === 1 ? "application" : "applications"}
+      {recent.length
+        ? ` (${Object.entries(bySite)
+            .map(([site, count]) => `${site} ${count}`)
+            .join(" · ")})`
+        : ""}
+      .
+    </div>
+  );
+}
+
 function claudeInstructions(origin: string, roles: string[], place: string): string {
   const wanted = roles.length ? roles.join(", ") : "the roles on my CV";
+  const where = place === "remote" ? "remote" : `near ${place}`;
   return [
-    "Please help me apply for jobs, one at a time.",
+    "Daily job applications. Use this Chrome window, where I'm signed in to JobServe, LinkedIn and Indeed.",
     "",
-    "Part 1: the jobs I've queued",
-    `1. Open ${origin}/applications. The "Queued for Claude" tab lists the jobs I've chosen.`,
-    "2. For each job, from the top:",
-    '   - Click "Apply now". That page has my details, my CV and the job description. Read it, but don\'t change anything on it.',
-    '   - Open the job listing from that page. If it has closed, go back, click "Skip" and move on.',
-    "   - Fill in the application using only my details. Answer screening questions honestly from my CV. If a question isn't covered, ask me.",
-    '   - For a cover letter or "why this job" box, write a short, specific answer (under 150 words) in plain British English with no emojis.',
-    "   - If it needs my CV file, tell me and I'll attach it. If it asks me to create an account or shows a CAPTCHA, stop and ask me.",
-    "   - Don't press the final Submit or Apply button. Tell me it's ready and wait for me to submit it.",
-    "   - After I've submitted, click \"I've applied\" on the job's page, then start the next one.",
+    `1. Open ${origin}/claude. It has my details, my CV, the jobs I want and today's jobs from my searches. Use only the details on that page, and don't change anything there except with the buttons these steps mention.`,
+    '2. Apply straight away to every job marked "Apply automatically" under "Today\'s jobs".',
+    "3. Then find more:",
+    `   - LinkedIn Jobs: search each of these roles ${where}, Easy Apply only, posted in the past 24 hours: ${wanted}.`,
+    `   - Indeed: search the same roles ${where}, posted in the last day.`,
+    "   Leave out anything that isn't one of those roles, or that's already under \"Applied in the last 7 days\".",
+    '4. Show me one numbered list of the LinkedIn and Indeed jobs plus the "Ask first" jobs on my page: title, company, site, and one line on why it fits. Ask me: "Reply \'approve all\', or the numbers to apply for." Wait for my reply.',
+    "5. Apply to the ones I approve.",
     "",
-    "Part 2: LinkedIn and Indeed",
-    `3. Search LinkedIn Jobs (Easy Apply, past week) and Indeed (last 7 days) for: ${wanted}, ${place === "remote" ? "remote" : `near ${place}`}.`,
-    "4. Apply to the ones that are one of those roles, the same way as Part 1. Skip any that clearly aren't, and tell me in one line why.",
-    `5. After I've submitted each one, open ${origin}/applications, go to the Applied tab, click "Add a job you applied for", and save the job title, company and link, with Found on set to LinkedIn or Indeed.`,
+    "How to apply to each job:",
+    "- Use the site's own application (JobServe's Apply, LinkedIn Easy Apply, Indeed's Apply) and the CV already saved on that site.",
+    "- Fill in every field from my details only. Answer screening questions honestly from my CV, and never invent experience, qualifications or numbers.",
+    '- For a cover letter or "why this job" box, write under 150 words, specific to the job, in plain British English with no emojis.',
+    "- If it sends you to a company website, needs a new account, shows a CAPTCHA, needs a file the site doesn't already have, or asks something my details don't cover, don't guess: skip it and note why.",
+    "- Otherwise check the answers and submit.",
+    `- Record it on ${origin}/claude: "Mark as applied" next to a job from my page, or "Log a LinkedIn or Indeed application" for the others. Use "Skip" for a job from my page that you skipped.`,
     "",
-    "Stop after 10 applications in total, or sooner if I say so. Don't message anyone, follow companies, or change any of my profiles or settings."
+    "6. Finish with a short report: what you applied for (title, company, site), what you skipped and why, and anything that needs me.",
+    "",
+    "Apply to no more than 10 jobs in one run. Don't message anyone, follow companies, change my profiles or settings, or pay for anything."
   ].join("\n");
 }
