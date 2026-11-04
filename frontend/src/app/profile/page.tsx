@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
+import { CvUpdates } from "@/components/CvUpdates";
 import { ErrorState } from "@/components/ErrorState";
 import { LoadingState } from "@/components/LoadingState";
 import { SkillBadge } from "@/components/SkillBadge";
@@ -162,6 +163,16 @@ export default function ProfilePage() {
             </button>
           </div>
         </form>
+        {profile?.cv_text ? (
+          <CvUpdates
+            key={profile.updated_at}
+            onProfileChange={(saved, message) => {
+              setProfile(saved);
+              setCvText(saved.cv_text);
+              setNotice(message);
+            }}
+          />
+        ) : null}
       </section>
 
       <section className="panel" id="wanted">

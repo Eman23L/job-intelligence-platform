@@ -347,6 +347,29 @@ export interface UserProfile {
   search_remote_only: boolean;
   /** Claude applies to JobServe jobs scoring at least this without asking; null = always ask. */
   auto_apply_min_score: number | null;
+  /** News for the CV that Claude adds at its next refresh. */
+  cv_notes: string | null;
+  cv_checked_at: string | null;
+}
+
+export type CvChangedBy = "claude" | "you" | "undo";
+
+/** A CV as it was before a change, so the change can be undone. */
+export interface CvVersion {
+  id: number;
+  changed_by: CvChangedBy;
+  change_note: string;
+  cv_file_name: string | null;
+  created_at: string;
+}
+
+export interface CvUpdates {
+  refresh_every_days: number;
+  due: boolean;
+  checked_at: string | null;
+  next_check_at: string | null;
+  notes: string;
+  versions: CvVersion[];
 }
 
 export interface AIChatResponse {

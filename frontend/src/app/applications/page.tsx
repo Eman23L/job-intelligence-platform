@@ -162,6 +162,7 @@ export default function ApplicationsPage() {
   const place = profile?.search_remote_only
     ? "remote"
     : profile?.search_location || profile?.location_preference?.split("/")[0]?.trim() || "the UK";
+  const github = profile?.cv_text?.match(/github\.com\/([A-Za-z0-9-]+)/i)?.[1] ?? null;
 
   return (
     <div className="page-stack">
@@ -170,8 +171,9 @@ export default function ApplicationsPage() {
           <div>
             <h2>Let Claude apply for you every day</h2>
             <p className="muted-text">
-              One daily run in your own Chrome: Claude applies to the JobServe jobs you&apos;ve allowed, finds more on LinkedIn and Indeed,
-              asks you to approve them, applies, and gives you a report. Everything it applies for shows up here.
+              One daily run in your own Chrome: every 2 days Claude first brings your CV up to date, then it applies to the JobServe jobs
+              you&apos;ve allowed, finds more on LinkedIn and Indeed, asks you to approve them, applies, and gives you a report. Everything
+              it applies for shows up here.
             </p>
           </div>
           <button
@@ -193,7 +195,10 @@ export default function ApplicationsPage() {
                 Choose which JobServe jobs Claude can apply to without asking on <Link href="/profile#wanted">My CV</Link>. Claude works
                 from <Link href="/claude">Claude&apos;s daily page</Link>.
               </li>
-              <li>Open the Claude in Chrome side panel, paste the instructions below and run them once while you watch.</li>
+              <li>
+                Open the Claude in Chrome side panel, paste the instructions below and run them once while you watch. Already set up?
+                Replace your saved shortcut with these, which now include the CV refresh.
+              </li>
               <li>
                 Save them as a shortcut and schedule it every weekday (for example 9am, after the 6:30am search) with the clock icon. It
                 runs while Chrome is open and your computer is on.
@@ -203,7 +208,7 @@ export default function ApplicationsPage() {
                 want, and it applies and reports back.
               </li>
             </ol>
-            <CopyBlock label="Instructions for Claude" text={claudeInstructions(origin, roles, place)} rows={14} />
+            <CopyBlock label="Instructions for Claude" text={claudeInstructions(origin, roles, place, github)} rows={14} />
           </>
         ) : null}
       </section>
@@ -501,20 +506,25 @@ function WeeklyReport({ items }: { items: Application[] }) {
   );
 }
 
-function claudeInstructions(origin: string, roles: string[], place: string): string {
+function claudeInstructions(origin: string, roles: string[], place: string, github: string | null): string {
   const wanted = roles.length ? roles.join(", ") : "the roles on my CV";
   const where = place === "remote" ? "remote" : `near ${place}`;
+  const repos = github ? `new or updated repositories on github.com/${github} (read their READMEs)` : "my GitHub, if my CV links to it";
   return [
     "Daily job applications. Use this Chrome window, where I'm signed in to JobServe, LinkedIn and Indeed.",
     "",
     `1. Open ${origin}/claude. It has my details, my CV, the jobs I want and today's jobs from my searches. Use only the details on that page, and don't change anything there except with the buttons these steps mention.`,
-    '2. Apply straight away to every job marked "Apply automatically" under "Today\'s jobs".',
-    "3. Then find more:",
+    '2. If "Refresh my CV" on that page says it\'s due, update my CV before applying:',
+    `   - Look for anything new since it was last checked: the news from me shown there, ${repos}, and anything you remember about my recent work from our chats. Don't use emails or other websites for this.`,
+    "   - Add only what you've seen evidence of: new projects, tools I've actually used, courses, certificates, a new role. Keep everything else exactly as it is: my name, contact details, employers, job titles and dates. Never invent numbers, dates, skills or results.",
+    '   - Edit "My whole updated CV", write each change on its own line under "What changed", and press "Save updated CV". If there\'s nothing worth adding, press "Nothing new".',
+    '3. Apply straight away to every job marked "Apply automatically" under "Today\'s jobs".',
+    "4. Then find more:",
     `   - LinkedIn Jobs: search each of these roles ${where}, Easy Apply only, posted in the past 24 hours: ${wanted}.`,
     `   - Indeed: search the same roles ${where}, posted in the last day.`,
     "   Leave out anything that isn't one of those roles, or that's already under \"Applied in the last 7 days\".",
-    '4. Show me one numbered list of the LinkedIn and Indeed jobs plus the "Ask first" jobs on my page: title, company, site, and one line on why it fits. Ask me: "Reply \'approve all\', or the numbers to apply for." Wait for my reply.',
-    "5. Apply to the ones I approve.",
+    '5. Show me one numbered list of the LinkedIn and Indeed jobs plus the "Ask first" jobs on my page: title, company, site, and one line on why it fits. Ask me: "Reply \'approve all\', or the numbers to apply for." Wait for my reply.',
+    "6. Apply to the ones I approve.",
     "",
     "How to apply to each job:",
     "- Use the site's own application (JobServe's Apply, LinkedIn Easy Apply, Indeed's Apply) and the CV already saved on that site.",
@@ -524,7 +534,7 @@ function claudeInstructions(origin: string, roles: string[], place: string): str
     "- Otherwise check the answers and submit.",
     `- Record it on ${origin}/claude: "Mark as applied" next to a job from my page, or "Log a LinkedIn or Indeed application" for the others. Use "Skip" for a job from my page that you skipped.`,
     "",
-    "6. Finish with a short report: what you applied for (title, company, site), what you skipped and why, and anything that needs me.",
+    "7. Finish with a short report: what you applied for (title, company, site), what you skipped and why, and anything that needs me. If you updated my CV, say what changed and remind me to upload the new PDF from My CV to JobServe, LinkedIn and Indeed.",
     "",
     "Apply to no more than 10 jobs in one run. Don't message anyone, follow companies, change my profiles or settings, or pay for anything."
   ].join("\n");

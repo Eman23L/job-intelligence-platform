@@ -114,6 +114,8 @@ class UserProfileRead(ORMModel):
     search_location: str | None = None
     search_remote_only: bool = False
     auto_apply_min_score: int | None = None
+    cv_notes: str | None = None
+    cv_checked_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -124,6 +126,34 @@ class SearchPreferencesUpdate(BaseModel):
     remote_only: bool = False
     # None means Claude always asks before applying.
     auto_apply_min_score: int | None = Field(default=None, ge=0, le=100)
+
+
+class CvNotesUpdate(BaseModel):
+    notes: str = Field(default="", max_length=4000)
+
+
+class CvRefresh(BaseModel):
+    """Claude's CV refresh: the full updated CV and what changed, or no text when nothing was new."""
+
+    cv_text: str | None = Field(default=None, max_length=20000)
+    changes: list[str] = Field(default_factory=list, max_length=12)
+
+
+class CvVersionRead(ORMModel):
+    id: int
+    changed_by: str
+    change_note: str
+    cv_file_name: str | None = None
+    created_at: datetime
+
+
+class CvUpdatesRead(BaseModel):
+    refresh_every_days: int
+    due: bool
+    checked_at: datetime | None = None
+    next_check_at: datetime | None = None
+    notes: str
+    versions: list[CvVersionRead]
 
 
 class ExcludedTechnologyBase(BaseModel):
