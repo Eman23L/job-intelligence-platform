@@ -100,9 +100,11 @@ def user_for_token(db: Session, token: str) -> User | None:
     now = _now()
     if _aware(session.expires_at) <= now:
         return None
-    # Avoid a write on every request; a coarse "last seen" is enough.
+    # Avoid a write on every request; a coarse "last seen" is enough. Each use also pushes the expiry back, so a
+    # browser that's used regularly (like the daily Claude run) stays signed in; one left unused signs out.
     if session.last_used_at is None or now - _aware(session.last_used_at) > timedelta(hours=1):
         session.last_used_at = now
+        session.expires_at = now + timedelta(days=settings.session_days)
         db.commit()
     return user
 

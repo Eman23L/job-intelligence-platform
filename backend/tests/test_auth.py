@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 import pytest
@@ -8,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.config import settings
-from app.db.models import Base, Job, JobSource, SavedJob, User, UserProfile
+from app.db.models import AuthSession, Base, Job, JobSource, SavedJob, User, UserProfile
 from app.db.session import get_db
 from app.main import app
 from app.services.auth import hash_password, verify_password
@@ -120,6 +121,30 @@ def test_login_logout(monkeypatch) -> None:
         assert good.status_code == 200
         assert client.get("/auth/me", headers=_bearer(token)).status_code == 200
         assert client.post("/auth/logout", headers=_bearer(token)).status_code == 204
+        assert client.get("/auth/me", headers=_bearer(token)).status_code == 401
+
+
+def test_a_session_in_use_stays_signed_in(monkeypatch) -> None:
+    with auth_client(monkeypatch) as (client, Session):
+        token = _setup_owner(client)
+        now = datetime.now(tz=timezone.utc)
+
+        # Signed in 29 days ago and used every day since: still signed in, with the expiry pushed back.
+        with Session() as db:
+            session = db.scalar(select(AuthSession))
+            session.expires_at = now + timedelta(days=1)
+            session.last_used_at = now - timedelta(hours=2)
+            db.commit()
+        assert client.get("/auth/me", headers=_bearer(token)).status_code == 200
+        with Session() as db:
+            expires = db.scalar(select(AuthSession)).expires_at.replace(tzinfo=timezone.utc)
+        assert expires > now + timedelta(days=settings.session_days - 1)
+
+        # Left unused until it expired: signed out.
+        with Session() as db:
+            session = db.scalar(select(AuthSession))
+            session.expires_at = now - timedelta(minutes=1)
+            db.commit()
         assert client.get("/auth/me", headers=_bearer(token)).status_code == 401
 
 
