@@ -15,6 +15,7 @@ const mainNav = [
 ];
 
 const moreNav = [
+  { href: "/claude", label: "Claude's daily page" },
   { href: "/dashboard", label: "Overview" },
   { href: "/jobs", label: "All jobs" },
   { href: "/saved", label: "Saved" },

@@ -14,6 +14,7 @@ const pages: Record<string, { title: string; description: string }> = {
   "/jobs": { title: "All jobs", description: "Every job the searches have found, ranked by how well it fits your CV." },
   "/saved": { title: "Saved jobs", description: "Roles you've shortlisted and where each one stands." },
   "/applications": { title: "Applications", description: "Jobs queued for Claude, and the ones you've applied for." },
+  "/claude": { title: "Claude's daily page", description: "What Claude in Chrome works from on its daily run: your details, today's jobs, and where to record each application." },
   "/find": { title: "Find jobs", description: "Jobs found for the roles you want. Apply to one, or to all of them." },
   "/ai": { title: "AI Advisor", description: "Ask questions about your matches, skills and next steps." },
   "/missing-skills": { title: "Skill gaps", description: "Skills employers ask for that aren't on your profile yet." },

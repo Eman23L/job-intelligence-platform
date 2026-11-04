@@ -21,6 +21,7 @@ export default function ProfilePage() {
   const [roles, setRoles] = useState("");
   const [place, setPlace] = useState("");
   const [remoteOnly, setRemoteOnly] = useState(false);
+  const [autoScore, setAutoScore] = useState("");
   const [savingSearch, setSavingSearch] = useState(false);
   const router = useRouter();
 
@@ -69,7 +70,12 @@ export default function ProfilePage() {
         .map((role) => role.trim())
         .filter(Boolean)
         .slice(0, 5);
-      const saved = await api.saveSearchPreferences({ roles: wanted, location: place.trim() || null, remote_only: remoteOnly });
+      const saved = await api.saveSearchPreferences({
+        roles: wanted,
+        location: place.trim() || null,
+        remote_only: remoteOnly,
+        auto_apply_min_score: autoScore ? Number(autoScore) : null
+      });
       setProfile(saved);
       // Search straight away for the new roles, then show the results.
       await api.newSearch().catch(() => undefined);
@@ -176,6 +182,17 @@ export default function ProfilePage() {
             <label>
               Where
               <input value={place} placeholder="e.g. Milton Keynes" disabled={remoteOnly} onChange={(event) => setPlace(event.target.value)} />
+            </label>
+            <label>
+              On JobServe, Claude applies without asking to jobs matching
+              <select value={autoScore} onChange={(event) => setAutoScore(event.target.value)}>
+                <option value="">None: always ask me first</option>
+                {["60", "70", "80", "90"].map((value) => (
+                  <option key={value} value={value}>
+                    {value} or more
+                  </option>
+                ))}
+              </select>
             </label>
             <label className="checkbox-label form-grid-checkbox">
               <input type="checkbox" checked={remoteOnly} onChange={(event) => setRemoteOnly(event.target.checked)} />
@@ -316,6 +333,7 @@ export default function ProfilePage() {
     setRoles((source.search_roles?.length ? source.search_roles : source.preferred_roles).slice(0, 5).join(", "));
     setPlace(source.search_location ?? source.location_preference?.split("/")[0]?.trim() ?? "");
     setRemoteOnly(source.search_remote_only);
+    setAutoScore(source.auto_apply_min_score === null ? "" : String(source.auto_apply_min_score));
   }
 
   function setProfileField(key: keyof UserProfile, value: string | boolean | number | null) {

@@ -345,6 +345,8 @@ export interface UserProfile {
   search_roles: string[] | null;
   search_location: string | null;
   search_remote_only: boolean;
+  /** Claude applies to JobServe jobs scoring at least this without asking; null = always ask. */
+  auto_apply_min_score: number | null;
 }
 
 export interface AIChatResponse {

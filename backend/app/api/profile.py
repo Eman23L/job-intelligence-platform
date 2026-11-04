@@ -28,7 +28,14 @@ def save_application_profile(payload: ApplicationProfileUpdate, user: User = Dep
 @router.post("/search", response_model=UserProfileRead)
 def save_search_preferences(payload: SearchPreferencesUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """The roles and place the daily search looks for, even ones the CV doesn't show yet."""
-    return update_search_preferences(db, user, roles=payload.roles, location=payload.location, remote_only=payload.remote_only)
+    return update_search_preferences(
+        db,
+        user,
+        roles=payload.roles,
+        location=payload.location,
+        remote_only=payload.remote_only,
+        auto_apply_min_score=payload.auto_apply_min_score,
+    )
 
 
 @router.post("/cv-file", response_model=UserProfileRead)

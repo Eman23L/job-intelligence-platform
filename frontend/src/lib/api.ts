@@ -312,7 +312,7 @@ export const api = {
   applyToJobs: (jobIds: number[]) => request<{ changed: number }>("/find/apply", { method: "POST", body: JSON.stringify({ job_ids: jobIds }) }),
   dismissJobs: (jobIds: number[]) => request<{ changed: number }>("/find/dismiss", { method: "POST", body: JSON.stringify({ job_ids: jobIds }) }),
   newSearch: () => request<{ status: string }>("/discovery/run", { method: "POST" }),
-  saveSearchPreferences: (body: { roles: string[]; location: string | null; remote_only: boolean }) =>
+  saveSearchPreferences: (body: { roles: string[]; location: string | null; remote_only: boolean; auto_apply_min_score: number | null }) =>
     request<UserProfile>("/profile/search", { method: "POST", body: JSON.stringify(body) }),
   classifyApplyStrategies: (jobIds?: number[]) =>
     request<JobApplyStrategyRunStart>("/jobs/classify-apply-strategies", {
