@@ -2215,3 +2215,43 @@ details.debug-panel > summary {
     margin-bottom: -0.5rem;
   }
 }
+
+/* My CV: Claude's updates, notes for the next refresh, and earlier versions. */
+.cv-updates {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  padding-top: 1.1rem;
+}
+
+.cv-updates h3 {
+  margin: 0;
+}
+
+.cv-updates label {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.cv-updates .notice-banner {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.cv-news {
+  margin-bottom: 0.9rem;
+}
+
+.cv-history summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.cv-history li {
+  margin-top: 0.5rem;
+}
+
+.cv-history li button {
+  margin-top: 0.25rem;
+}

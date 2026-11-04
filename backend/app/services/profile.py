@@ -159,26 +159,29 @@ def get_profile(db: Session, user: User) -> UserProfile | None:
 
 
 def upsert_cv_profile(db: Session, user: User, cv_text: str) -> UserProfile:
+    profile = get_profile(db, user)
+    if profile is None:
+        profile = UserProfile(user_id=user.id, cv_text=cv_text)
+        db.add(profile)
+    apply_cv_text(profile, cv_text)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def apply_cv_text(profile: UserProfile, cv_text: str) -> None:
+    """Store new CV text and everything read from it, without committing."""
     extracted = extract_profile_fields(cv_text)
     salary_min, salary_max = _salary_preference_bounds(extracted["preferences"]["salary"])
-    storage_fields = {
+    profile.cv_text = cv_text
+    for field, value in {
         **extracted,
         "location_preference": extracted["preferences"]["location"] or None,
         "remote_preference": extracted["preferences"]["remote"] or None,
         "salary_min_preference": salary_min,
         "salary_max_preference": salary_max,
-    }
-    profile = get_profile(db, user)
-    if profile is None:
-        profile = UserProfile(user_id=user.id, cv_text=cv_text, **storage_fields)
-        db.add(profile)
-    else:
-        profile.cv_text = cv_text
-        for field, value in storage_fields.items():
-            setattr(profile, field, value)
-    db.commit()
-    db.refresh(profile)
-    return profile
+    }.items():
+        setattr(profile, field, value)
 
 
 def update_application_profile(db: Session, user: User, values: dict[str, Any]) -> UserProfile:

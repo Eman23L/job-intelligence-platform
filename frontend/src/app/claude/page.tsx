@@ -9,7 +9,7 @@ import { ScorePill } from "@/components/ScoreBadge";
 import { api } from "@/lib/api";
 import { SOURCE_LABELS } from "@/lib/applications";
 import { formatDate } from "@/lib/format";
-import type { Application, ApplicationSource, FindResult, FoundJob, UserProfile } from "@/types/api";
+import type { Application, ApplicationSource, CvUpdates, FindResult, FoundJob, UserProfile } from "@/types/api";
 
 const SUBMITTED = ["applied", "interviewing", "offer", "rejected"];
 const RECENT_DAYS = 7;
@@ -20,15 +20,22 @@ export default function ClaudePage() {
   const [found, setFound] = useState<FindResult | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [applications, setApplications] = useState<Application[]>([]);
+  const [cvUpdates, setCvUpdates] = useState<CvUpdates | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [busyJob, setBusyJob] = useState<number | null>(null);
 
   const load = useCallback(async () => {
-    const [nextFound, nextProfile, nextApplications] = await Promise.all([api.find(), api.profile(), api.applications()]);
+    const [nextFound, nextProfile, nextApplications, nextCvUpdates] = await Promise.all([
+      api.find(),
+      api.profile(),
+      api.applications(),
+      api.cvUpdates().catch(() => null)
+    ]);
     setFound(nextFound);
     setProfile(nextProfile);
     setApplications(nextApplications.items);
+    setCvUpdates(nextCvUpdates);
   }, []);
 
   useEffect(() => {
@@ -126,6 +133,17 @@ export default function ClaudePage() {
       </section>
 
       {notice ? <div className={`notice-banner ${notice.type}`}>{notice.message}</div> : null}
+
+      {cvUpdates ? (
+        <RefreshCv
+          updates={cvUpdates}
+          cvText={profile.cv_text}
+          onSaved={async (message) => {
+            await load();
+            setNotice({ type: "success", message });
+          }}
+        />
+      ) : null}
 
       <section className="panel">
         <h2>Today&apos;s jobs</h2>
@@ -289,5 +307,91 @@ function LogApplied({ onSaved }: { onSaved: (title: string) => Promise<void> }) 
         </button>
       </div>
     </form>
+  );
+}
+
+// Every two days Claude checks for anything new for my CV, then saves the whole updated CV here (or says nothing was new).
+function RefreshCv({ updates, cvText, onSaved }: { updates: CvUpdates; cvText: string; onSaved: (message: string) => Promise<void> }) {
+  const [open, setOpen] = useState(updates.due);
+  const [text, setText] = useState(cvText);
+  const [changes, setChanges] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setText(cvText);
+    setOpen(updates.due);
+  }, [cvText, updates.due]);
+
+  const save = async (nothingNew: boolean) => {
+    setSaving(true);
+    setError(null);
+    try {
+      const lines = changes
+        .split("\n")
+        .map((line) => line.replace(/^[-*•]\s*/, "").trim())
+        .filter(Boolean);
+      await api.refreshCv(nothingNew ? null : text, nothingNew ? [] : lines);
+      setChanges("");
+      await onSaved(nothingNew ? "Noted: nothing new for the CV." : "CV updated, and the PDF rebuilt to match.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save the CV.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="panel">
+      <h2>Refresh my CV</h2>
+      <p className="muted-text">
+        {updates.due
+          ? "Due today. Check for anything new before applying, so applications use my latest CV."
+          : `Not due. Checked ${updates.checked_at ? formatDate(updates.checked_at) : "recently"}; next check ${
+              updates.next_check_at ? formatDate(updates.next_check_at) : "soon"
+            }.`}
+      </p>
+      {updates.notes ? (
+        <div className="notice-banner info cv-news">
+          <strong>News from me to add:</strong> {updates.notes}
+        </div>
+      ) : null}
+      {open ? (
+        <form
+          className="profile-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save(false);
+          }}
+        >
+          <label>
+            My whole updated CV
+            <textarea className="cv-textarea" value={text} onChange={(event) => setText(event.target.value)} required />
+          </label>
+          <label>
+            What changed (one line each)
+            <textarea
+              rows={3}
+              value={changes}
+              onChange={(event) => setChanges(event.target.value)}
+              placeholder="Added the AWS Cloud Practitioner certificate (Nov 2026)."
+            />
+          </label>
+          {error ? <div className="notice-banner error">{error}</div> : null}
+          <div className="action-row">
+            <button type="submit" disabled={saving || !changes.trim()}>
+              {saving ? "Saving..." : "Save updated CV"}
+            </button>
+            <button type="button" className="ghost-button" disabled={saving} onClick={() => void save(true)}>
+              Nothing new
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button type="button" className="ghost-button compact-button" onClick={() => setOpen(true)}>
+          Refresh it anyway
+        </button>
+      )}
+    </section>
   );
 }

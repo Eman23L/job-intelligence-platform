@@ -128,6 +128,10 @@ class UserProfile(Base):
     cv_file_mime_type: Mapped[str | None] = mapped_column(String(120))
     cv_file_size: Mapped[int | None] = mapped_column(Integer)
     cv_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # News for the CV (courses, projects, promotions) that Claude adds at the next refresh.
+    cv_notes: Mapped[str | None] = mapped_column(Text)
+    # When Claude last checked whether the CV needed updating, whether or not it changed anything.
+    cv_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # What the person wants to search for; when empty, the roles found in their CV are used.
     search_roles: Mapped[list[str] | None] = mapped_column(JSON)
     search_location: Mapped[str | None] = mapped_column(String(255))
@@ -149,6 +153,23 @@ class UserProfile(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="profile")
+
+
+class CvVersion(Base):
+    """A CV as it was before a change, so any update can be undone."""
+
+    __tablename__ = "cv_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    cv_text: Mapped[str] = mapped_column(Text, nullable=False)
+    cv_file_name: Mapped[str | None] = mapped_column(String(255))
+    cv_file_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
+    cv_file_mime_type: Mapped[str | None] = mapped_column(String(120))
+    # Who replaced this version ("claude", "you" or "undo") and what they changed.
+    changed_by: Mapped[str] = mapped_column(String(20), nullable=False)
+    change_note: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class ExcludedTechnology(Base):

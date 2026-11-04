@@ -7,6 +7,7 @@ import type {
   ApplicationsList,
   ApplicationStatus,
   ApplyPack,
+  CvUpdates,
   FindResult,
   JobApplyStrategyRunStart,
   JobApplyStrategyRunStatus,
@@ -366,6 +367,13 @@ export const api = {
     formData.set("file", file);
     return request<UserProfile>("/profile/cv-file", { method: "POST", body: formData });
   },
+  makeCvPdf: () => request<UserProfile>("/profile/cv-file/from-text", { method: "POST" }),
+  cvUpdates: () => request<CvUpdates>("/profile/cv/updates"),
+  saveCvNotes: (notes: string) => request<CvUpdates>("/profile/cv/notes", { method: "POST", body: JSON.stringify({ notes }) }),
+  /** Claude's CV refresh: the whole updated CV and what changed, or null when nothing was new. */
+  refreshCv: (cvText: string | null, changes: string[]) =>
+    request<CvUpdates>("/profile/cv/refresh", { method: "POST", body: JSON.stringify({ cv_text: cvText, changes }) }),
+  restoreCvVersion: (id: number) => request<UserProfile>(`/profile/cv/versions/${id}/restore`, { method: "POST" }),
   aiChat: (message: string) =>
     request<AIChatResponse>("/ai/chat", { method: "POST", body: JSON.stringify({ message }) }),
   aiHistory: () => request<AIHistoryMessage[]>("/ai/history"),

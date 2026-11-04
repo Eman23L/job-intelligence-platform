@@ -221,10 +221,18 @@ The app doesn't submit applications itself. Claude in Chrome fills in each form 
 2. **Find jobs**: the jobs found for those roles in the last two weeks, best match to your CV first, with a **New search** button. The search also runs on the worker at 6:30am UK time every weekday. A job is listed when its title contains every key word of one of your roles (close synonyms count: data also covers analytics and BI, AI also covers machine learning). Press **Apply** on a job or **Apply to all** to queue them for Claude, or **Not for me** to hide one.
 3. **Applications**: jobs queued for Claude, the ones you've applied for (with a 7-day report), and how each is going. "Set up the daily run" gives one set of instructions for Claude in Chrome, saved as a shortcut and scheduled every weekday. Each run Claude:
     - works from **Claude's daily page** (`/claude`): your details, CV, the jobs you want, and today's jobs from your searches;
+    - every 2 days first refreshes your CV (see below);
     - applies straight away to jobs you queued and to JobServe jobs at or above the score you allow on My CV ("On JobServe, Claude applies without asking to jobs matching…");
     - searches LinkedIn (Easy Apply) and Indeed for your roles, shows one numbered list with the "ask first" jobs, and waits for "approve all" or the numbers you pick;
     - applies on each site with the CV saved there, skipping anything that needs a company website, a new account, a CAPTCHA or an answer your details don't cover;
     - records each application on Claude's daily page and ends with a report. At most 10 applications per run.
+
+**Keeping the CV current.** Every 2 days, at the start of the daily run, Claude checks for anything new: the notes you leave under "Anything new for your CV?" on My CV, new or updated repositories on the GitHub linked from your CV, and what it knows of your recent work. It adds only what it has evidence for and keeps your name, contact details, employers, titles and dates as they are. It then saves the whole updated CV and a line for each change on Claude's daily page. The app:
+- refuses an update that changes the first line (your name) or cuts the CV by more than 30%;
+- keeps the CV it replaced (text and file; the last 30 versions), so **Undo this update** or **Go back to the CV before this** on My CV restores it;
+- rebuilds the attached PDF from the new text (`backend/app/services/cv_pdf.py`) and re-scores your jobs.
+
+JobServe, LinkedIn and Indeed send the CV saved on each site, so after an update download the new PDF from My CV and upload it there. **Make the PDF from my saved CV text** rebuilds the PDF at any time.
 
 Reed and Adzuna need free API keys: set `REED_API_KEY`, `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` on both Render services. Each person's lists are private to them. Older tools (overview, all jobs, AI advisor, skill gaps, salary, sources, activity) are under **More tools** in the menu.
 
